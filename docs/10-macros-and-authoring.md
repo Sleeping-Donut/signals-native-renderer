@@ -1,0 +1,529 @@
+# 10 — Macros and Authoring
+
+**Crates:** `macros` (proc macros), `prelude`
+**Owns:** `view!`, `#[component]`, props, control-flow helpers, store derives,
+diagnostics, and the authoring mental model.
+
+---
+
+## 1. The authoring model: mount once, bind forever
+
+The most important thing to teach users:
+
+> A component runs when it is mounted. Dynamic values are expressions inside the
+> tree, not a reason to re-run the component.
+
+This is different from React/Solid/Leptos/GPUI. It follows from the retained tree:
+if the component re-ran, it would rebuild structure and lose identity. Instead,
+the `view!` macro compiles dynamic expressions into **bindings**.
+
+A reader coming from Solid expects:
+
+```tsx
+function Counter() {
+  const [count, setCount] = createSignal(0);
+  return <button onClick={() => setCount(count() + 1)}>{count()}</button>;
+}
+```
+
+In our model:
+
+```rust
+#[component]
+fn Counter() -> impl View {
+    let count = Signal::new(0);
+    view! {
+        <button on_click=move |_cx, _| count.update(|c| *c += 1)>
+            {count}
+        </button>
+    }
+}
+```
+
+- `count` is created once at mount.
+- `on_click` is a listener registered once.
+- `{count}` compiles to a text binding that subscribes to `count`.
+- The button element is never rebuilt.
+
+For users, the syntax looks similar; the semantics are more like Solid's compiled
+output than its component function.
+
+## 2. `view!`
+
+### 2.1 Syntax
+
+```rust
+view! {
+    <div class="app" style:padding="8px">
+        <Header title="Todos" />
+        <Show when=move || !todos.is_empty() fallback=|| view! { <Empty /> }>
+            <For each=todos key=|t| t.id children=|t| view! { <Row todo=t /> } />
+        </Show>
+        <button on_click=move |cx, _| add_todo(cx)>"Add"</button>
+    </div>
+}
+```
+
+- Tags map to `Element` builders; uppercase tags map to components.
+- `attr=value` is an attribute.
+- `style:name=value` is a style property.
+- `class:name=bool` is a class toggle.
+- `on_event=closure` is a listener.
+- `{expr}` is a child expression (text or view).
+- `if`/`for`/`match` are Rust control flow; the macro rewrites them into
+  `Show`/`For`/`Switch` nodes to preserve identity.
+- `..` spread of props is supported for components.
+
+### 2.2 Expansion sketch
+
+```rust
+// view! { <button on_click=f>{count}</button> }
+{
+    let button = cx.element("button");
+    cx.set_style(button, Style::default());
+    let text = cx.text("");
+    cx.add_binding(text, render_effect(
+        cx,
+        move || count.get().to_string(),
+        move |s| cx.set_text(text, s),
+    ));
+    cx.insert(button, text, None);
+    cx.on_click(button, f);
+    button
+}
+```
+
+The macro does not create a closure that returns a tree. It emits builder calls
+in the current mount scope. Dynamic expressions become bindings; static values
+are set once.
+
+### 2.3 Reactivity of attributes
+
+`<div title={name}>`:
+
+- If `name` is a signal read, it becomes a binding.
+- If it is a plain value, it is set once.
+- The macro detects `Signal`/`Memo`/`Field` types syntactically where possible; for
+  arbitrary expressions, it uses the `IntoReactive<T>` trait to decide at compile
+  time.
+
+To avoid ambiguity, the macro treats:
+
+- `expr` whose type implements `ReactiveValue<T>` as a binding;
+- a plain value as a constant;
+- `move || expr` as a binding (the closure is the compute function).
+
+Users can force a binding with `{move || ...}` or a constant with
+`untrack(|| ...)`.
+
+### 2.4 Conditional children
+
+`if cond { a } else { b }` inside `view!` becomes a `Show` node:
+
+```rust
+let show = cx.conditional(
+    move || cond,
+    || { /* mount a */ },
+    Some(|| { /* mount b */ }),
+);
+```
+
+Only the active branch is mounted. The conditional node stays in place.
+
+### 2.5 List children
+
+`for item in items { row(item) }` becomes a `For` node. The macro requires a key
+for a retained list; if omitted, it uses the item's index and emits a dev warning
+(`UNKEYED_LIST`) because index keying destroys row state on reorder.
+
+## 3. Components
+
+### 3.1 `#[component]`
+
+```rust
+#[component]
+fn Counter(initial: Signal<i32>, step: i32) -> impl View {
+    let count = Signal::new(initial.get_untracked());
+    view! { ... }
+}
+```
+
+Generates:
+
+```rust
+struct CounterProps {
+    initial: Signal<i32>,
+    step: i32,
+}
+
+fn Counter(props: CounterProps, cx: &mut Cx) -> ViewNodeId { ... }
+```
+
+The component is a mount function. It runs once. `impl View` is erased to
+`ViewNodeId` by the macro; a component that returns an element or a fragment is
+also valid.
+
+### 3.2 Props
+
+Props are values, but reactive props are `Signal<T>`:
+
+```rust
+#[component]
+fn Label(text: Signal<String>) -> impl View {
+    view! { <span>{text}</span> }
+}
+```
+
+Passing:
+
+```rust
+view! {
+    <Label text=title />              // title: Signal<String>, cloned handle
+    <Label text="Static" />           // literal -> Signal::constant("Static")
+    <Label text=move || format!("{first} {last}") /> // closure -> Memo<String>
+}
+```
+
+The macro decides syntactically:
+
+- a closure `move || ...` becomes a `Memo<T>`;
+- an expression whose type is already `Signal<T>` or `Memo<T>` is passed
+  through;
+- any other expression is wrapped in `Signal::constant(expr)`.
+
+We do **not** use a blanket `impl<T> IntoSignal<T> for T`: in Rust it conflicts
+with `impl<T> IntoSignal<T> for Signal<T>` (the compiler cannot rule out
+`T = Signal<U>`). The syntactic rule avoids the coherence problem and gives
+better error messages. For cases the macro cannot classify, use an explicit
+constant wrapper:
+
+```rust
+pub struct Const<T>(pub T);
+
+pub trait IntoSignal<T> {
+    fn into_signal(self, cx: &Cx) -> Signal<T>;
+}
+
+impl<T> IntoSignal<T> for Const<T> { /* constant signal */ }
+impl<T> IntoSignal<T> for Signal<T> { /* clone handle */ }
+impl<T> IntoSignal<T> for Memo<T> { /* read-through */ }
+```
+
+A constant signal is a real signal node with no setter exposed; it is cheap but
+not free. For static props that never change, the macro can pass the value
+directly if the prop type is not `Signal<T>`. Keep both: `Signal<T>` for
+dynamic, plain `T` for static.
+
+### 3.3 Prop identity
+
+A reactive prop is a handle. If the parent passes a stable `Signal`/`Memo`, the
+child's binding subscribes directly; the child is not rebuilt. If the parent
+creates a new `Memo` each time it mounts, that is fine (mount happens once). If
+the parent wants to change the prop later, it writes to the signal it passed; it
+does not re-create the child.
+
+This is the key ergonomic difference from GPUI: props are not re-supplied every
+frame; they are handles that live as long as the child.
+
+### 3.4 Children
+
+`children` is a `ViewFn` or a `Children` handle:
+
+```rust
+#[component]
+fn Card(children: Children) -> impl View {
+    view! { <div class="card">{children}</div> }
+}
+```
+
+`Children` is a closure that mounts the child subtree when called. It is called
+once during the parent's mount. For a child that can change structurally, pass a
+`ViewFn` and wrap it in a `Show`/`For`, or use a rebuild component.
+
+## 4. Control-flow helpers
+
+### 4.1 `Show`
+
+```rust
+<Show when=move || cond fallback=|| view! { <Empty /> }>
+    <Content />
+</Show>
+```
+
+- `when` is a `Fn() -> bool` (or a `Memo<bool>`).
+- `fallback` is optional.
+- The child is a `ViewFn` and is mounted only when true.
+- Flipping disposes one branch and mounts the other.
+- `keep_alive=true` (v1.1) caches the inactive branch.
+
+### 4.2 `For`
+
+```rust
+<For each=items key=|item| item.id children=|item| view! { <Row item=item /> } />
+```
+
+- `each` is `Memo<Vec<T>>` or a signal read.
+- `key` returns a stable `Key`.
+- `children` mounts a row given the item.
+- The keyed diff is in [07-retained-renderer.md](07-retained-renderer.md).
+- `each` can be a store's `iter_keyed()`; the row receives a `Field<T>`.
+
+### 4.3 `Switch` / `Match`
+
+```rust
+<Switch>
+    <Match when=move || state.is_loading()> <Spinner /> </Match>
+    <Match when=move || state.is_error()> <ErrorView /> </Match>
+    <Match when=move || true> <Content /> </Match>
+</Switch>
+```
+
+Only the first matching branch is mounted. Branches are keyed by their position;
+use explicit keys if the order can change.
+
+### 4.4 `KeepAlive` (v1.1)
+
+```rust
+<KeepAlive when=move || tab.is_settings()>
+    <Settings />
+</KeepAlive>
+```
+
+Caches the subtree owner and view nodes when inactive; re-inserts on return. Use
+for tabs, navigation stacks, and editors where local state matters.
+
+## 5. Store derives
+
+### 5.1 `#[derive(Store)]`
+
+```rust
+#[derive(Store, Clone, Debug, Default)]
+struct AppState {
+    user: User,
+    todos: Vec<Todo>,
+}
+
+let state = Store::new(AppState::default());
+view! {
+    <span>{state.user().name()}</span>
+    <For each=state.todos() key=|t| t.id children=|t| view! { <Row todo=t /> } />
+}
+```
+
+Generated field methods return `Field<T>`; they are `Copy`/`Clone` handles.
+See [03-store-layer.md](03-store-layer.md).
+
+### 5.2 `#[derive(Patch)]`
+
+```rust
+#[derive(Store, Patch, Clone, PartialEq)]
+struct Todo { id: u64, title: String, done: bool }
+
+state.todos().at(0).patch(Todo { done: true, ..todo.snapshot() });
+```
+
+Only changed fields notify.
+
+### 5.3 Dynamic stores
+
+`DynamicStore` is opt-in and not macro-generated. Use it for plugins/config, not
+app state.
+
+## 6. Diagnostics
+
+Authoring mistakes are common in a mount-once model. The framework should catch
+them early:
+
+| Code | When | Severity |
+|---|---|---|
+| `STRICT_READ_IN_MOUNT` | A signal read at component-body top level without `untrack`/binding. | Warning (dev). |
+| `WRITE_IN_COMPUTE` | A write during a compute pass. | Error (dev), staged (release). |
+| `WRITE_IN_APPLY` | A write during an apply without `owned_write`. | Error (dev). |
+| `DISPOSED_HANDLE` | Reading/writing a disposed handle. | Error (dev), no-op (release). |
+| `UNKEYED_LIST` | `For` without a key. | Warning (dev). |
+| `DUPLICATE_KEY` | Two rows with the same key. | Error (dev). |
+| `MOUNTED_DURING_APPLY` | A structural mount during apply. | Warning; deferred. |
+| `LEAKED_EFFECT` | A detached effect with no owner. | Info (dev), optional. |
+| `A11Y_NO_LABEL` | An interactive node without a label. | Warning (dev, a11y enabled). |
+| `CONTEXT_MISSING` | `expect_context` found nothing. | Error. |
+
+Diagnostics carry the owner path and source location (from `#[track_caller]` and
+macro spans). In release, only the ones that affect correctness remain, and they
+log once.
+
+### 6.1 The strict-read rule
+
+Reading a signal at the top level of a mount body is almost always a mistake: it
+takes a snapshot and will not update. The macro cannot always distinguish a
+deliberate snapshot from a mistake, so it warns unless the read is:
+
+- inside `untrack(...)`;
+- inside a binding (`{...}` child, reactive attribute, closure);
+- inside a memo/effect compute.
+
+This mirrors Solid 2.0's strict top-level access rule
+(`documentation/solid-2.0/01-reactivity-batching-effects.md`).
+
+## 7. Escape hatches
+
+### 7.1 `untrack`
+
+```rust
+let initial = untrack(|| count.get());
+```
+
+Explicit snapshot. Use for initial values, one-time setup, and measuring.
+
+### 7.2 `Rebuild`
+
+```rust
+Rebuild::new(move || {
+    // reads signals; re-runs when any change
+    view! { <ExpensiveForm /> }
+})
+```
+
+Wraps a subtree in a rebuild computation. Use when binding is more complex than
+rebuilding. The subtree is replaced under the same parent.
+
+### 7.3 `RenderOnce`
+
+```rust
+#[derive(IntoElement)]
+struct Badge { text: String }
+impl RenderOnce for Badge {
+    fn render(self, cx: &mut Cx) -> impl View { view! { <span>{self.text}</span> } }
+}
+```
+
+A stateless component that is consumed at mount. It has no identity and no
+bindings of its own; its output is inlined into the parent. This is the Rust
+equivalent of a "function component that is just markup".
+
+### 7.4 `RawElement`
+
+For custom paint or layout:
+
+```rust
+RawElement::new(|cx, bounds| {
+    // emit primitives directly
+})
+```
+
+It participates in layout as a leaf (or a container if it manages children) and
+paints through the scene API. Use for charts, canvases, and custom editors.
+
+## 8. Example: a todo app
+
+```rust
+#[derive(Store, Patch, Clone, Default)]
+struct AppState {
+    draft: String,
+    todos: Vec<Todo>,
+}
+
+#[component]
+fn App(state: Store<AppState>) -> impl View {
+    let filter = Signal::new(Filter::All);
+
+    let visible = Memo::new(move || {
+        let f = filter.get();
+        state.todos().read().iter()
+            .filter(|t| f.matches(t))
+            .cloned()
+            .collect::<Vec<_>>()
+    });
+
+    view! {
+        <div class="app">
+            <h1>"Todos"</h1>
+            <input
+                value=state.draft()
+                on_input=move |cx, text| state.draft().set(text)
+                on_key_down=move |cx, key| if key.is_enter() { add_todo(cx, state) }
+            />
+            <button on_click=move |cx, _| add_todo(cx, state)>"Add"</button>
+
+            <div class="filters">
+                <FilterButton label="All" selected=filter value=Filter::All />
+                <FilterButton label="Active" selected=filter value=Filter::Active />
+                <FilterButton label="Done" selected=filter value=Filter::Done />
+            </div>
+
+            <Show when=move || !visible.get().is_empty()
+                  fallback=|| view! { <p class="empty">"Nothing here"</p> }>
+                <For each=visible key=|t| t.id children=|t| view! {
+                    <TodoRow todo=t />
+                } />
+            </Show>
+        </div>
+    }
+}
+
+fn add_todo(cx: &mut Cx, state: Store<AppState>) {
+    let title = state.draft().get();
+    if title.is_empty() { return; }
+    state.draft().set(String::new());
+    let id = next_id(cx);
+    state.todos().push(Todo { id, title, done: false });
+}
+```
+
+What runs when the user types:
+
+1. `on_input` stages `state.draft().set(text)`.
+2. Flush marks the draft path and the `input.value` binding.
+3. Apply sets the input's value and the caret.
+4. The list does not re-run; the draft is not in `visible`.
+
+What runs when a todo is toggled:
+
+1. `todo.done().set(!done)` marks the row's done path and the `visible` memo.
+2. The row's checkbox binding updates.
+3. `visible` may remove the row from the filtered list; the keyed `For` diff
+   removes it (or keeps it if the filter still matches).
+
+## 9. Trade-offs
+
+| Choice | Benefit | Cost |
+|---|---|---|
+| Mount once | no structural diff, stable identity, cheap updates | components do not re-run; users must use bindings |
+| `view!` proc macro | concise, compile-time wiring | macro complexity, error messages |
+| Props as signals | fine-grained updates without re-render | prop identity must be stable |
+| Keyed `For` | row state survives reorder | keys required; duplicate-key checks |
+| `Rebuild` escape hatch | simple for dynamic forms | loses subtree state |
+| Strict-read warnings | catches a common mistake | some false positives; needs `untrack` |
+
+## 10. Tests
+
+- Macro expansion: `trybuild` or `cargo expand` golden tests for tags, attrs,
+  bindings, conditionals, lists, spreads.
+- Compile-fail: missing key, wrong prop type, non-view child, non-`Send` future
+  in an action.
+- Runtime: the todo example runs; typing updates only the draft binding; toggling
+  updates only the row and the filter memo.
+- Diagnostics: each code in §6 fires on a minimal example and not on the
+  corresponding correct example.
+- Hygiene: macros work in modules, with generics, and with `use` aliases.
+- Performance: `view!` output allocates once at mount, zero per update for a
+  static subtree.
+
+## 11. Open questions
+
+1. **Syntax.** How close to JSX should `view!` be? A tag syntax is familiar but
+   requires a proc macro parser; a builder API is simpler but more verbose. We
+   can ship both: `view!` for apps, builders for libraries.
+2. **Reactive attribute detection.** Type-based `IntoReactive` vs explicit
+   `move ||`. The former is ergonomic but can surprise; the latter is verbose.
+   (Leaning: type-based with an explicit `static` marker.)
+3. **Props defaults.** `Signal<T>` for all reactive props makes the common case
+   easy but allocates a node per constant prop. A const-generic `Prop<T>` can
+   avoid that later.
+4. **`For` key ergonomics.** Requiring a key is correct but annoying. Can the
+   macro infer `id` when the item implements a `Keyed` trait? Yes, with an
+   explicit override.
+5. **Component state.** A per-mount `struct` vs closure captures. The macro can
+   choose closure captures for simplicity; a state struct is needed for
+   `Rebuild` and for exposing methods.
+6. **Error messages.** Proc macros are notoriously bad at spans. Budget time for
+   `syn::Error` spans and `trybuild` tests.

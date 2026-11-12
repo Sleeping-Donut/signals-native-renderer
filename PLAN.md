@@ -1,0 +1,341 @@
+# PLAN
+
+**Status:** Draft 1 — for review before implementation starts.
+**Supersedes:** `PLAN-OUTLINE.md` (kept as the original brief).
+**Companion docs:** [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`docs/`](docs/README.md).
+
+---
+
+## 1. What we are building
+
+A native Rust UI framework with three properties that are usually bought separately:
+
+1. **Fine-grained reactive state.** A Solid 2.0–class reactive graph: signals, memos,
+   split effects, owners, async derivations, and question-scoped pending. The
+   behavioral oracle is Solid 2.0's documented rules (`F-<n>` / `D-<n>` /
+   `S-<n>`), not its JavaScript API.
+2. **Retained rendering.** Stable view and element identities across frames,
+   explicit invalidation, incremental binding updates, retained layout and paint
+   caches, and a frame that does only the work its dirty set requires.
+3. **Renderer portability.** A small object-safe contract for third-party
+   backends, plus a first-party renderer that deliberately bypasses the contract
+   on its hot path.
+
+The system is **one reactive graph, one retained tree, one checkpoint per frame**.
+There is no virtual-DOM diff, no second reactivity model in the renderer, and no
+hidden background executor owned by the framework.
+
+---
+
+## 2. Principles
+
+| # | Principle | Consequence |
+|---|---|---|
+| P1 | **One graph** | Application state and rendered output share one dependency graph. The renderer is a sink of that graph, not a parallel notification system. |
+| P2 | **Explicit at the boundary** | Automatic tracking inside a computation; writes, frame flushes, and layout/paint passes happen at named boundaries. |
+| P3 | **Retained identity** | Views, elements, text, and layout nodes keep stable generational IDs. A missing ID is a bug, not a reason to rebuild the world. |
+| P4 | **Mount once, bind forever** | Component structure is built at mount; dynamic values are fine-grained bindings. Whole-subtree re-render is an explicit escape hatch, not the default. |
+| P5 | **The frame is the checkpoint** | Async continuations drain, writes promote, computations settle, effect applies run, layout runs, paint emits: once per frame, in that order. |
+| P6 | **No resurrection** | A disposed handle never becomes live again. This removes the reclamation gap that a JavaScript port inherits from GC reachability. |
+| P7 | **Universal contract, specialized flagship** | Third-party renderers get a small trait; the first-party renderer uses direct monomorphized paths. Both share one conformance suite. |
+| P8 | **No hidden executor** | Async work is spawned through a `Spawner` supplied by the host. The framework owns queues and wakeups, not threads or timers. |
+
+---
+
+## 3. Scope
+
+### 3.1 In scope for v1
+
+- Reactive core with signals, memos, split effects, render effects, batching, and
+  ownership.
+- Generational arena and opaque `Copy` handles.
+- Async memos with flight generations, held values, `isPending`, and frame-level
+  holds.
+- `LoadingBoundary` and `ErrorBoundary`, with the subset of Solid's hold model
+  described in [04-async-model.md](docs/04-async-model.md).
+- Derived stores with per-field and per-key granularity.
+- Universal renderer contract, null renderer, and a conformance suite.
+- Retained native renderer: element tree, bindings, keyed lists, conditionals,
+  layout, paint, input, focus.
+- Taffy layout and text shaping/measurement with a bounded cache.
+- wgpu paint backend (desktop first; web later).
+- Dev diagnostics: owner/cleanup diagnostics, write-in-computation errors, dirty
+  tracing, and a live graph inspector.
+- Deterministic test runtime and a headless scene renderer.
+
+### 3.2 Explicitly out of scope for v1
+
+- Optimistic writes (`F-11`) and full display-ahead/lane semantics (`F-6`). The
+  node shape leaves room for them; the machinery lands after v1.
+- SSR, hydration, and server functions. The renderer contract must not assume a
+  DOM, but no server target is built.
+- Multi-window collaboration, presence, and CRDT state.
+- Hot reload of Rust code (subsecond-style). The architecture supports it; it is
+  not a deliverable.
+- A visual designer or a general-purpose CSS engine.
+- Full WAI-ARIA authoring surface; AccessKit integration covers the common roles
+  first.
+
+### 3.3 Non-goals that are often assumed
+
+- **Not a GPUI fork.** GPUI is a reference for identity, caching, input dispatch,
+  and scene composition. We do not depend on `gpui` and do not copy its
+  immediate-mode element lifecycle.
+- **Not a Leptos port.** Leptos is a reference for a production Rust reactive
+  graph and store macro. Its `Arc<RwLock>` node shape and executor model are
+  explicitly not adopted.
+- **Not Solid-compatible at the API level.** We port behavior, not `createSignal`
+  call shapes. Rust naming and ownership rules win where they conflict.
+
+---
+
+## 4. Reference inputs and how they are used
+
+All reference repos are read-only under `refs/` (git-ignored). Licences are
+permissive (Solid MIT, Leptos MIT, GPUI Apache-2.0), but the implementation should
+be independent; where an algorithm is ported, record the source file and licence
+in the module header.
+
+| Reference | What we take | What we do not take |
+|---|---|---|
+| `refs/solid/packages/signals` | Behavioral oracle: `docs/RULES-FUNDAMENTALS.md`, `RULES-DERIVED.md`, `SCENARIOS.md`; the height-heap scheduler in `src/core/heap.ts`; link/unlink edge lists in `src/core/graph.ts`; the staged-write and hold model in `src/core/core.ts` and `scheduler.ts`. | JS object layout, Proxy stores, microtask scheduling, byte-size tricks. |
+| `refs/solid/packages/universal` | Shape of a minimal renderer contract (`RendererOptions`, `createRenderer`). | Its implicit mutable-DOM assumptions and array reconciliation. |
+| `refs/solid/documentation/solid-2.0` | The 2.0 semantics: split effects, flush batching, strict reads, stores, async boundaries. | JS-specific migration rules. |
+| `refs/leptos/reactive_graph` | A current Rust graph: `ReactiveNode` states, observer tracking, owner cleanup, `RenderEffect`, `AsyncDerived`, `SourceSet` ordering constraints. | `Arc<RwLock>` per node, subscriber-set cloning on every mark, executor-driven effects. |
+| `refs/leptos/reactive_stores` + `_macro` | The field-Getter store design: `StorePath`, `Field`, `Subfield`, keyed access, `Patch`, per-path triggers. | Its arena-per-value indirection where a direct path node is cheaper. |
+| `refs/leptos/tachys` | How dynamic bindings become render effects (`reactive_graph/{property,style,class,bind}.rs`); a no-diff renderer architecture. | Its DOM-specific builder traits. |
+| `refs/zed/crates/gpui` | Retained view identity (`EntityId`), per-view prepaint/paint cache ranges, scene replay, taffy integration, hitbox/content-mask input dispatch, focus/action dispatch, AccessKit integration, deterministic test harness, randomized element-tree fuzzer. | Immediate-mode element rebuild as the default; `cx.notify()` as the only invalidation channel; per-frame full layout. |
+
+---
+
+## 5. Key decisions
+
+Each decision is expanded in [docs/12-decisions-and-risks.md](docs/12-decisions-and-risks.md).
+The largest deviations from `PLAN-OUTLINE.md` are D2 (height heap, not R3), D3
+(no resurrection), D5 (async before the renderer), and D6 (retained nodes with
+bindings). A section-by-section mapping from the outline is in
+[docs/12-decisions-and-risks.md](docs/12-decisions-and-risks.md) Part E.
+
+| ID | Decision | Why | Rejected alternative |
+|---|---|---|---|
+| D1 | Solid 2.0's **rules** are the oracle; its API is not. | The rules capture the hard semantics (frame integrity, holds, pending) without JS constraints. | A loose "signals-like" core with no conformance target. |
+| D2 | Use a **height-indexed dirty heap** with DIRTY/CHECK marks, not R3's pull-verify traversal. | This is what current Solid 2.0 actually ships (`core/heap.ts`); it gives topological execution without recursion and without re-walking clean paths. | R3's two-phase graph coloring; Alien Signals' plain stack. Both remain benchmarks. |
+| D3 | **Arena + generational `Copy` handles**; no resurrection. | Fast reads, stable identity, safe disposal, no `Rc` cycles, and stale handles fail deterministically. | `Arc<RwLock<Node>>` (allocation and lock per node); raw indices (ABA). |
+| D4 | **Writes stage; the flush promotes.** Staged writes are invisible to readers until the frame checkpoint. | `F-10` is load-bearing for async holds and for `latest`/`isPending`. Retrofitting it later would touch every read path. | Eager writes with a "dirty" notification. |
+| D5 | **Async is Phase 2, not Phase 6.** | Flight state, staged values, and reader classes determine the node shape and scheduler. Building the renderer first would force a core rewrite. | Outline order (renderer before async). |
+| D6 | **Retained element tree with per-node bindings**, plus an opt-in cached-rebuild view. | Matches the fine-grained graph: one signal write updates one text run, not a whole component subtree. Retains GPUI's whole-view cache as the escape hatch. | GPUI's fully ephemeral element tree (coarse); a virtual DOM (diff tax). |
+| D7 | **Taffy full layout on layout-dirty frames; incremental layout is a later optimization.** | Correctness first; paint-only frames can skip layout entirely, which is the common case. | Promising incremental flex/grid layout in v1. |
+| D8 | **wgpu** for the first-party paint backend. | Cross-platform, testable offscreen, one shader path. | Metal/D3D/Blade per platform in v1. |
+| D9 | **Derive-macro stores** (Leptos-style), not a proxy emulation. | Compile-time paths are fast and Rust-idiomatic; dynamic stores are an explicit opt-in. | A `Deref`-based fake proxy with runtime interception. |
+| D10 | Rename **`renderer-gpui` → `renderer-native`**; rename **`universal` → `renderer-api`**. | The renderer does not use GPUI, and "universal" is a Solid-ism. Layer names stay recognisable in prose. | Keeping misleading crate names. |
+| D11 | **Single UI thread**; async may run elsewhere, but state mutation and rendering are thread-affine. | Removes atomic and lock costs, matches both reference systems, and keeps frame determinism. | A multi-threaded graph with `Send` nodes. |
+| D12 | **DAG by write discipline**, with debug-only cycle checks. | Writes inside computations are rejected, which removes the only common cycle source. A per-edge 3-color DFS is too expensive for release. | Always-on cycle validation on every edge insert. |
+
+---
+
+## 6. Phased roadmap
+
+Phases are ordered by dependency, not by user-visible excitement. Each phase has
+an exit criterion that can be tested in CI.
+
+### Phase 0 — Foundations (1–2 weeks)
+
+**Build:** workspace layout, `reactive-core` skeleton, generational arena,
+`NodeId`/`Handle`, `Runtime` shell, test harness, `ManualSpawner`, benchmark
+harness.
+
+**Exit:** arena create/remove/reuse passes property tests; a 10k-node arena
+allocates and frees in bounded time; `cargo test` and `cargo bench` run on macOS
+and Linux.
+
+### Phase 1 — Reactive core (3–4 weeks)
+
+**Build:** signals, memos, split effects, render effects, dependency edges,
+height heap, dirty/check propagation, equality, batching, flush, `untrack`,
+context, owners, cleanup, disposal.
+
+**Exit:**
+- Ported graph tests pass: glitch freedom, diamond, batched reads, equality
+  short-circuit, disposal order, nested owners, effect ordering.
+- A write to one of 10k signals touches only its dependent path (asserted by a
+  dirty-visit counter).
+- No `unsafe` outside the arena; Miri passes on the core test suite.
+
+### Phase 2 — Async and holds (3–5 weeks)
+
+**Build:** `Spawner` trait, continuation queue, flight generations, async memos,
+`isPending`, `latest`, `LoadingBoundary`, `ErrorBoundary`, staged holds,
+reader classes (derive / display / observe), deterministic virtual clock.
+
+**Exit:**
+- A navigation test: click → page B data loads → old page stays on screen →
+  page B appears whole.
+- A first-load test suspends to the nearest boundary; a disarmed boundary
+  forwards and keeps content.
+- Held async never shows a partial frame: a snapshot assertion on every frame.
+- Stale flight completions are dropped; cancellation runs teardown exactly once.
+
+### Phase 3 — Renderer contract and null renderer (2 weeks)
+
+**Build:** `renderer-api`, capability sub-traits, `renderer-null`, operation
+recording, frame begin/end, conformance tests, binding adapters.
+
+**Exit:** a headless counter app renders, updates only the changed text
+operation, and produces a deterministic operation log; the same app runs on the
+in-process scene recorder.
+
+### Phase 4 — Retained native renderer: structure (4–6 weeks)
+
+**Build:** `ViewNode` arena, child lists, keyed lists, conditionals, mount/rebuild
+semantics, binding effects, `view!` macro (first cut), dirty flags, invalidation,
+root/window lifecycle.
+
+**Exit:** a 10k-row keyed list mounts, reorders, and updates only affected rows;
+structural changes preserve sibling state and focus; no per-frame tree rebuild in
+the allocation profile.
+
+### Phase 5 — Layout, paint, platform (4–6 weeks)
+
+**Build:** taffy integration with persistent node mapping, style resolution,
+text measurement and shaping, scene builder, paint cache/replay, wgpu backend,
+window loop, scale factor and pixel snapping.
+
+**Exit:** the demo app runs at 60 fps on a 2019 laptop; a paint-only change
+(color/text) does zero layout; a layout change repaints only dirty subtrees;
+resize is correct at 1×/1.5×/2×.
+
+### Phase 6 — Input, focus, accessibility (3–4 weeks)
+
+**Build:** hitboxes and content masks, mouse/keyboard/text dispatch, focus
+handles and tab stops, actions and key bindings, hover/drag state, AccessKit
+tree, cursor/tooltip layers.
+
+**Exit:** keyboard-only navigation works; screen reader reads a labelled form;
+click/drag/scroll are correct under transforms and clipping; focus survives
+list reorder.
+
+### Phase 7 — Stores and authoring (3–4 weeks)
+
+**Build:** `#[derive(Store)]`, `Field`/`Subfield`, `Patch`, keyed collections,
+`store!`/`view!` ergonomics, props as signals, diagnostics for strict reads and
+store aliasing.
+
+**Exit:** field-granular notification verified; nested stores compose; keyed list
+patch only dirties changed keys; the example app uses no manual `notify`.
+
+### Phase 8 — Hardening and performance (ongoing)
+
+**Build:** incremental layout experiments, damage regions, text cache eviction,
+arena compaction only if measurements demand it, fuzzers, benchmarks, devtools.
+
+**Exit:** published performance report; no unbounded growth in a 24-hour churn
+test; third-party null renderer conformance suite is green.
+
+### Milestones
+
+| Milestone | Phase | Demo |
+|---|---|---|
+| M1 "Graph" | 1 | Headless reactive graph passes the ported core suite. |
+| M2 "Navigation" | 2 | Async page swap with hold, boundary, and no torn frames. |
+| M3 "Contract" | 3 | Same app runs on null renderer and records operations. |
+| M4 "Tree" | 4 | Keyed list with stable identity and binding-level updates. |
+| M5 "Pixels" | 5 | Native window with layout, text, and paint. |
+| M6 "Interaction" | 6 | Keyboard, mouse, IME, and accessibility on the demo. |
+| M7 "Stores" | 7 | Nested app state with field-granular updates. |
+| M8 "Proof" | 8 | Benchmarks, fuzzers, and a 24-hour soak. |
+
+---
+
+## 7. Risk register
+
+| Risk | Likelihood | Impact | Mitigation | Trigger to change course |
+|---|---|---|---|---|
+| Hold/async semantics are too large for v1 | High | High | Ship a defined subset (`F-1,2,3,4,5,9,10,12`) and gate optimistic lanes. Keep the node shape extensible. | If Phase 2 exceeds 7 weeks, cut `latest`/`isPending` to read-only diagnostics and ship navigation holds only. |
+| Retained tree structural updates are harder than expected | High | High | Start with keyed list + `Show` only; disallow arbitrary re-parenting; keep cached-rebuild escape hatch. | If keyed list reorder is not stable by Phase 4 exit, fall back to GPUI-style per-view rebuild for that subtree. |
+| Incremental layout is not achievable with taffy | Medium | Medium | Treat full layout on layout-dirty frames as v1; add layout boundaries and measure caching later. | If layout exceeds 30% of frame time in the demo, add a dirty-subtree layout prototype before Phase 8. |
+| Text shaping dominates frame time | Medium | Medium | Cache shaped lines by content+font+width; keep a platform text system boundary; profile early. | If shaping > 5 ms/frame, move to a retained line layout with incremental reflow. |
+| Store macro complexity delays app work | Medium | Medium | Ship flat `Signal<T>` usage first; stores are opt-in. | If derive macro exceeds 3 weeks, ship a `#[derive(Store)]` subset (plain fields + Vec) and defer enums/patch. |
+| wgpu backend blocks on platform issues | Low | Medium | Null renderer and scene recorder are first-class; a CPU rasterizer test backend keeps CI green. | If wgpu is unstable on a target, add a `tiny-skia` software backend for that platform. |
+| Unsafe arena code has soundness bugs | Medium | High | Safe indices first; isolate `unsafe` in `arena`; Miri; no `unsafe` in graph logic. | Any Miri failure blocks release until fixed or the `unsafe` is removed. |
+| Public API churn | High | Medium | Mark everything `#[doc(hidden)]` or `unstable` until Phase 6; semver only after M6. | If third-party renderer authors need stability earlier, freeze `renderer-api` after Phase 3. |
+
+---
+
+## 8. Performance budgets (v1 targets)
+
+Measured on a 2021-class laptop, release build, 1600×1000 window.
+
+| Metric | Target | Notes |
+|---|---|---|
+| Idle CPU | < 0.5% | No frame unless dirty or animating. |
+| Signal read | < 20 ns | Hot path, single-threaded. |
+| Signal write + dirty walk | < 100 ns for 1 dependent | 1k dependents < 20 µs. |
+| Memo recompute overhead | < 100 ns + user fn | Excludes user code. |
+| 10k-row mount | < 150 ms | Including layout and text measure, text simple. |
+| 10k-row single-row update | < 1 ms | Binding + layout if needed. |
+| Paint-only update | < 2 ms | No layout, scene patch only. |
+| Full layout of 10k nodes | < 20 ms | Taffy, simple flex. |
+| Frame time, demo | < 8 ms p95 | At 60 Hz. |
+| Allocations per paint-only frame | 0 in steady state | Arena reuse; no per-frame element tree. |
+
+---
+
+## 9. Open questions
+
+These need a decision before or during the named phase. They are tracked in
+[docs/12-decisions-and-risks.md](docs/12-decisions-and-risks.md).
+
+1. **Component rebuild semantics.** Default is mount-once; do we expose
+   `#[component(rebuild)]` as a first-class attribute, or only via an explicit
+   `RebuildView` wrapper? (Phase 4)
+2. **Props representation.** `Props` struct with `Signal<T>` fields, or a
+   `Memo`-backed struct with field getters? (Phase 4)
+3. **Async memo return type.** `AsyncMemo<T>` with `Option<T>` reads, or
+   `Result<T, NotReady>` guards, or `AsyncMemo<T>` that throws `NotReady` and is
+   caught by boundaries? (Phase 2)
+4. **Boundary scope.** Do we implement Solid's full `on` re-arm and
+   display-ahead `latest` in v1, or only first-load and held navigation? (Phase 2)
+5. **Dynamic stores.** Interned path map in v1, or defer until a real app needs
+   it? (Phase 7)
+6. **Threading.** Is background async allowed to compute pure values and send
+   them to the UI thread, or must all user code run on the UI thread? (Phase 2)
+7. **Renderer contract batching.** Does the renderer contract include
+   `begin_frame`/`end_frame`, or is per-operation batching enough? (Phase 3)
+8. **Licence and attribution.** MIT/Apache-2.0 for the framework; do we include
+   ported code notices in each module or one `NOTICE` file? (Phase 1)
+
+---
+
+## 10. Documentation map
+
+| Document | Contents |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | System overview, crate graph, core types, frame lifecycle, invariants. |
+| [docs/00-glossary.md](docs/00-glossary.md) | Terms used across the docs. |
+| [docs/01-reactive-core.md](docs/01-reactive-core.md) | Node/edge model, height heap, read/write path, effects. |
+| [docs/02-ownership-and-lifetimes.md](docs/02-ownership-and-lifetimes.md) | Arena, handles, owners, cleanup, reclamation. |
+| [docs/03-store-layer.md](docs/03-store-layer.md) | Derived stores, field paths, patches, keyed collections. |
+| [docs/04-async-model.md](docs/04-async-model.md) | Spawner, flights, holds, boundaries, `isPending`. |
+| [docs/05-runtime-and-frame-scheduler.md](docs/05-runtime-and-frame-scheduler.md) | Runtime ownership, frame phases, wakeups, idle. |
+| [docs/06-renderer-contract.md](docs/06-renderer-contract.md) | Universal traits, capabilities, conformance. |
+| [docs/07-retained-renderer.md](docs/07-retained-renderer.md) | Retained tree, bindings, lists, paint cache. |
+| [docs/08-layout-and-text.md](docs/08-layout-and-text.md) | Taffy, dirty layout, text shaping and caching. |
+| [docs/09-input-focus-accessibility.md](docs/09-input-focus-accessibility.md) | Hit testing, dispatch, focus, IME, AccessKit. |
+| [docs/10-macros-and-authoring.md](docs/10-macros-and-authoring.md) | `view!`, components, props, control flow, diagnostics. |
+| [docs/11-testing-and-performance.md](docs/11-testing-and-performance.md) | Test pyramid, conformance, fuzzers, benchmarks. |
+| [docs/12-decisions-and-risks.md](docs/12-decisions-and-risks.md) | ADR index, risk detail, open questions. |
+
+---
+
+## 11. Definition of done for v1
+
+- The demo app exercises state, async navigation, a 10k-row list, text input,
+  keyboard navigation, and accessibility.
+- The reactive core passes the ported fundamental and derived rule suites for the
+  v1 subset, plus the fuzz corpus.
+- The renderer passes incremental-vs-full scene equivalence, leak checks, and
+  the randomized tree fuzzer.
+- Idle CPU and frame budgets in §8 are met on the reference machine.
+- A third-party renderer can be implemented from `docs/06-renderer-contract.md`
+  alone and passes the null-renderer conformance suite.
+- Every `unsafe` block has a safety comment and a Miri-covered test.
