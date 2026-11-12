@@ -362,6 +362,21 @@ Why up: a child's change affects the parent's paint range (the parent replays
 children), and possibly its layout. Propagating up is cheap (path to root) and
 lets each phase start from a small root set.
 
+### 7.1 Memory profile
+
+View nodes are the dominant framework memory term (roughly 0.7–1.1 KB each
+before optimization). The resolved `Style` is the largest field. Two levers:
+
+- **Intern resolved styles.** Most nodes share a small set of styles; store a
+  `StyleId` into a global table instead of a full struct per node. This can cut
+  the per-node cost by 30–50%.
+- **Avoid inline bindings for static nodes.** Use a boxed slice or an
+  `Option<Box<[Binding]>>`; a node with no bindings should not pay for four
+  inline slots.
+
+Measure before changing the representation; the node is on the hot path and a
+smaller struct is not automatically faster if it adds an indirection.
+
 ## 8. Paint cache and scene replay
 
 Each node stores the range of primitives it emitted in the previous scene:

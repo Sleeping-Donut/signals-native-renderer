@@ -278,6 +278,72 @@ Measured on a 2021-class laptop, release build, 1600×1000 window.
 | Frame time, demo | < 8 ms p95 | At 60 Hz. |
 | Allocations per paint-only frame | 0 in steady state | Arena reuse; no per-frame element tree. |
 
+### 8.1 Resource model (estimates, not measurements)
+
+These are the expected ranges for the architecture as specified, before the
+optimizations listed at the end. They are ±30–50%; GPU driver memory is the
+largest platform-specific term and is often outside our control.
+
+**Framework heap.** A useful first-order model:
+
+```
+heap ≈ 2 MB
+     + graph_nodes        × (180–250 B + value size)
+     + edges              × 56 B
+     + owners             × (120–180 B)
+     + view_nodes         × (700–1100 B)
+     + extra bindings     × 30 B          # first four are inline
+     + taffy_nodes        × (200–400 B)
+     + scene_primitives   × (64–128 B)    # double-buffered
+     + text_cache                         # bounded: 10–32 MB
+```
+
+The view-node term dominates because it includes a resolved `Style`, layout
+state, paint cache, and up to four inline bindings. A non-virtualized row with
+six elements costs roughly **6–12 KB** all-in (view nodes, graph nodes, taffy
+nodes, bindings, scene). That is the number to remember for list sizing.
+
+**Process RSS.** Add the platform baseline:
+
+| Scenario | Framework heap | Process RSS (incl. GPU/driver/fonts) |
+|---|---:|---:|
+| Empty window | < 2 MB | 40–90 MB |
+| Small app (1 screen, < 1k view nodes) | 1–4 MB | 60–120 MB |
+| 10k-row table, not virtualized | 60–120 MB | 150–300 MB |
+| 100k-row table, virtualized | 10–40 MB + data | 100–250 MB |
+| 100k-row table, not virtualized | 0.6–1.2 GB | 0.8–1.5 GB |
+
+The base is dominated by the GPU driver, swapchain, and font/text system, not by
+the reactive core. An empty window should not be blamed on the framework.
+
+**GPU memory.** Roughly:
+
+```
+driver + device       20–60 MB
+pipelines/shaders      5–15 MB
+swapchain              2–3 × width × height × 4 B
+glyph atlas + buffers  2–20 MB
+```
+
+At 1600×1000 the swapchain is 13–19 MB; at 4K it is 66–100 MB. On unified-memory
+platforms this appears in RSS; on discrete GPUs it is VRAM.
+
+**CPU.** Idle app CPU is 0.0–0.1% (the host event loop may show 0.1–0.3%). A
+small interaction costs 0.5–3 ms end-to-end; a paint-only frame 0.3–2 ms; a
+10k-node layout 10–20 ms. Signal read is 10–30 ns, a write with one dependent
+50–200 ns, a binding apply 0.2–1 µs. User code dominates normal actions.
+
+**GPU activity.** Idle: zero draw calls and no app GPU work. v1 presents the
+whole scene on any dirty frame, so a small change redraws the full window; that
+is avoidable overdraw, not idle load. Damage regions/scissor are a v2
+optimization. Text atlases upload only new glyphs. Continuous animation or a
+blinking caret wakes frames deliberately; without them the app is GPU-idle.
+
+**Levers if the numbers are too high.** In order of impact: virtualize long
+lists (bounds view nodes); intern/share resolved styles (`Arc<ResolvedStyle>` or
+a `StyleId` table) to shrink view nodes; use shallow stores for record-granularity
+data; reduce inline bindings; add damage regions for GPU overdraw.
+
 ---
 
 ## 9. Open questions
