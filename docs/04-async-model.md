@@ -185,6 +185,25 @@ signal whose compute happens to be async**, and it returns the same
 a read-only async derivation, use `Memo::new_async` instead; there is no write
 half.
 
+**Rejected: one `SignalFactory<T>` trait for all constructors.** A trait with
+impls for `T`, `FnOnce() -> T`, and `FnOnce() -> Future<Output = T>` cannot be
+written as stated:
+
+- the impls overlap (`T` can itself be a closure or a future);
+- `FnOnce` consumes the factory, so it cannot recompute when dependencies
+  change; a reactive compute must be `FnMut(&Cx, Option<&T>)` (or `FnMut(&Cx)`
+  for async);
+- it conflates a plain source, a derived writable signal, and an async derived
+  signal, which have different write/recompute/pending semantics;
+- it has no `&Cx`, owner, flight, cancellation, or equality, so it cannot
+  allocate or drive a real node;
+- the async branch needs `LocalBoxFuture`/`ScopedFuture` and a host executor,
+  not a bare `tokio::spawn`.
+
+A wrapper (`Value(v)`, `Sync(f)`, `Async(f)`) or a `Compute` enum can make one
+call shape work, but the wrapper is still visible and the constructors are still
+semantically distinct. Keep the explicit constructors.
+
 ```rust
 pub struct Memo<T> { /* NodeId */ }
 pub struct ReadSignal<T> { /* NodeId + read capability */ }
