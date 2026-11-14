@@ -340,6 +340,35 @@ descriptions and can be implemented from scratch.
 
 ---
 
+### ADR-014: Async is a compute mode, not a node type
+
+**Status:** Accepted. Supersedes the first-draft `AsyncMemo<T>` split.
+
+**Context.** The first pass separated `Memo<T>` and `AsyncMemo<T>`. That is
+colored at the type level: a helper taking `Memo<T>` cannot accept an async memo,
+and it loses Solid's writable derived signal shape (`createSignal(fn)`), which is
+a signal with a compute function, not a read-only memo.
+
+**Decision.** Async is a property of the compute function:
+
+- `Signal<T>` is writable: a plain source, a derived writable signal, or an
+  async derived writable signal.
+- `Memo<T>` is read-only derived; its compute may be sync or async.
+- Both use `get`/`try_get`/`isPending`/`latest`. A plain signal never suspends.
+- Async state is cold (`Option<Box<AsyncState>>`); sync nodes do not pay for it.
+- Constructors differ (`Memo::new` / `Memo::new_async`,
+  `Signal::new_derived` / `Signal::new_derived_async`) because Rust has no
+  overloading, but they return the same `Memo<T>`/`Signal<T>`. A helper taking
+  `Memo<T>` does not care how it was built.
+- `AsyncMemo<T>` is not a distinct type; at most a readability alias.
+
+**Consequences.** Writable derived signals are preserved. A derived node can be
+async without changing its consumer's type. The sync fast path stays clean via
+cold async state. The read API remains colorless (`get`) with an explicit
+`try_get` fallback.
+
+---
+
 ## Part B — Risk detail
 
 The PLAN's risk table is the summary. This section states each risk's warning

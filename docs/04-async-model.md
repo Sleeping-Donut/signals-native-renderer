@@ -142,27 +142,45 @@ Rules:
   the UI thread, user code inside it must not touch the graph except by staging
   writes. The landing is applied at the next pump, never from inside the future.
 
-### 3.4 The async memo API and read style
+### 3.4 Async is a compute mode, not a node type
 
-Why a separate `AsyncMemo<T>` instead of overloading `Memo::new`? Rust has no
-function overloading, and a trait-based constructor (`IntoComputation<T>` with
-impls for `T` and `Future<Output = T>`) would only hide the constructor. The
-types still need different state and read semantics:
+The first draft made `AsyncMemo<T>` a separate type. That is colored: it says a
+memo is either sync or async, and a helper that takes `Memo<T>` cannot accept the
+async one. It also loses Solid's writable derived signal shape, because it
+separates "async" from "signal".
 
-- a sync memo always has a value; an async memo can be loading, pending, held,
-  errored, or ready;
-- an async memo carries a flight generation, cancellation, a staged landing, and
-  join/hold behavior; a sync memo should not pay for that cold state;
-- reads differ: `Memo<T>::get` is infallible, while `AsyncMemo<T>::try_get`
-  returns `NotReady` and `get` may suspend.
+The correct model is orthogonal:
 
-One type would either force every memo into an async-shaped API or need an enum/
-`dyn` dispatch on every read. `Memo` and `AsyncMemo` keep the sync hot path clean
-and make the read contract explicit. `Signal` is always synchronous; it never
-needs a flight.
+- **`Signal<T>`** — writable. It is a plain source, a derived writable signal
+  (`createSignal(fn)` in Solid), or an async derived writable signal. A plain
+  source has no compute and is always ready.
+- **`Memo<T>`** — read-only derived. Its compute may be synchronous or
+  asynchronous.
+- **Async is a property of the compute function**, not the node kind. Any
+  derived signal or memo can be async.
+- Both use the same read API (`get`/`try_get`); both can be pending. A plain
+  signal simply never is.
+- The async state is cold: an optional `AsyncState` on the node. Sync nodes never
+  allocate or touch it; the read fast path checks one flag/niche.
+
+Constructors differ because Rust has no overloading, but they return the same
+types:
 
 ```rust
-pub struct AsyncMemo<T> { /* NodeId */ }
+Memo::new(cx, |cx, prev| ...)          // sync
+Memo::new_async(cx, |cx| ...)          // async
+Signal::new(cx, value)                 // plain source
+Signal::new_derived(cx, |cx, prev| ...)// writable derived
+Signal::new_derived_async(cx, |cx| ...)// writable derived, async
+```
+
+A helper taking `Memo<T>` does not care how it was built. `AsyncMemo<T>` is not a
+distinct type or read contract; keep it, if at all, as a type alias for
+readability.
+
+```rust
+pub struct Memo<T> { /* NodeId */ }
+pub struct Signal<T> { /* NodeId */ }
 
 pub enum ReadError {
     NotReady,
@@ -176,8 +194,13 @@ pub enum MaybeReady<T> {
     Failed(Arc<Error>),
 }
 
-impl<T: 'static> AsyncMemo<T> {
+impl<T: 'static> Memo<T> {
     pub fn new(
+        cx: &Cx,
+        compute: impl FnMut(&Cx, Option<&T>) -> T + 'static,
+    ) -> Self;
+
+    pub fn new_async(
         cx: &Cx,
         compute: impl FnMut(&Cx) -> LocalBoxFuture<'static, Result<T, Error>> + 'static,
     ) -> Self;
@@ -186,14 +209,37 @@ impl<T: 'static> AsyncMemo<T> {
     pub fn try_get(&self, cx: &Cx) -> Result<T, ReadError>;
 
     /// Colorless inside a tracked computation: on NotReady, suspends the
-    /// current computation and lets the scheduler hold/replay it. Outside a
-    /// tracked computation this is an error.
+    /// current computation and lets the scheduler hold/replay it.
     pub fn get(&self, cx: &Cx) -> T;
 
     /// Display fallback for code that explicitly wants a value now.
     pub fn get_or(&self, cx: &Cx, default: T) -> T;
 }
+
+impl<T: 'static> Signal<T> {
+    pub fn new(cx: &Cx, value: T) -> Self;
+    pub fn new_derived(
+        cx: &Cx,
+        compute: impl FnMut(&Cx, Option<&T>) -> T + 'static,
+    ) -> Self;
+    pub fn new_derived_async(
+        cx: &Cx,
+        compute: impl FnMut(&Cx) -> LocalBoxFuture<'static, Result<T, Error>> + 'static,
+    ) -> Self;
+
+    pub fn get(&self, cx: &Cx) -> T;
+    pub fn try_get(&self, cx: &Cx) -> Result<T, ReadError>;
+    pub fn set(&self, cx: &Cx, value: T);
+}
 ```
+
+A plain `Signal::new` never suspends and `try_get` always returns `Ok`. A
+derived writable signal may suspend if its compute is async; writes set the
+`prev` value for the next compute, matching Solid's function-form signal.
+
+Both `Signal<T>` and `Memo<T>` implement a common `Read<T>` trait (`get`,
+`try_get`, `with`). Generic code can accept `impl Read<T>` and remain unaware of
+writable-vs-derived and sync-vs-async; only the constructor knows the difference.
 
 The choices, and why the hybrid wins:
 
@@ -276,7 +322,7 @@ fn greeting(user: &User) -> String {
 let text = Memo::new(cx, move |cx| greeting(&user.get(cx)));
 
 // 4. Explicit at a boundary: no unwind, caller chooses the placeholder.
-fn profile_or_skeleton(cx: &Cx, user: AsyncMemo<User>) -> View {
+fn profile_or_skeleton(cx: &Cx, user: Memo<User>) -> View {
     match user.try_get(cx) {
         Ok(user) => view! { <Profile user=user /> },
         Err(ReadError::NotReady) => view! { <Skeleton /> },
@@ -286,7 +332,7 @@ fn profile_or_skeleton(cx: &Cx, user: AsyncMemo<User>) -> View {
 }
 
 // 5. A library API that is already fallible uses try_get and ?.
-fn header_text(cx: &Cx, user: AsyncMemo<User>) -> Result<String, AppError> {
+fn header_text(cx: &Cx, user: Memo<User>) -> Result<String, AppError> {
     let user = user.try_get(cx).map_err(AppError::from)?;
     Ok(greeting(&user))
 }
@@ -322,7 +368,7 @@ fn profile_ui(user: &User, id: UserId, show_details: Signal<bool>) -> View {
         <div class="profile">
             <h1>{id}</h1>
             <p>{user.name.clone()}</p>
-            <button on_click=move |_cx, _| show_details.update(|v| *v = !*v)>
+            <button on_click=move |cx, _| show_details.update(cx, |v| *v = !*v)>
                 "Details"
             </button>
             <Show when=move || show_details.get(cx)>
@@ -340,7 +386,7 @@ fn profile_ui(user: &User, id: UserId, show_details: Signal<bool>) -> View {
 fn ProfileCard(props: ProfileCardProps) -> impl View {
     let show_details = Signal::new(cx, false);
 
-    let user = AsyncMemo::new(cx, {
+    let user = Memo::new_async(cx, {
         let user_id = props.user_id;
         move |cx| {
             let id = user_id.get(cx);
@@ -373,7 +419,7 @@ lands, the slot renders the profile.
 fn ProfileCard(props: ProfileCardProps) -> impl View {
     let show_details = Signal::new(cx, false);
 
-    let user = AsyncMemo::new(cx, {
+    let user = Memo::new_async(cx, {
         let user_id = props.user_id;
         move |cx| {
             let id = user_id.get(cx);
@@ -418,7 +464,7 @@ native generic box; the `view!` `<div>` tag lowers to it. There is no DOM here.
 fn profile_card(cx: &mut Cx, props: ProfileCardProps) -> ViewNodeId {
     let show_details = Signal::new(cx, false);
 
-    let user = AsyncMemo::new(cx, {
+    let user = Memo::new_async(cx, {
         let user_id = props.user_id;
         move |cx| {
             let id = user_id.get(cx);
@@ -500,7 +546,7 @@ synchronous prefix would create dependencies. Leptos uses exactly this wrapper
 commands, not derivations, and should not re-run because a signal they read
 changed.
 
-A `Resource<T>` convenience wraps `AsyncMemo<T>` with a `set_reload` trigger and
+A `Resource<T>` convenience wraps `Memo<T>` with a `set_reload` trigger and
 a `refresh()` method.
 
 ### 3.5 Cancellation and background threads
@@ -531,7 +577,7 @@ impl FlightCtx {
 Typical pattern:
 
 ```rust
-AsyncMemo::new(cx, |cx| {
+Memo::new_async(cx, |cx| {
     let ctx = cx.flight_ctx();
     let bg = cx.background_spawner();       // Clone + 'static handle
     async move {
@@ -911,7 +957,7 @@ These are direct translations of `F-4`/`F-5`/`F-9`.
 ### 7.1 `isPending`
 
 ```rust
-pub fn is_pending<T>(cx: &Cx, memo: AsyncMemo<T>) -> bool
+pub fn is_pending<T>(cx: &Cx, memo: Memo<T>) -> bool
 ```
 
 Returns true iff a **new question** has no committed answer:
@@ -931,7 +977,7 @@ Returns false when:
 ### 7.2 `latest` (v2)
 
 ```rust
-pub fn latest<T: Clone>(cx: &Cx, memo: AsyncMemo<T>) -> Result<T, LatestError>
+pub fn latest<T: Clone>(cx: &Cx, memo: Memo<T>) -> Result<T, LatestError>
 ```
 
 - If a value is staged (held), return the staged value.
@@ -1083,5 +1129,5 @@ much machinery is involved; it is not a weekend addition.
 5. **Merging transactions.** Sharing a reader is our merge criterion. Is sharing
    a *node* enough, or does that over-merge independent widgets?
 6. **Re-ask detection.** We use `refresh()` as the only quiet path. Should an
-   `AsyncMemo` that recomputes with equal tracked inputs be automatically quiet?
+   `Memo` that recomputes with equal tracked inputs be automatically quiet?
    (Solid infers this from the question; we could hash dependency values.)

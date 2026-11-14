@@ -49,7 +49,7 @@ For users, the syntax looks similar; the semantics are more like Solid's compile
 output than its component function.
 
 **Conventions in this document.** All reactive operations take `&Cx`:
-`Signal::new(cx, v)`, `Memo::new(cx, |cx| ...)`, `AsyncMemo::new(cx, ...)`,
+`Signal::new(cx, v)`, `Memo::new(cx, |cx| ...)`, `Memo::new_async(cx, ...)`,
 `signal.get(cx)`, `signal.set(cx, v)`. There is no global graph; the context
 resolves the runtime and owner. Code sketches sometimes omit `cx` where the
 surrounding `view!` macro supplies it, but the real API takes it.

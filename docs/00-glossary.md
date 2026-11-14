@@ -11,7 +11,12 @@ effect. Identified by `NodeId`.
 
 **Memo** — a derived node. Its value is computed from tracked reads and cached
 until a dependency changes. It is a subscriber to its dependencies and a source
-to its own subscribers.
+to its own subscribers. A memo may be sync or async; async is a compute mode, not
+a different node type.
+
+**Async compute** — a compute function that returns a future. Any derived signal
+or memo may use one; a plain writable signal does not. Async nodes carry cold
+flight/pending state; sync nodes do not.
 
 **Effect** — a node with a *compute* half (tracked reads only) and an *apply*
 half (side effects). The compute half runs in the graph; the apply half runs

@@ -358,13 +358,13 @@ impl<T: Patch + Clone> Projection<T> {
 - The derive runs as a memo computation; writes to the draft are applied to a
   shadow store at the end of the pass.
 - A keyed return value is reconciled with `Patch` semantics.
-- Async derives are `AsyncMemo<Store<T>>` with a seed; reads before the first
-  answer see the seed or are pending, depending on options.
+- Async derives are `Memo::new_async` with a seed, returning `Memo<Store<T>>`;
+  reads before the first answer see the seed or are pending, depending on options.
 - Do not catch `NotReady` inside a derive: it is how the projection learns to
   retry (Solid #3073; the same rule applies here).
 
 This is deferred to v2 because it depends on the full async hold model. The
-store layer in v1 supports `AsyncMemo<Vec<T>>` and explicit `LoadingBoundary` at
+store layer in v1 supports `Memo<Vec<T>>` and explicit `LoadingBoundary` at
 the view level, which covers most list/loading cases.
 
 ## 7. Interaction with the graph
@@ -481,4 +481,5 @@ struct with a handful of fields does not need a store.
    and rebuild bindings.
 5. **`Patch` for arbitrary types.** Require `PartialEq`; provide a manual
    `Patch` trait for types that cannot derive it.
-6. **Async projections.** v2, with the hold model. v1 uses `AsyncMemo<Vec<T>>`.
+6. **Async projections.** v2, with the hold model. v1 uses async memos over
+   `Vec<T>`.

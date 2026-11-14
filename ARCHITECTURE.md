@@ -403,7 +403,7 @@ pub trait BackgroundSpawner {
 }
 ```
 
-- `spawn_local` is for UI-affine futures (async memos). It must not block.
+- `spawn_local` is for UI-affine futures (async derived nodes). It must not block.
 - `BackgroundSpawner` is for `Send` work. The result returns through a
   continuation; the background future never touches a graph handle.
 - If the host provides no background spawner, user code may use its own executor

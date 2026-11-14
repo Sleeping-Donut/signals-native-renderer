@@ -49,8 +49,8 @@ hidden background executor owned by the framework.
 - Reactive core with signals, memos, split effects, render effects, batching, and
   ownership.
 - Generational arena and opaque `Copy` handles.
-- Async memos with flight generations, held values, basic `isPending`, and
-  frame-level holds.
+- Async compute mode for derived signals and memos, with flight generations,
+  held values, basic `isPending`, and frame-level holds.
 - `LoadingBoundary` and `ErrorBoundary`, with the subset of Solid's hold model
   described in [04-async-model.md](docs/04-async-model.md): first load, held
   navigation, disarmed forwarding, and errors. A `key`-triggered boundary remount
@@ -174,10 +174,10 @@ context, owners, cleanup, disposal.
 ### Phase 2 — Async and holds (3–5 weeks)
 
 **Build:** `Spawner`/`BackgroundSpawner` traits, continuation queue, flight
-generations, async memos, basic `isPending`, `LoadingBoundary` (first load,
-disarmed forwarding, `key` remount), `ErrorBoundary`, staged holds, reader classes
-(derive / display / observe), deterministic virtual clock. Actions, `latest`,
-`affects`, and full `on` are v2.
+generations, async compute mode for derived signals and memos, basic `isPending`,
+`LoadingBoundary` (first load, disarmed forwarding, `key` remount),
+`ErrorBoundary`, staged holds, reader classes (derive / display / observe),
+deterministic virtual clock. Actions, `latest`, `affects`, and full `on` are v2.
 
 **Exit:**
 - A navigation test: click → page B data loads → old page stays on screen →

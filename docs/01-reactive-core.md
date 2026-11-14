@@ -80,20 +80,42 @@ pub enum DirtyState { Clean, Check, Dirty }
 Node kinds:
 
 ```rust
+pub enum Compute<T> {
+    Sync(Box<dyn FnMut(&Cx, Option<&T>) -> T>),
+    Async(Box<dyn FnMut(&Cx) -> LocalBoxFuture<'static, Result<T, Error>>>),
+}
+
 pub enum NodeKind {
-    Signal,
+    Signal {
+        // None for a plain writable source; Some for a derived writable signal.
+        compute: Option<Compute<Box<dyn Any>>>,
+    },
     Memo {
-        compute: Box<dyn FnMut(Option<&dyn Any>) -> Box<dyn Any>>,
+        compute: Compute<Box<dyn Any>>,
         equals: Equals,
     },
     Effect {
-        compute: Box<dyn FnMut() -> Box<dyn Any>>,
-        apply: Box<dyn FnMut(&dyn Any)>,
+        compute: Box<dyn FnMut(&Cx) -> Box<dyn Any>>,
+        apply: Box<dyn FnMut(&Cx, &dyn Any)>,
     },
     RenderEffect {
-        apply: Box<dyn FnMut(&dyn Any)>,
+        apply: Box<dyn FnMut(&Cx, &dyn Any)>,
     },
 }
+```
+
+Async is a **compute mode**, not a node kind. A `Signal` can be a plain source,
+a derived writable signal, or an async derived writable signal; a `Memo` can be
+sync or async. Nodes with an async compute have cold `AsyncState` (flight,
+cancellation, staged landing); sync nodes never allocate or touch it. This keeps
+the sync fast path clean while allowing any derived node to be async:
+
+```rust
+Memo::new(cx, |cx, prev| ...)          // sync derived
+Memo::new_async(cx, |cx| ...)          // async derived
+Signal::new(cx, value)                 // plain source
+Signal::new_derived(cx, |cx, prev| ...)// writable derived
+Signal::new_derived_async(cx, |cx| ...)// writable derived, async
 ```
 
 An **effect** in the graph sense has both halves. A **render effect** has only
@@ -494,14 +516,17 @@ the error boundary / root error hook handles it (Solid's A3 rule).
 
 ```rust
 // Sources
-Signal::new(cx, v) -> Signal<T>
+Signal::new(cx, v) -> Signal<T>                 // plain source
+Signal::new_derived(cx, |cx, prev| ...) -> Signal<T>       // writable derived
+Signal::new_derived_async(cx, |cx| ...) -> Signal<T>       // writable derived, async
 Signal::new_unchecked(cx, v) -> Signal<T>
-signal.get(cx) / signal.with(cx, |v| ...) / signal.set(cx, v) / signal.update(cx, |v| ...)
+signal.get(cx) / signal.try_get(cx) / signal.set(cx, v) / signal.update(cx, |v| ...)
 
 // Derivations
-Memo::new(cx, |cx| ...) -> Memo<T>
-Memo::new_lazy(cx, |cx| ...) -> Memo<T>
-memo.get(cx) / memo.with(cx, |v| ...)
+Memo::new(cx, |cx, prev| ...) -> Memo<T>         // sync
+Memo::new_async(cx, |cx| ...) -> Memo<T>         // async
+Memo::new_lazy(cx, |cx, prev| ...) -> Memo<T>
+memo.get(cx) / memo.try_get(cx) / memo.with(cx, |v| ...)
 
 // Effects
 effect(cx, compute, apply) -> EffectHandle
@@ -519,6 +544,11 @@ Every reactive operation takes `&Cx`. The context resolves the runtime and
 current owner; there is no global graph. The `view!` macro has `cx` in scope, so
 application code rarely writes it. `Prop::Static` needs no `cx`. Helper
 functions take plain values, so they do not thread `cx` through.
+
+`Signal` and `Memo` are differentiated by write access (writable vs read-only),
+not by sync/async. Async is a compute mode: `Memo::new_async` and
+`Signal::new_derived_async` return the same `Memo<T>`/`Signal<T>` as their sync
+counterparts. `AsyncMemo<T>` is not a separate type.
 
 `Memo::new_lazy` defers the first computation until first read and disposes when
 unobserved, matching Solid's `lazy` option. This is useful for expensive
