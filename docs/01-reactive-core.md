@@ -520,13 +520,15 @@ Signal::new(cx, v) -> Signal<T>                 // plain source
 Signal::new_derived(cx, |cx, prev| ...) -> Signal<T>       // writable derived
 Signal::new_derived_async(cx, |cx| ...) -> Signal<T>       // writable derived, async
 Signal::new_unchecked(cx, v) -> Signal<T>
-signal.get(cx) / signal.try_read(cx) / signal.set(cx, v) / signal.update(cx, |v| ...)
+signal.get(cx) / signal.get_or(cx, default) / signal.is_pending(cx)
+signal.set(cx, v) / signal.update(cx, |v| ...)
 
 // Derivations
 Memo::new(cx, |cx, prev| ...) -> Memo<T>         // sync
 Memo::new_async(cx, |cx| ...) -> Memo<T>         // async
 Memo::new_lazy(cx, |cx, prev| ...) -> Memo<T>
-memo.get(cx) / memo.try_read(cx) / memo.with(cx, |v| ...)
+memo.get(cx) / memo.get_or(cx, default) / memo.is_pending(cx)
+memo.with(cx, |v| ...)
 
 // Effects
 effect(cx, compute, apply) -> EffectHandle

@@ -374,11 +374,13 @@ section docs.
    `Reactive(Signal<T>)`, `Derived(Memo<T>)`). No bare-`T` props for values that
    may change; static props allocate no node. See
    [docs/10-macros-and-authoring.md](docs/10-macros-and-authoring.md) §3.2.
-3. **Async read type.** `try_read() -> Result<T, ReadError>` is the explicit base;
-   `get() -> T` is the colorless mode inside tracked computations, implemented
-   by a private `NotReady` suspension caught at the computation boundary. `Option<T>`
-   is rejected because it conflates absence and readiness. `panic = "abort"`
-   builds must use the explicit API. Implementation paths are in
+3. **Async read type.** `get() -> T` is the only public value read; inside a
+   tracked computation it suspends on `NotReady`, implemented by a private token
+   caught at the computation boundary. `get_or(default)` is the explicit
+   non-suspending fallback and `is_pending` is the verdict. There is no public
+   `try`/`Result` read; `Option`/`Result` are rejected for the public shape
+   because they color every helper. `panic = "abort"` builds use `get_or`/
+   explicit state or an internal fallback. Implementation paths are in
    [docs/04-async-model.md](docs/04-async-model.md) §3.6.
 4. **Boundary scope.** v1 implements first-load, held navigation, disarmed
    forwarding, errors, and a `key` that remounts the boundary. Full `on` re-arm

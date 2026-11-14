@@ -354,7 +354,7 @@ a signal with a compute function, not a read-only memo.
 - `Signal<T>` is writable: a plain source, a derived writable signal, or an
   async derived writable signal.
 - `Memo<T>` is read-only derived; its compute may be sync or async.
-- Both use `get`/`try_read`/`isPending`/`latest`. A plain signal never suspends.
+- Both use `get`/`get_or`/`is_pending`/`latest`. A plain signal never suspends.
 - Async state is cold (`Option<Box<AsyncState>>`); sync nodes do not pay for it.
 - Constructors differ (`Memo::new` / `Memo::new_async`,
   `Signal::new_derived` / `Signal::new_derived_async`) because Rust has no
@@ -368,8 +368,8 @@ a signal with a compute function, not a read-only memo.
 
 **Consequences.** Writable derived signals are preserved. A derived node can be
 async without changing its consumer's type. The sync fast path stays clean via
-cold async state. The read API remains colorless (`get`) with an explicit
-`try_read` fallback.
+cold async state. The read API remains colorless (`get`) with a `get_or` fallback
+and an `is_pending` verdict.
 
 ---
 
@@ -517,23 +517,26 @@ or a node per static prop.
 
 ### Q3. Async read style (resolved for v1)
 
-**Decision:** hybrid.
+**Decision:** `get()` is the public read.
 
-- `try_read() -> Result<T, ReadError>` is the fundamental, explicit API.
-- `get() -> T` is the colorless API inside a tracked computation. On
-  `NotReady`, it suspends via a private unwind caught at the computation
-  boundary; the scheduler holds/replays the reader.
-- `Option<T>` is rejected: it conflates "absent" with "not ready", nests as
-  `Option<Option<T>>`, and has no error channel.
-- A `MaybeReady<T>` enum is a possible ergonomic wrapper over `Result`, not a
-  third mechanism.
-- `panic = "abort"` builds cannot use `get()`; they use `try_read()` and `?`.
+- `get() -> T` is the only public value read. Inside a tracked computation, a
+  not-ready value suspends via a private `NotReady` token caught at the
+  computation boundary; the scheduler holds/replays the reader.
+- `get_or(cx, default) -> T` is the explicit non-suspending fallback for
+  imperative code and snapshots. It never returns `Result`.
+- `is_pending(cx) -> bool` is the verdict; it never suspends.
+- There is no public `try_get`, `try_read`, or `try`. `try` is a reserved Rust
+  keyword, and a public `Result` read colors every helper.
+- `Option<T>`/`Result<T, ReadError>` are rejected as the public shape: they
+  conflate pending/error/absence and force propagation through pure helpers.
+- `panic = "abort"` builds cannot use the unwind path; they use
+  `get_or`/explicit state, or an internal runtime fallback, not a public API.
 - User code must not catch the private suspension token; `D-42` still applies.
 
 This is the Rust translation of Solid throwing `NotReadyError`: the throw is a
-graph control token, not an application error, and the explicit API remains
-available. Implementation paths (private panic payload, explicit `?`, and the
-rejected alternatives) are in [04-async-model.md](04-async-model.md) §3.6.
+graph control token, not an application error. Implementation paths (private
+panic payload and the internal `panic = "abort"` fallback) are in
+[04-async-model.md](04-async-model.md) §3.6.
 
 ### Q4. Boundary content lifetime and `on` (resolved for v1)
 

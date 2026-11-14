@@ -158,8 +158,8 @@ The correct model is orthogonal:
   asynchronous.
 - **Async is a property of the compute function**, not the node kind. Any
   derived signal or memo can be async.
-- Both use the same read API (`get`/`try_read`); both can be pending. A plain
-  signal simply never is.
+- Both use the same public read API (`get`, `get_or`, `is_pending`); both can be
+  pending. A plain signal simply never is.
 - The async state is cold: an optional `AsyncState` on the node. Sync nodes never
   allocate or touch it; the read fast path checks one flag/niche.
 
@@ -182,18 +182,6 @@ readability.
 pub struct Memo<T> { /* NodeId */ }
 pub struct Signal<T> { /* NodeId */ }
 
-pub enum ReadError {
-    NotReady,
-    Disposed,
-    Error(Arc<Error>),
-}
-
-pub enum MaybeReady<T> {
-    Ready(T),
-    Pending,
-    Failed(Arc<Error>),
-}
-
 impl<T: 'static> Memo<T> {
     pub fn new(
         cx: &Cx,
@@ -205,15 +193,20 @@ impl<T: 'static> Memo<T> {
         compute: impl FnMut(&Cx) -> LocalBoxFuture<'static, Result<T, Error>> + 'static,
     ) -> Self;
 
-    /// Explicit, safe, no unwinding. The base API.
-    pub fn try_read(&self, cx: &Cx) -> Result<T, ReadError>;
-
-    /// Colorless inside a tracked computation: on NotReady, suspends the
-    /// current computation and lets the scheduler hold/replay it.
+    /// Read the value. Inside a tracked computation, a not-ready value suspends
+    /// the computation; the scheduler holds/replays it. Outside a tracked
+    /// computation, use `get_or` or `is_pending`; a not-ready `get` is a
+    /// diagnostic, not a value.
     pub fn get(&self, cx: &Cx) -> T;
 
-    /// Display fallback for code that explicitly wants a value now.
+    /// Never suspends. Returns `default` when the value is not ready, errored,
+    /// or disposed.
     pub fn get_or(&self, cx: &Cx, default: T) -> T;
+
+    /// Verdict only: is a new question still in flight or staged?
+    pub fn is_pending(&self, cx: &Cx) -> bool;
+
+    pub fn with<R>(&self, cx: &Cx, f: impl FnOnce(&T) -> R) -> R;
 }
 
 impl<T: 'static> Signal<T> {
@@ -228,47 +221,41 @@ impl<T: 'static> Signal<T> {
     ) -> Self;
 
     pub fn get(&self, cx: &Cx) -> T;
-    pub fn try_read(&self, cx: &Cx) -> Result<T, ReadError>;
+    pub fn get_or(&self, cx: &Cx, default: T) -> T;
+    pub fn is_pending(&self, cx: &Cx) -> bool;
     pub fn set(&self, cx: &Cx, value: T);
+    pub fn update(&self, cx: &Cx, f: impl FnOnce(&mut T));
 }
 ```
 
-A plain `Signal::new` never suspends and `try_read` always returns `Ok`. A
-derived writable signal may suspend if its compute is async; writes set the
-`prev` value for the next compute, matching Solid's function-form signal.
+A plain `Signal::new` never suspends and `get` always returns a value. A derived
+writable signal may suspend if its compute is async; writes set the `prev` value
+for the next compute, matching Solid's function-form signal.
 
-**Rust naming note.** `try` is a reserved keyword in Rust 2018+ (try blocks), so
-an inherent method cannot be named `try`. The call is `try_read(cx)`; if you
-insist on the literal name, it must be spelled `r#try(cx)`, which is noisier at
-every call site. `try_read` is the recommended explicit API.
+**`get` is the public read.** There is no `try_get`, `try_read`, or `try` method:
 
-Both `Signal<T>` and `Memo<T>` implement a common `Read<T>` trait (`get`,
-`try_read`, `with`). Generic code can accept `impl Read<T>` and remain unaware of
-writable-vs-derived and sync-vs-async; only the constructor knows the difference.
+- `try` is a reserved Rust keyword; an inherent method cannot use that name.
+- More importantly, a public `Result` read colors every helper. A function that
+  reads a signal would have to return `Result<T, ReadError>` or unwrap, and
+  `ReadError` would leak through layers that have nothing to do with loading.
+- The scheduler uses a private `NotReady` control token internally. It is not a
+  public error and should never be converted into one.
+- `get_or` is the explicit non-suspending fallback. `is_pending` is the verdict.
+  Boundaries handle loading and error UI; helpers take plain values.
 
-**Constructor ergonomics.** The 2/3 explicit constructors are deliberate; a
-normalizing `new` is not worth it in the core API:
+**Coloring and composition.** If every read returned `Result`, then every
+function that reads a signal either returns `Result<T, ReadError>` or unwraps.
+`?` flattens the types but not the signatures: `fn label(user: &User) -> String`
+becomes `fn label(user: &User) -> Result<String, ReadError>`. Do that through five
+layers and the code is colored. `get()` avoids that: it suspends at the
+computation boundary; a helper stays a plain function.
 
-- Rust cannot cleanly accept both `FnMut() -> T` and `FnMut() -> Future<T>` in one
-  trait impl. The blanket impls overlap (`T = Future<…>`), so you need a wrapper
-  such as `Sync(f)`/`Async(f)` or a `Compute` enum. The wrapper remains visible
-  at the call site, so you have not removed the distinction.
-- Async closures often need boxed futures or GATs because the future may borrow
-  captured state; inference and error messages get worse.
-- The node must know sync vs async at construction to set cold async state; a
-  hidden trait only obscures that.
-- `async fn get` is the wrong read shape: it colors every read with `.await` and
-  does not model caching, holds, or cancellation. Construction and reading are
-  separate problems.
+Push reads to the edges: read in a binding/memo and pass plain values down. This
+is good style regardless. `with`/`read_with` closures localize a read when you
+want to avoid clones. Use `get_or` only when you deliberately want a fallback.
 
-Keep `Signal::new` / `derived` / `derived_async` and `Memo::new` /
-`new_async`. If generated code needs one call shape, add a `Compute` enum
-(`Compute::sync(f)` / `Compute::async_(f)`) as a convenience layer, not as the
-primary API.
-
-**Where `.await` appears.** Split constructors do not remove `.await` by
-themselves; the sync read API does. `.await` is confined to async producers and
-explicit waits:
+**Where `.await` appears.** `.await` is confined to async producers and explicit
+waits:
 
 - inside an async memo/signal compute, for the actual I/O or work
   (`fetch_user(id).await`, `sleep(...).await`, joining tasks);
@@ -278,9 +265,9 @@ explicit waits:
 
 It does **not** appear in view/binding/render code or in ordinary signal/memo
 reads. `get(cx)` is synchronous; it may suspend the current computation through
-the graph, but it is not an `async fn`. `try_read(cx)` is synchronous and returns
-`ReadError`. When dependencies change, the async compute runs again and its
-internal `.await`s run again; consumers still read synchronously.
+the graph, but it is not an `async fn`. When dependencies change, the async
+compute runs again and its internal `.await`s run again; consumers still read
+synchronously.
 
 **`?` is for your errors, not `NotReady`.** In
 
@@ -295,7 +282,7 @@ you `Result<User, FetchError>`, and `?` unwraps `Ok(User)` or returns
 That error becomes the memo's error state and is caught by an `ErrorBoundary` —
 it is not `NotReady`.
 
-`NotReady` is produced only by **reactive reads** (`get`, `try_read`, store reads),
+`NotReady` is produced only by **reactive reads** (`get`, `get_or`, store reads),
 and it is control flow, not an application error:
 
 ```rust
@@ -320,12 +307,11 @@ Rules that keep them separate:
 
 - Use `get(cx)` for reactive dependencies. It suspends the computation on
   `NotReady`; it never returns a value that `?` could unwrap.
-- Use `try_read(cx)` only when you want to branch. It returns
-  `Result<T, ReadError>`; **do not** `?` it into `AppError`. If you do,
-  `NotReady` becomes a user error and goes to the `ErrorBoundary` instead of the
-  `LoadingBoundary`.
-- `LoadingBoundary` catches `NotReady`; `ErrorBoundary` catches the memo's
-  `Err`. A 404 from `fetch_user` is an `Err`, so it is an error, not loading.
+- Use `get_or(cx, default)` only when you deliberately want a fallback in a
+  non-suspending context (event handler, snapshot, diagnostic). It hides pending
+  and error; do not use it where the boundary should show loading/error.
+- `LoadingBoundary` catches pending; `ErrorBoundary` catches the memo's `Err`.
+  A 404 from `fetch_user` is an `Err`, so it is an error, not loading.
 - If a 404 is domain absence rather than failure, return a domain value instead:
 
 ```rust
@@ -338,63 +324,7 @@ match fetch_user(id).await {
 
 - If you need to read another async node inside an async compute, either
   `get(cx)` it (the graph holds the outer compute until it is ready) or await its
-  readiness explicitly (`until`/`resolve`). Do not launder `ReadError` through
-  `?`.
-
-The choices, and why the hybrid wins:
-
-| Style | Colorless? | Composes with `?`? | Distinguishes pending/error/absent? | Main cost |
-|---|---|---|---|---|
-| `Option<T>` | No | Only if caller returns `Option` | No; `Option<Option<T>>` nests | Every read site handles `None`; "no value" and "loading" are conflated |
-| `Result<T, ReadError>` | No | Yes | Yes | Colors helper functions with `Result`; `NotReady` is not a user error |
-| `MaybeReady<T>` | No | Custom | Yes, explicit | Best explicit ergonomics, but still colors every helper |
-| `T` + private suspension | **Yes** | N/A | Yes (scheduler sees the token) | Requires unwinding; `panic = "abort"` cannot use it |
-
-**Recommendation: the hybrid.**
-
-- `try_read() -> Result<T, ReadError>` is the **fundamental** API. Library code,
-  boundaries, tests, and `panic = "abort"` builds use it. `ReadError::NotReady`
-  is a control signal, not a user-facing failure; `D-42` still applies (do not
-  catch it as if it were an application error).
-- `get() -> T` is the **colorless** API, available only inside a tracked
-  computation. On `NotReady` it unwinds with a private token. The scheduler
-  catches that token at the computation boundary, records the reader/flight, and
-  either shows a boundary fallback or parks the transaction. The caller never
-  sees an `async` signature or a `Result`.
-- `MaybeReady<T>` is useful as the return of `try_read()` if we want to avoid
-  `Result`'s error connotation, but it is not a third fundamental mechanism. It
-  is a naming/ergonomics choice. Start with `Result`; add `MaybeReady` as a
-  convenience if the API feels wrong.
-
-Why not `Option<T>`: it collapses three states into two. A missing optional value
-and a not-yet-ready value are different, and a first load has no value at all.
-`Option<Option<T>>` is the type-level tax, and every helper becomes `Option`-viral
-without gaining error information.
-
-**Coloring and composition.** This is the real reason Solid throws. If every read
-returns `Result`, then every function that reads a signal either returns
-`Result<T, ReadError>` or unwraps, and `ReadError` leaks into signatures that have
-nothing to do with loading. `?` flattens the types, but it does not remove the
-signature churn; a helper that was `fn label(user: &User) -> String` becomes
-`fn label(user: &User) -> Result<String, ReadError>`. Do that through five layers
-and the code is colored.
-
-The hybrid avoids that:
-
-- `get()` inside a tracked computation is colorless; a helper can stay a plain
-  function and the graph suspends at the computation boundary.
-- `try_read()` is for code that already returns `Result`/`Option`, for library
-  APIs, for boundaries, and for `panic = "abort"` builds.
-- Push reads to the edges: read in a binding/memo and pass plain values down.
-  This is good style regardless of coloring.
-- `with`/`read_with` closures localize a read when you want to avoid clones or
-  keep the pending check at one site.
-- Convert `ReadError` once at the boundary; do not thread it through pure
-  helpers.
-
-If unwinding is unavailable, you accept coloring; the mitigation is the same
-"reads at the edge" discipline, not a different error type. `MaybeReady<T>` does
-not change this trade-off; it is only a nicer name for the explicit shape.
+  readiness explicitly (`until`/`resolve`).
 
 **Examples at the edges.** Reads belong in bindings, memos, and render effects;
 helpers take plain values. (The sketches pass `&Cx` into compute closures so
@@ -421,41 +351,24 @@ fn greeting(user: &User) -> String {
 
 let text = Memo::new(cx, move |cx| greeting(&user.get(cx)));
 
-// 4. Explicit at a boundary: no unwind, caller chooses the placeholder.
-fn profile_or_skeleton(cx: &Cx, user: Memo<User>) -> View {
-    match user.try_read(cx) {
-        Ok(user) => view! { <Profile user=user /> },
-        Err(ReadError::NotReady) => view! { <Skeleton /> },
-        Err(ReadError::Error(e)) => view! { <ErrorView error=e /> },
-        Err(ReadError::Disposed) => View::empty(),
-    }
-}
-
-// 5. A library API that is already fallible uses try_read and ?.
-fn header_text(cx: &Cx, user: Memo<User>) -> Result<String, AppError> {
-    let user = user.try_read(cx).map_err(AppError::from)?;
-    Ok(greeting(&user))
-}
-
-// 6. Event handlers are at the edge; data should be ready, but try_read is safe.
+// 4. Non-suspending fallback at an imperative edge.
 button.on_click(move |cx, _| {
-    if let Ok(user) = user.try_read(cx) {
-        open_profile(cx, user.id);
-    }
+    let count = count.get_or(cx, 0);
+    log_click(count);
 });
+
+// 5. Verdict only; no value read.
+if !user.is_pending(cx) {
+    let user = user.get(cx);
+    open_profile(cx, user.id);
+}
 ```
 
 Notice what does **not** happen: `greeting` never returns `Result`; the memo
-never returns `Result`; only the explicit boundary and the already-fallible
-library API name `ReadError`. That is the coloring discipline.
+never returns `Result`; only the async producer's `?` names `FetchError`. That is
+the coloring discipline.
 
-#### Comparing `get` and `try_read` with a prop and a signal
-
-The component receives `user_id: Prop<UserId>` and creates `show_details:
-Signal<bool>` locally. It also creates an async `user` memo from the prop.
-`profile_ui` takes the loaded user and the signal handle; it never returns
-`Result`, and the details toggle stays reactive because `profile_ui` reads the
-signal through a binding.
+**The same component with a prop and a local signal:**
 
 ```rust
 #[derive(Clone)]
@@ -477,11 +390,7 @@ fn profile_ui(user: &User, id: UserId, show_details: Signal<bool>) -> View {
         </div>
     }
 }
-```
 
-**With `get()` — colorless; the boundary holds:**
-
-```rust
 #[component]
 fn ProfileCard(props: ProfileCardProps) -> impl View {
     let show_details = Signal::new(cx, false);
@@ -512,53 +421,7 @@ No `Result` in `profile_ui` or in the slot render. If `user` is not ready, the
 graph suspends the render and the boundary shows the skeleton. When the user
 lands, the slot renders the profile.
 
-**With `try_read()` — explicit; the function chooses the UI:**
-
-```rust
-#[component]
-fn ProfileCard(props: ProfileCardProps) -> impl View {
-    let show_details = Signal::new(cx, false);
-
-    let user = Memo::new_async(cx, {
-        let user_id = props.user_id;
-        move |cx| {
-            let id = user_id.get(cx);
-            async move { fetch_user(id).await }
-        }
-    });
-
-    view! {
-        <ViewSlot
-            key=move |cx| props.user_id.get(cx)
-            render=move |cx| match user.try_read(cx) {
-                Ok(user) => profile_ui(&user, props.user_id.get(cx), show_details),
-                Err(ReadError::NotReady) => view! {
-                    <ProfileSkeleton id=props.user_id.get(cx) />
-                },
-                Err(ReadError::Error(e)) => view! {
-                    <ProfileError id=props.user_id.get(cx) error=e />
-                },
-                Err(ReadError::Disposed) => View::empty(),
-            }
-        />
-    }
-}
-```
-
-No `LoadingBoundary` is required for this read; the skeleton and error are
-ordinary branches of the returned view. The trade-off is the explicit match.
-
-**Why `ViewSlot` and not just a `profile_ui` component?** They are different
-roles. `profile_ui` is a mount function for **loaded** data; it does not own the
-async read, the key, or the replacement decision. The `ViewSlot` is the host that
-re-runs the async read when `user_id` changes and replaces the child subtree.
-`profile_ui` could be a component, but a component mounts once; without a
-control-flow host keyed on `user_id`, it would not be re-mounted for a new user.
-The slot supplies the identity/key; `profile_ui` supplies the content.
-
-**The same component without `view!`** — this is the builder form the macro
-expands to, and the escape hatch for library code. `ElementKind::Box` is the
-native generic box; the `view!` `<div>` tag lowers to it. There is no DOM here.
+**Without `view!`:**
 
 ```rust
 fn profile_card(cx: &mut Cx, props: ProfileCardProps) -> ViewNodeId {
@@ -579,13 +442,12 @@ fn profile_card(cx: &mut Cx, props: ProfileCardProps) -> ViewNodeId {
     cx.bind_text(title, move |cx| props.user_id.get(cx).to_string());
     cx.insert(root, title, None);
 
-    let slot = cx.view_slot(
+    let slot = ViewSlot::new(
+        cx,
         move |cx| props.user_id.get(cx),
-        move |cx| match user.try_read(cx) {
-            Ok(user) => profile_ui_builder(cx, &user, props.user_id.get(cx), show_details),
-            Err(ReadError::NotReady) => cx.element(ElementKind::Box).class("skeleton").id(),
-            Err(ReadError::Error(e)) => error_view_builder(cx, e),
-            Err(ReadError::Disposed) => cx.fragment(),
+        move |cx| {
+            let user = user.get(cx);              // suspends if not ready
+            profile_ui_builder(cx, &user, props.user_id.get(cx), show_details)
         },
     );
     cx.insert(root, slot, None);
@@ -599,55 +461,13 @@ fn profile_card(cx: &mut Cx, props: ProfileCardProps) -> ViewNodeId {
 
     root
 }
-
-fn profile_ui_builder(
-    cx: &mut Cx,
-    user: &User,
-    id: UserId,
-    show_details: Signal<bool>,
-) -> ViewNodeId {
-    let root = cx.element(ElementKind::Box);
-
-    let name = cx.text(&user.name);
-    cx.insert(root, name, None);
-
-    let bio = cx.text(&user.bio);
-    let details = cx.conditional(
-        move |cx| show_details.get(cx),
-        move |_cx| bio,
-        None,
-    );
-    cx.insert(root, details, None);
-
-    root
-}
 ```
 
-The builder form makes the pieces explicit: `element`/`text` create nodes,
-`bind_text` creates a binding, `view_slot` hosts the async choice,
-`conditional` is the `Show`, and `subscribe_click` registers the event. The
-`view!` macro is syntax over this; it is not a different runtime.
-
-**The unwind caveat.** "Colorless" is only true if the build allows unwinding.
-With `panic = "abort"`, `get()` cannot suspend; code must use `try_read()` and
-`?`. The private token is not a user panic: the panic hook suppresses it, and
-user code must not catch it (the same rule as `D-42`: a reactive read is not an
-`await` and `try/catch` is not a channel). A helper function that calls `get()`
-deep inside is allowed to unwind through user code; RAII cleanups run. This is the
-Rust translation of Solid throwing `NotReadyError` through the graph, with the
-difference that the token is private and the explicit API is always available.
-
-**Polling context.** The future is polled through a `ScopedFuture` wrapper that
-sets the node's owner and observer before each poll and restores them after. This
-is how reads after an `await` are tracked: without it, only reads in the
-synchronous prefix would create dependencies. Leptos uses exactly this wrapper
-(`refs/leptos/reactive_graph/src/computed/async_derived/mod.rs`,
-`ScopedFuture::poll`). Actions (v2), by contrast, poll untracked: they are
-commands, not derivations, and should not re-run because a signal they read
-changed.
-
-A `Resource<T>` convenience wraps `Memo<T>` with a `set_reload` trigger and
-a `refresh()` method.
+`ViewSlot` is the host; `profile_ui` is the content. The slot re-runs the async
+read when `user_id` changes and replaces the child subtree. `profile_ui` could
+be a component, but a component mounts once; without a keyed host it would not
+re-mount for a new user. `ElementKind::Box` is the native generic box; `view!`'s
+`<div>` lowers to it. There is no DOM here.
 
 ### 3.5 Cancellation and background threads
 
@@ -736,7 +556,7 @@ fn suspend() -> ! {
   loud instead of silently publishing a partial value.
 - Catch at each computation, not only at the render effect, so a memo can be
   marked pending and its reader can re-suspend cleanly.
-- `panic = "abort"` cannot use this path; `try_read()` is required.
+- `panic = "abort"` cannot use this path; `get()` is required.
 - Unwinding across `extern "C"` is undefined/aborts. User computations must not
   cross FFI before a suspension; document this.
 
@@ -746,16 +566,18 @@ hook that must cooperate, and the fact that a user `catch_unwind` can intercept
 the token. The `suspended` flag turns interception into a diagnostic. This is the
 closest to Solid's throw model and the only path that is truly colorless.
 
-#### Path B — explicit `Result`/`?` everywhere
+#### Path B — internal `Result` fallback (advanced, not public API)
 
-`try_read()` returns `Result<T, ReadError>`; every helper that reads a pending
-value returns `Result` and uses `?`. The `view!` macro can wrap dynamic
-expressions in a generated `Result` context, but a plain Rust helper still has to
-be written in the colored style.
+For `panic = "abort"` builds, the computation runtime can carry a `Result`
+internally: the scheduler knows a pass suspended, and the public read stays
+`get`/`get_or`. There is no public `try` method. This path is an implementation
+fallback for targets without unwinding, not the authoring API; library code still
+receives plain values, and boundaries still own loading/error UI.
 
 - Safe, portable, works with `panic = "abort"`, no panic hooks.
-- Not colorless. It is the right fallback and the right API for library code.
-- We would ship it regardless, as the base API.
+- Not colorless for computations that need to suspend; those targets must use
+  `get_or`/explicit state or enable unwinding.
+- The public surface is unchanged: `get`, `get_or`, `is_pending`, `with`.
 
 #### Path C — custom `setjmp`/`longjmp`
 
@@ -775,20 +597,22 @@ for every computation.
 early-return from the enclosing function, and async/hold logic still has to stop.
 Useful for library APIs that want to avoid clones, not a general colorless read.
 
-#### Path F — macro-only `?`
+#### Path F — macro-only lowering
 
-The `view!`/`#[component]` macros rewrite `signal.get()` into `?` inside a
-generated `Result` function. This helps bindings but not arbitrary helper
-functions; a helper that calls `get()` still needs a suspension mechanism. It is
-a complement to Path A/B, not a replacement.
+The `view!`/`#[component]` macros can lower `get()` at a binding boundary to the
+internal suspension/Result path for targets without unwinding. This helps
+bindings but not arbitrary helper functions; a helper that calls `get()` still
+needs a suspension mechanism. It is a complement to Path A/B, not a replacement.
 
 #### Recommendation
 
-Implement Path B first (`try_read`, explicit, tested everywhere). Add Path A behind
-a `colorless` feature and make `get()` available only there. Prototype both on the
-same navigation/hold tests, measure the `catch_unwind` overhead, and keep the
-`suspended` flag diagnostic. If the panic hook or unwinding proves unacceptable on
-a target, that target uses `try_read` and `?`; no semantics change, only ergonomics.
+Implement Path A first (colorless `get`) where unwinding is available. Use the
+internal Path B only for `panic = "abort"` targets. The public API stays
+`get` / `get_or` / `is_pending` / `with`; there is no public `try` method.
+Prototype both on the same navigation/hold tests, measure the `catch_unwind`
+overhead, and keep the `suspended` flag diagnostic. If unwinding is unacceptable
+on a target, that target uses `get_or`/explicit state or enables unwinding; no
+public semantics change.
 
 ## 4. Reader classes
 
@@ -1143,9 +967,10 @@ not ambient thread state.
 
 ### 9.1 Documented deviations from Solid 2.0
 
-- **Reads have two APIs.** `try_read()` returns `Result` and is the safe base;
-  `get()` is colorless inside a tracked computation and suspends by a private
-  unwind. This is not a throw-to-user-code channel; `D-42` still applies.
+- **The public read is `get`.** `get()` suspends inside a tracked computation via
+  a private `NotReady` token; there is no public `Result`/`try` read.
+  `get_or(default)` is the non-suspending fallback and `is_pending` is the
+  verdict. This is not a throw-to-user-code channel; `D-42` still applies.
 - **Content is disposed on fallback entry.** Solid keeps it alive but off screen.
   Use `KeepAlive` (v1.1) for state that must survive.
 - **No born-held mounts outside a boundary.** A newly mounted subtree that reads
@@ -1185,7 +1010,7 @@ Required tests:
 - Error: rejected fetch shows error fallback; retry replaces it.
 - Cancellation: dispose mid-flight; no landing, no panic.
 - `isPending`: true for a new question, false for a re-ask, false for loading.
-- `try_read`: returns `NotReady` before first value; `get` suspends inside a
+- `get`: returns `NotReady` before first value; `get` suspends inside a
   computation and resumes at commit; `get` outside a tracked computation errors.
 - Fuzz: random graph of async memos, writes, and boundaries; assert every frame
   is a snapshot consistent with some committed txn state.
@@ -1217,7 +1042,7 @@ much machinery is involved; it is not a weekend addition.
 ## 12. Open questions
 
 1. **Colorless read mechanism.** We chose the private-unwind `get()` plus
-   explicit `try_read()`. The open part is whether the unwind should be a real
+   explicit `get()`. The open part is whether the unwind should be a real
    panic payload or a custom `ControlFlow`-based unwinder; `panic = "abort"`
    forces the explicit API.
 2. **Boundary content lifetime.** v1 disposes on fallback; Solid keeps alive.

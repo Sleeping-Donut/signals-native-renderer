@@ -372,16 +372,12 @@ fn counter(cx: &mut Cx, label: Prop<String>) -> ViewNodeId {
 }
 ```
 
-For a plain `Signal<i32>`, `get` is correct and `try_read` always returns `Ok`.
-Use `try_read` only when the read may be pending or errored:
+For a plain `Signal<i32>`, `get` is correct and never suspends. For a
+non-suspending fallback use `get_or`; for a verdict use `is_pending`:
 
 ```rust
-match counter.count.try_read(cx) {
-    Ok(n) => n.to_string(),
-    Err(ReadError::NotReady) => "…".into(),
-    Err(ReadError::Error(e)) => format!("error: {e}"),
-    Err(ReadError::Disposed) => "—".into(),
-}
+let current = counter.count.get_or(cx, 0);
+let updating = counter.count.is_pending(cx);
 ```
 
 ## 4. Control-flow helpers
