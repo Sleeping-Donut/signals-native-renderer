@@ -545,6 +545,11 @@ dynamic store adds full-path interning, a dense `PathId` vector, and untyped
 values for plugins/config. It is an evolution of Leptos' model, not a different
 one; reuse its segment interning and ancestor-trigger ordering.
 
+**Fallback:** if full-path interning or untyped values prove too complex, use the
+Leptos shape directly (`StorePath` + `HashMap<StorePath, Trigger>`). It gives up
+the dense fast path and arbitrary key types but keeps the dynamic API and is
+already proven.
+
 ### Q6. Threading of background computation (resolved for v1)
 
 **Decision:** background work is allowed. The user is not misunderstanding: you

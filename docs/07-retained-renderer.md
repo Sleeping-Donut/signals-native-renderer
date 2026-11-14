@@ -217,6 +217,11 @@ Solid and Leptos do not need a special rebuild component: `<Show>`, `<Switch>`,
 equivalent. It disposes the old child owner and mounts a new one under the same
 host. Focus/scroll is lost unless state is hoisted or `KeepAlive` is used.
 
+Use `Show`/`Switch`/`For` first: they express the common shapes. `Dynamic` is the
+generic slot for arbitrary view-returning closures, dynamic component switching,
+and plugin UIs. It is the primitive the control-flow nodes use internally, not a
+replacement for them.
+
 ### 4.2 Props
 
 Props are uniform `Prop<T>` values, never bare `T` when they might change:

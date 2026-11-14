@@ -377,15 +377,16 @@ section docs.
    `get() -> T` is the colorless mode inside tracked computations, implemented
    by a private `NotReady` suspension caught at the computation boundary. `Option<T>`
    is rejected because it conflates absence and readiness. `panic = "abort"`
-   builds must use the explicit API. See
-   [docs/04-async-model.md](docs/04-async-model.md) §3.4.
+   builds must use the explicit API. Implementation paths are in
+   [docs/04-async-model.md](docs/04-async-model.md) §3.6.
 4. **Boundary scope.** v1 implements first-load, held navigation, disarmed
    forwarding, errors, and a `key` that remounts the boundary. Full `on` re-arm
    and `latest` are v2. See
    [docs/04-async-model.md](docs/04-async-model.md) §6.1 and §7.2.
 5. **Dynamic stores.** The static macro path is v1; `DynamicStore` with an
-   interned path map is v2 unless a real app needs it in v1. See
-   [docs/03-store-layer.md](docs/03-store-layer.md) §5.
+   interned path map is v2 unless a real app needs it in v1. If the full
+   interner is too complex, fall back to the Leptos `StorePath`/`TriggerMap`
+   design. See [docs/03-store-layer.md](docs/03-store-layer.md) §5.
 6. **Threading.** Background work is allowed. The graph and view tree remain
    UI-thread-affine; results return as continuations. The host supplies a
    background spawner in addition to the UI-local one. Cancellation is

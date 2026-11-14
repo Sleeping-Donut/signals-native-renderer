@@ -323,6 +323,12 @@ not a replacement for the typed store. If we build it, reuse the segment
 interning and trigger/ancestor ordering rules from Leptos rather than inventing
 a second path system.
 
+**Fallback design.** If full-path interning or untyped values prove too complex
+during the prototype, fall back to the Leptos shape: `StorePath` of interned
+`usize` segments and a `HashMap<StorePath, Trigger>` per store. That is simpler
+and already proven; it gives up the dense `PathId` fast path and arbitrary key
+types, but it keeps the dynamic API and the typed store unchanged.
+
 - Reads/writes go through `DynamicField`, which resolves the path each time.
 - Cost: hash lookup (first) or `PathId` index (after) + type check; no
   compile-time field checking.

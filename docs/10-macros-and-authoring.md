@@ -427,6 +427,12 @@ same `Dynamic`/`ViewFn` slot, but not a special "rebuild component" mechanism.
 `Rebuild` is an ergonomic alias for the common "recompute this view from state"
 case, not a second renderer model.
 
+**Use control flow first.** `Show`/`Switch`/`For` express the common shapes and
+should be the default API. `Dynamic` is the generic slot for an arbitrary
+view-returning closure, a dynamic component/view switch, or a plugin UI whose
+whole subtree is chosen at runtime. It is the implementation primitive those
+control-flow components use, not a replacement for them.
+
 **Semantics (v1):**
 
 - The host node is stable; its active child subtree is replaced.

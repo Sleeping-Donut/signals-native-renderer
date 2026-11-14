@@ -208,6 +208,31 @@ and a not-yet-ready value are different, and a first load has no value at all.
 `Option<Option<T>>` is the type-level tax, and every helper becomes `Option`-viral
 without gaining error information.
 
+**Coloring and composition.** This is the real reason Solid throws. If every read
+returns `Result`, then every function that reads a signal either returns
+`Result<T, ReadError>` or unwraps, and `ReadError` leaks into signatures that have
+nothing to do with loading. `?` flattens the types, but it does not remove the
+signature churn; a helper that was `fn label(user: &User) -> String` becomes
+`fn label(user: &User) -> Result<String, ReadError>`. Do that through five layers
+and the code is colored.
+
+The hybrid avoids that:
+
+- `get()` inside a tracked computation is colorless; a helper can stay a plain
+  function and the graph suspends at the computation boundary.
+- `try_get()` is for code that already returns `Result`/`Option`, for library
+  APIs, for boundaries, and for `panic = "abort"` builds.
+- Push reads to the edges: read in a binding/memo and pass plain values down.
+  This is good style regardless of coloring.
+- `with`/`read_with` closures localize a read when you want to avoid clones or
+  keep the pending check at one site.
+- Convert `ReadError` once at the boundary; do not thread it through pure
+  helpers.
+
+If unwinding is unavailable, you accept coloring; the mitigation is the same
+"reads at the edge" discipline, not a different error type. `MaybeReady<T>` does
+not change this trade-off; it is only a nicer name for the explicit shape.
+
 **The unwind caveat.** "Colorless" is only true if the build allows unwinding.
 With `panic = "abort"`, `get()` cannot suspend; code must use `try_get()` and
 `?`. The private token is not a user panic: the panic hook suppresses it, and
@@ -555,6 +580,50 @@ interact with lanes when the `on` read is display-ahead. Those are the cases in
 sometimes shows a fallback with the wrong frame or strands a hold. The `key`
 remount gives the same observable behavior for the common case with far less
 machinery.
+
+**What `on` is for.** A boundary that has shown content normally stays disarmed
+during a refetch: the old content remains on screen until the new data lands.
+That is right for "same page, refreshing data". It is wrong when the dependency
+that defines the page changed: showing product A's page while product B loads is
+stale content. `on` is a dependency list that says "when any of these reads
+change, this is a new question, so show the fallback for the new content."
+
+In Solid:
+
+```jsx
+<Loading on={productId()} fallback={<Spinner />}>
+  <ProductDetails id={productId()} />
+</Loading>
+```
+
+- The value of `on` is never compared; only what it reads matters.
+- It takes an expression, not a function: `on={productId()}`. Passing
+  `on={() => productId()}` reads nothing and never notifies.
+- The fallback follows the frame of the change. In a navigation where the shell
+  reads `product(id)` outside and comments read inside, the fallback appears with
+  the new shell (`[A] -> [B + spinner] -> [B + comments]`), not beside the old
+  page.
+- If the same data is also read outside the boundary, the frame may already be
+  waiting on it and the fallback can never be shown; that is a structural
+  diagnostic (`LOADING_ON_OUTSIDE_HOLD`), not a bug in `on`.
+- Children are not re-created in Solid; they stay alive behind the fallback.
+  Our v1 disposes content, so a `key` remount is equivalent in observable
+  behavior for the common case.
+
+**Leptos equivalent.** Leptos does not have an `on` dependency list. Its coarse
+version is the choice between `<Suspense>` and `<Transition>`:
+
+- `<Suspense>` shows the fallback whenever a resource under it is pending,
+  including after the first load.
+- `<Transition>` keeps the old content after the first load and never falls back
+  for later changes.
+- To force a fallback for a specific change, you key/remount the branch (or use
+  the router's route-keyed view). That is exactly our v1 `key` remount.
+
+Solid's `on` is the granular middle: keep the boundary disarmed for refetches,
+but re-arm it for a named dependency without remounting children. That is why it
+is v2 for us: it needs the fuller boundary/txn model, while `Suspense` vs
+`Transition` and keyed remount cover the common cases in v1.
 
 v1 simplification: content behind a fallback is **disposed** when the fallback is
 shown, and rebuilt on reveal. Solid keeps it alive but off screen. Disposing is
