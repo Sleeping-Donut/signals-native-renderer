@@ -31,7 +31,7 @@ In our model:
 ```rust
 #[component]
 fn Counter() -> impl View {
-    let count = create_signal(cx, 0);
+    let count = Signal::new(cx, 0);
     view! {
         <button on_click=move |cx, _| count.update(cx, |c| *c += 1)>
             {count}
@@ -48,26 +48,18 @@ fn Counter() -> impl View {
 For users, the syntax looks similar; the semantics are more like Solid's compiled
 output than its component function.
 
-**Conventions in this document.** Reactive primitives use Solid/Leptos-style
-`create_*` functions:
-
-```rust
-create_signal(cx, value)                 // plain source
-create_derived_signal(cx, |cx, prev| ...)// writable derived
-create_async_signal(cx, |cx| ...)        // writable derived, async
-create_memo(cx, |cx, prev| ...)          // read-only derived, sync
-create_async_memo(cx, |cx| ...)          // read-only derived, async
-create_effect(cx, compute, apply)
-create_render_effect(cx, compute, apply)
-create_store(cx, value)
-create_view_slot(cx, key, render)
-```
-
-They are thin wrappers over `Signal::new`, `Memo::new`, etc., and take `&Cx`.
-The type constructors remain available for generic/library code; examples use the
-`create_*` surface because it is easier to scan. All reactive operations take
-`&Cx`; code sketches sometimes omit `cx` where the surrounding `view!` macro
+**Conventions in this document.** Core primitives use their type constructors:
+`Signal::new(cx, v)`, `Signal::new_derived(cx, |cx, prev| ...)`,
+`Memo::new(cx, |cx, prev| ...)`, `Memo::new_async(cx, |cx| ...)`,
+`Store::new(cx, value)`, `ViewSlot::new(cx, key, render)`. All reactive
+operations take `&Cx`. There is no global graph; the context resolves the runtime
+and owner. Code sketches sometimes omit `cx` where the surrounding `view!` macro
 supplies it, but the real API takes it.
+
+Custom primitive/abstraction helpers use Solid/Leptos-style `create_*` naming:
+`create_resource`, `create_theme`, `create_counter`, `create_todo_store`. They
+are thin wrappers over the core types and take `&Cx`; the naming distinguishes
+them from the built-in constructors.
 
 Tags are native element kinds, not HTML. `div` is a generic box/stack and
 `span` is inline text; they do not imply a DOM. The builder form uses
@@ -107,7 +99,7 @@ view! {
     let button = cx.element(ElementKind::Button);
     cx.set_style(button, Style::default());
     let text = cx.text("");
-    cx.add_binding(text, create_render_effect(
+    cx.add_binding(text, render_effect(
         cx,
         move |cx| count.get(cx).to_string(),
         move |cx, s| cx.set_text(text, s),
@@ -168,7 +160,7 @@ for a retained list; if omitted, it uses the item's index and emits a dev warnin
 ```rust
 #[component]
 fn Counter(initial: Prop<i32>, step: Prop<i32>) -> impl View {
-    let count = create_signal(cx, initial.get_untracked(cx));
+    let count = Signal::new(cx, initial.get_untracked(cx));
     view! { ... }
 }
 ```
@@ -357,7 +349,7 @@ struct AppState {
     todos: Vec<Todo>,
 }
 
-let state = create_store(cx, AppState::default());
+let state = Store::new(AppState::default());
 view! {
     <span>{state.user().name()}</span>
     <For each=state.todos() key=|t| t.id children=|t| view! { <Row todo=t /> } />
@@ -423,7 +415,7 @@ This mirrors Solid 2.0's strict top-level access rule
 ### 7.1 `untrack`
 
 ```rust
-let initial = untrack(cx, || count.get(cx));
+let initial = untrack(|| count.get());
 ```
 
 Explicit snapshot. Use for initial values, one-time setup, and measuring.
@@ -432,10 +424,9 @@ Explicit snapshot. Use for initial values, one-time setup, and measuring.
 
 ```rust
 // A stable host whose active child is replaced when `key` changes.
-create_view_slot(
-    cx,
+ViewSlot::new(
     key,
-    move |cx| view! { <ExpensiveForm state=state /> },
+    move || view! { <ExpensiveForm state=state /> },
 )
 ```
 
@@ -569,9 +560,9 @@ struct AppState {
 
 #[component]
 fn App(state: Store<AppState>) -> impl View {
-    let filter = create_signal(cx, Filter::All);
+    let filter = Signal::new(cx, Filter::All);
 
-    let visible = create_memo(cx, move |cx| {
+    let visible = Memo::new(cx, move |cx| {
         let f = filter.get(cx);
         state.todos().read(cx).iter()
             .filter(|t| f.matches(t))

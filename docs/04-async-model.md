@@ -167,11 +167,11 @@ Constructors differ because Rust has no overloading, but they return the same
 types:
 
 ```rust
-create_memo(cx, |cx, prev| ...)          // sync
-create_async_memo(cx, |cx| ...)          // async
-create_signal(cx, value)                 // plain source
-create_derived_signal(cx, |cx, prev| ...)// writable derived
-create_async_signal(cx, |cx| ...)      // writable derived, async
+Memo::new(cx, |cx, prev| ...)          // sync
+Memo::new_async(cx, |cx| ...)          // async
+Signal::new(cx, value)                 // plain source
+Signal::new_derived(cx, |cx, prev| ...)// writable derived
+Signal::new_derived_async(cx, |cx| ...)// writable derived, async
 ```
 
 A helper taking `Memo<T>` does not care how it was built. `AsyncMemo<T>` is not a
@@ -256,10 +256,10 @@ normalizing `new` is not worth it in the core API:
   does not model caching, holds, or cancellation. Construction and reading are
   separate problems.
 
-Keep `create_signal` / `create_derived_signal` / `create_async_signal` and
-`create_memo` / `create_async_memo`. If generated code needs one call shape, add
-a `Compute` enum (`Compute::sync(f)` / `Compute::async_(f)`) as a convenience
-layer, not as the primary API.
+Keep `Signal::new` / `derived` / `derived_async` and `Memo::new` /
+`new_async`. If generated code needs one call shape, add a `Compute` enum
+(`Compute::sync(f)` / `Compute::async_(f)`) as a convenience layer, not as the
+primary API.
 
 **Where `.await` appears.** Split constructors do not remove `.await` by
 themselves; the sync read API does. `.await` is confined to async producers and
@@ -301,7 +301,7 @@ enum AppError {
     // ...
 }
 
-let user = create_async_memo(cx, {
+let user = Memo::new_async(cx, {
     let user_id = props.user_id;
     move |cx| async move {
         let id = user_id.get(cx);          // sync tracked read; no ?
@@ -397,13 +397,13 @@ reads are tracked; constructor names are illustrative.)
 
 ```rust
 // 1. Colorless in a memo: the memo stays pending, its readers hold.
-let label = create_memo(cx, move |cx| {
+let label = Memo::new(cx, move |cx| {
     let user = user.get(cx);          // suspends if not ready
     format!("{} ({})", user.name, user.role)
 });
 
 // 2. Colorless in a render binding, under a boundary.
-let binding = create_render_effect(
+let binding = render_effect(
     cx,
     move |cx| user.get(cx).name.clone(),
     move |cx, name| cx.set_text(name_node, name),
@@ -414,7 +414,7 @@ fn greeting(user: &User) -> String {
     format!("Hi {}", user.name)
 }
 
-let text = create_memo(cx, move |cx| greeting(&user.get(cx)));
+let text = Memo::new(cx, move |cx| greeting(&user.get(cx)));
 
 // 4. Explicit at a boundary: no unwind, caller chooses the placeholder.
 fn profile_or_skeleton(cx: &Cx, user: Memo<User>) -> View {
@@ -479,9 +479,9 @@ fn profile_ui(user: &User, id: UserId, show_details: Signal<bool>) -> View {
 ```rust
 #[component]
 fn ProfileCard(props: ProfileCardProps) -> impl View {
-    let show_details = create_signal(cx, false);
+    let show_details = Signal::new(cx, false);
 
-    let user = create_async_memo(cx, {
+    let user = Memo::new_async(cx, {
         let user_id = props.user_id;
         move |cx| {
             let id = user_id.get(cx);
@@ -512,9 +512,9 @@ lands, the slot renders the profile.
 ```rust
 #[component]
 fn ProfileCard(props: ProfileCardProps) -> impl View {
-    let show_details = create_signal(cx, false);
+    let show_details = Signal::new(cx, false);
 
-    let user = create_async_memo(cx, {
+    let user = Memo::new_async(cx, {
         let user_id = props.user_id;
         move |cx| {
             let id = user_id.get(cx);
@@ -557,9 +557,9 @@ native generic box; the `view!` `<div>` tag lowers to it. There is no DOM here.
 
 ```rust
 fn profile_card(cx: &mut Cx, props: ProfileCardProps) -> ViewNodeId {
-    let show_details = create_signal(cx, false);
+    let show_details = Signal::new(cx, false);
 
-    let user = create_async_memo(cx, {
+    let user = Memo::new_async(cx, {
         let user_id = props.user_id;
         move |cx| {
             let id = user_id.get(cx);
@@ -574,8 +574,7 @@ fn profile_card(cx: &mut Cx, props: ProfileCardProps) -> ViewNodeId {
     cx.bind_text(title, move |cx| props.user_id.get(cx).to_string());
     cx.insert(root, title, None);
 
-    let slot = create_view_slot(
-        cx,
+    let slot = cx.view_slot(
         move |cx| props.user_id.get(cx),
         move |cx| match user.try_get(cx) {
             Ok(user) => profile_ui_builder(cx, &user, props.user_id.get(cx), show_details),
@@ -673,7 +672,7 @@ impl FlightCtx {
 Typical pattern:
 
 ```rust
-create_async_memo(cx, |cx| {
+Memo::new_async(cx, |cx| {
     let ctx = cx.flight_ctx();
     let bg = cx.background_spawner();       // Clone + 'static handle
     async move {

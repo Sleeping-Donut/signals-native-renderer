@@ -23,7 +23,7 @@ struct AppState {
     theme: Theme,
 }
 
-let state = create_store(cx, AppState { ... });
+let state = Store::new(AppState { ... });
 
 // Reading a field tracks only that path.
 state.user().name().with(|n| println!("{n}"));
@@ -135,7 +135,7 @@ trait UserStoreFields {
 The getters are implemented on `Store<User>`, `Field<User>`, and `Subfield<...>`
 via a trait, so they compose at any depth. The macro also generates:
 
-- `create_store(cx, value)`, `Store::from_parts(...)` for tests;
+- `Store::new(value)`, `Store::from_parts(...)` for tests;
 - a `path()` implementation for each field;
 - `read()`, `write()`, `with()` convenience methods on `Field<T>`;
 - an `update(|&mut T| ...)` that marks the path on drop.
@@ -358,7 +358,7 @@ impl<T: Patch + Clone> Projection<T> {
 - The derive runs as a memo computation; writes to the draft are applied to a
   shadow store at the end of the pass.
 - A keyed return value is reconciled with `Patch` semantics.
-- Async derives are `create_async_memo` with a seed, returning `Memo<Store<T>>`;
+- Async derives are `Memo::new_async` with a seed, returning `Memo<Store<T>>`;
   reads before the first answer see the seed or are pending, depending on options.
 - Do not catch `NotReady` inside a derive: it is how the projection learns to
   retry (Solid #3073; the same rule applies here).
@@ -416,7 +416,7 @@ struct AppState {
     theme: Theme,
 }
 
-let state = create_store(cx, AppState::default());
+let state = Store::new(AppState::default());
 
 // Field access
 state.user().name().set("Ada".into());
