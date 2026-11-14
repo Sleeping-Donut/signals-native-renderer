@@ -277,7 +277,7 @@ test; third-party null renderer conformance suite is green.
 | Retained tree structural updates are harder than expected | High | High | Start with keyed list + `Show` only; disallow arbitrary re-parenting; keep cached-rebuild escape hatch. | If keyed list reorder is not stable by Phase 4 exit, fall back to GPUI-style per-view rebuild for that subtree. |
 | Incremental layout is not achievable with taffy | Medium | Medium | Treat full layout on layout-dirty frames as v1; add layout boundaries and measure caching later. | If layout exceeds 30% of frame time in the demo, add a dirty-subtree layout prototype before Phase 8. |
 | Text shaping dominates frame time | Medium | Medium | Cache shaped lines by content+font+width; keep a platform text system boundary; profile early. | If shaping > 5 ms/frame, move to a retained line layout with incremental reflow. |
-| Store macro complexity delays app work | Medium | Medium | Ship flat `Signal<T>` usage first; stores are opt-in. | If derive macro exceeds 3 weeks, ship a `#[derive(Store)]` subset (plain fields + Vec) and defer enums/patch. |
+| Store macro complexity delays app work | Medium | Medium | Ship flat `signal()` pairs first; stores are opt-in. | If derive macro exceeds 3 weeks, ship a `#[derive(Store)]` subset (plain fields + Vec) and defer enums/patch. |
 | wgpu backend blocks on platform issues | Low | Medium | Null renderer and scene recorder are first-class; a CPU rasterizer test backend keeps CI green. | If wgpu is unstable on a target, add a `tiny-skia` software backend for that platform. |
 | Unsafe arena code has soundness bugs | Medium | High | Safe indices first; isolate `unsafe` in `arena`; Miri; no `unsafe` in graph logic. | Any Miri failure blocks release until fixed or the `unsafe` is removed. |
 | Public API churn | High | Medium | Mark everything `#[doc(hidden)]` or `unstable` until Phase 6; semver only after M6. | If third-party renderer authors need stability earlier, freeze `renderer-api` after Phase 3. |
@@ -381,7 +381,7 @@ section docs.
    flow and `AnyView`/`Either`. Neither needs a generic control-flow base. See
    [docs/10-macros-and-authoring.md](docs/10-macros-and-authoring.md) §7.2.
 2. **Props representation.** All props are `Prop<T>` (`Static(T)`,
-   `Reactive(Signal<T>)`, `Derived(Memo<T>)`). No bare-`T` props for values that
+   `Reactive(ReadSignal<T>)`, `Derived(Memo<T>)`). No bare-`T` props for values that
    may change; static props allocate no node. See
    [docs/10-macros-and-authoring.md](docs/10-macros-and-authoring.md) §3.2.
 3. **Async read type.** `get() -> T` is the only public value read; inside a
@@ -412,6 +412,17 @@ section docs.
    headers for ported MIT code. GPUI is reference-only because Apache-2.0 is not
    GPLv2-compatible. See `LICENSE` and
    [docs/reference-repos.md](docs/reference-repos.md).
+
+### 9.1 Remaining open questions
+
+The section docs still contain leaning decisions and genuinely open questions.
+They are consolidated in
+[docs/12-decisions-and-risks.md](docs/12-decisions-and-risks.md) Part F,
+grouped into resolved, leaning, genuinely open (with next step), and deferred.
+The headline open items are: equality/comparator API, memo read representation,
+colorless suspension implementation, transaction merge criterion, re-ask
+detection, child-order representation, text engine, incremental layout, dispatch
+tree vs parent walk, and store field split.
 
 ---
 

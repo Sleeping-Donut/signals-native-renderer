@@ -232,7 +232,7 @@ Props are uniform `Prop<T>` values, never bare `T` when they might change:
 ```rust
 pub enum Prop<T> {
     Static(T),
-    Reactive(Signal<T>),
+    Reactive(ReadSignal<T>),
     Derived(Memo<T>),
 }
 
@@ -517,7 +517,7 @@ struct Todo { id: u64, title: String, done: bool }
 
 #[component]
 fn App(state: Store<AppState>) -> impl View {
-    let filter = Signal::new(cx, Filter::All);
+    let (filter, _set_filter) = signal(cx, Filter::All);
 
     view! {
         <div class="app">
@@ -591,7 +591,8 @@ Compiled shape (simplified):
 1. **Default view-slot granularity.** Is mount-once too surprising for users coming
    from React/Solid? The `view!` macro can make bindings transparent, so the
    answer is mostly documentation and diagnostics.
-2. **Component-local state.** A `struct Counter { count: Signal<i32> }` per mount,
+2. **Component-local state.** A `struct Counter { count: ReadSignal<i32>,
+   set_count: WriteSignal<i32> }` per mount,
    or a closure-captured signal? Both work; the macro should pick one and hide
    it.
 3. **Child order representation.** Linked list vs cached `Vec` per parent. Start

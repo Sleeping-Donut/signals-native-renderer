@@ -156,7 +156,7 @@ reads. Used for runtime component/view switching and whole-subtree replacement;
 subscribes to the signals it reads and updates the view/scene when they change.
 
 **Prop** — a value passed from a parent to a child, represented as `Prop<T>`
-(`Static(T)`, `Reactive(Signal<T>)`, or `Derived(Memo<T>)`). There are no bare
+(`Static(T)`, `Reactive(ReadSignal<T>)`, or `Derived(Memo<T>)`). There are no bare
 `T` props for values that may change. `Static` allocates no graph node.
 
 **Style** — a resolved layout+paint description attached to a view node. The
@@ -203,12 +203,13 @@ and frame loop.
 **Cx** — the per-call context that borrows the runtime and tracks the current
 owner, observer, and frame phase. All reactive operations take `&Cx`.
 
-**Signal** — a source node with a settable value. The full `Signal<T>` handle is
-read/write; `ReadSignal<T>` and `WriteSignal<T>` are `Copy` views that expose one
-half only.
+**Signal** — an internal full node handle. Public code gets the split pair from
+`signal()`: `ReadSignal<T>` (get/with/is_pending) and `WriteSignal<T>`
+(set/update). There is no combined public signal and no `RwSignal`.
 
-**Core constructor** — `Signal::new`, `Memo::new`, `Memo::new_async`,
-`Store::new`, `ViewSlot::new`. This is the API shape for built-in primitives.
+**Core constructor** — `signal(cx, v)` returns `(ReadSignal, WriteSignal)`;
+`derived_signal`/`async_signal` return the same pair. `Memo::new`,
+`Memo::new_async`, `Store::new`, `ViewSlot::new` are the other core constructors.
 
 **`create_*` helper** — naming for custom primitive/abstraction wrappers, e.g.
 `create_resource`, `create_theme`, `create_counter`. These wrap the core types

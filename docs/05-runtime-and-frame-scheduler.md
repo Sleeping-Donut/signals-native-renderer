@@ -317,4 +317,4 @@ paint primitive count, and allocations. It is cheap enough to keep in release
 4. Is `FrameStats` always on? Keep the counters; the per-node traces are
    feature-gated.
 5. How should animations integrate with the reactive graph? An animation is a
-   `Signal<f32>` driven by a timer; a binding reads it. No special node kind.
+   `ReadSignal<f32>`/`WriteSignal<f32>` pair driven by a timer; a binding reads it. No special node kind.

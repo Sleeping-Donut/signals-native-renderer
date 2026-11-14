@@ -113,9 +113,9 @@ the sync fast path clean while allowing any derived node to be async:
 ```rust
 Memo::new(cx, |cx, prev| ...)          // sync derived
 Memo::new_async(cx, |cx| ...)          // async derived
-Signal::new(cx, value)                 // plain source
-Signal::new_derived(cx, |cx, prev| ...)// writable derived
-Signal::new_derived_async(cx, |cx| ...)// writable derived, async
+signal(cx, value)                      // plain source, split pair
+derived_signal(cx, |cx, prev| ...)     // writable derived, split pair
+async_signal(cx, |cx| ...)             // writable derived, async, split pair
 ```
 
 An **effect** in the graph sense has both halves. A **render effect** has only
@@ -504,9 +504,9 @@ Default for `T: PartialEq` is `PartialEq`; for non-`PartialEq` types, use
 comparator. The default is chosen at the constructor via a trait bound:
 
 ```rust
-Signal::new(cx, value)             // requires T: PartialEq
-Signal::new_unchecked(cx, value)   // no equality, always notify
-Signal::new_with(cx, value, equals) // custom
+let (read, write) = signal(cx, value);          // requires T: PartialEq
+let (read, write) = signal_unchecked(cx, value);// no equality, always notify
+let (read, write) = signal_with(cx, value, equals); // custom
 ```
 
 A comparator panic is a compute error: the value is replaced by the error, and
@@ -515,15 +515,14 @@ the error boundary / root error hook handles it (Solid's A3 rule).
 ## 12. API surface (v1)
 
 ```rust
-// Sources
-Signal::new(cx, v) -> Signal<T>                 // plain source
-Signal::new_derived(cx, |cx, prev| ...) -> Signal<T>       // writable derived
-Signal::new_derived_async(cx, |cx| ...) -> Signal<T>       // writable derived, async
-Signal::new_unchecked(cx, v) -> Signal<T>
-signal.get(cx) / signal.is_pending(cx)
-signal.set(cx, v) / signal.update(cx, |v| ...)
+// Sources — split by default
+let (count, set_count) = signal(cx, v);                 // ReadSignal<T>, WriteSignal<T>
+let (value, set_value) = derived_signal(cx, |cx, prev| ...); // writable derived
+let (value, set_value) = async_signal(cx, |cx| ...);         // writable derived, async
+count.get(cx) / count.is_pending(cx)
+set_count.set(cx, v) / set_count.update(cx, |v| ...)
 
-// Derivations
+// Derivations (read-only)
 Memo::new(cx, |cx, prev| ...) -> Memo<T>         // sync
 Memo::new_async(cx, |cx| ...) -> Memo<T>         // async
 Memo::new_lazy(cx, |cx, prev| ...) -> Memo<T>
@@ -542,52 +541,37 @@ flush(cx)
 flush(cx, f)                                 // run f, then flush synchronously
 ```
 
+There is no combined public signal handle and no `RwSignal`. `signal()`,
+`derived_signal()`, and `async_signal()` return a `(ReadSignal<T>,
+WriteSignal<T>)` pair. `Signal<T>` in the node-model sections is the internal
+full node handle; application and library code uses the halves.
+
 Every reactive operation takes `&Cx`. The context resolves the runtime and
 current owner; there is no global graph. The `view!` macro has `cx` in scope, so
 application code rarely writes it. `Prop::Static` needs no `cx`. Helper
 functions take plain values, so they do not thread `cx` through.
 
-`Signal` and `Memo` are differentiated by write access (writable vs read-only),
-not by sync/async. Async is a compute mode: `Memo::new_async` and
-`Signal::new_derived_async` return the same `Memo<T>`/`Signal<T>` as their sync
-counterparts. `AsyncMemo<T>` is not a separate type.
+`ReadSignal<T>` and `WriteSignal<T>` are differentiated by capability, not by
+sync/async. Async is a compute mode: `Memo::new_async` and `async_signal` return
+the same `ReadSignal`/`WriteSignal`/`Memo` types as their sync counterparts.
+`AsyncMemo<T>` is not a separate type.
 
-**Read/write split.** `Signal<T>` is the full handle. A primitive that does not
-want to expose writes can split it:
+**Split is the default.** There is no combined public signal and no `RwSignal`.
+Every writable source is created as a pair:
 
 ```rust
-let (read, write) = Signal::new(cx, 0).split();
+let (read, write) = signal(cx, 0);
 // read:  ReadSignal<i32>   — get/with/is_pending, no set
 // write: WriteSignal<i32>  — set/update, no get
 ```
 
-`Signal::read_only()` and `Signal::write_only()` produce either half. They are
-`Copy` wrappers over the same node: no allocation, no runtime cost, no separate
-graph. `Memo<T>` and `Prop<T>` are already read-only. Use `ReadSignal<T>` in a
-component's public API and keep `WriteSignal<T>` private to the primitive; the
-compiler then prevents downstream writes.
-
-The trade-off is API safety vs call-site convenience:
-
-| Default | Benefit | Cost |
-|---|---|---|
-| **Split** (read + write) | Least privilege; readers cannot write; component APIs are explicit; mirrors `&T` vs `&mut T`; most state is read in many places, written in one | Two handles to thread; tuple returns; more verbose local state |
-| **Combined** (`Signal<T>`) | One handle; convenient for local counters/state | Any reader can write; capability leaks through APIs; harder to audit |
-
-Leptos defaults to the split shape: `signal(value)` returns
-`(ReadSignal<T>, WriteSignal<T>)`; the combined handle is the explicit
-`RwSignal::new(value)`. Solid likewise returns `[get, set]` from `createSignal`.
-This matches the common case: a component receives a read handle and the owner
-keeps the write handle.
-
-Our current low-level `Signal::new` returns the combined handle, with `.split()`
-as opt-in. That is convenient for local state, but it is the less safe default.
-If we mirror Leptos, the default primitive should return
-`(ReadSignal<T>, WriteSignal<T>)` and the combined form should be explicit
-(`RwSignal::new` or `Signal::new_combined`). That is a better default for a
-framework, but it is an API change from the current `Signal::new` shape; decide
-before the public API freezes. Until then, split at API boundaries by convention
-and keep the write handle private.
+`ReadSignal`/`WriteSignal` are `Copy` views over the same node: no allocation, no
+runtime cost, no separate graph. `Memo<T>` and `Prop<T>` are read-only. Use
+`ReadSignal<T>` in a component's public API and keep `WriteSignal<T>` private to
+the primitive; the compiler then prevents downstream writes. The cost is two
+handles to thread and tuple returns; the benefit is least privilege and explicit
+API boundaries. Solid (`[get, set]`) and Leptos (`signal() ->
+(ReadSignal, WriteSignal)`) both default to the split shape.
 
 ```rust
 #[derive(Clone, Copy)]
@@ -597,7 +581,7 @@ struct CounterPrimitive {
 }
 
 fn create_counter(cx: &Cx, initial: i32) -> CounterPrimitive {
-    let (count, increment) = Signal::new(cx, initial).split();
+    let (count, increment) = signal(cx, initial);
     CounterPrimitive { count, increment }
 }
 
@@ -655,8 +639,8 @@ Property tests:
 
 ## 15. Open questions
 
-1. Should `Signal<T>` require `T: PartialEq` by default, or should equality be
-   explicit? (Leaning: `PartialEq` default, `new_unchecked` escape.)
+1. Should `signal()` require `T: PartialEq` by default, or should equality be
+   explicit? (Leaning: `PartialEq` default, `signal_unchecked` escape.)
 2. Do we expose `Memo<T>` values by guard or by clone? Guards are faster but can
    conflict with writes; clone is simpler for users. (Leaning: both, with guards
    for internal code and `Clone` convenience for app code.)

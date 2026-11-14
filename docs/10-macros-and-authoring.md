@@ -31,11 +31,11 @@ In our model:
 ```rust
 #[component]
 fn Counter() -> impl View {
-    let count = Signal::new(cx, 0);
+    let (count, set_count) = signal(cx, 0);
     view! {
-        <button on_click=move |cx, _| count.update(cx, |c| *c += 1)>
+        <Button on_click=move |cx, _| set_count.update(cx, |c| *c += 1)>
             {count}
-        </button>
+        </Button>
     }
 }
 ```
@@ -48,12 +48,13 @@ fn Counter() -> impl View {
 For users, the syntax looks similar; the semantics are more like Solid's compiled
 output than its component function.
 
-**Conventions in this document.** Core primitives use their type constructors:
-`Signal::new(cx, v)`, `Signal::new_derived(cx, |cx, prev| ...)`,
-`Memo::new(cx, |cx, prev| ...)`, `Memo::new_async(cx, |cx| ...)`,
-`Store::new(cx, value)`, `ViewSlot::new(cx, key, render)`. All reactive
-operations take `&Cx`. There is no global graph; the context resolves the runtime
-and owner. Code sketches sometimes omit `cx` where the surrounding `view!` macro
+**Conventions in this document.** Core primitives use their constructors:
+`signal(cx, v) -> (ReadSignal<T>, WriteSignal<T>)`,
+`derived_signal(cx, ...)`, `async_signal(cx, ...)`, `Memo::new(cx, ...)`,
+`Memo::new_async(cx, ...)`, `Store::new(cx, value)`,
+`ViewSlot::new(cx, key, render)`. All reactive operations take `&Cx`. There is no
+global graph; the context resolves the runtime and owner. Code sketches sometimes
+omit `cx` where the surrounding `view!` macro
 supplies it, but the real API takes it.
 
 Custom primitive/abstraction helpers use Solid/Leptos-style `create_*` naming:
@@ -161,7 +162,7 @@ for a retained list; if omitted, it uses the item's index and emits a dev warnin
 ```rust
 #[component]
 fn Counter(initial: Prop<i32>, step: Prop<i32>) -> impl View {
-    let count = Signal::new(cx, initial.get_untracked(cx));
+    let (count, set_count) = signal(cx, initial.get_untracked(cx));
     view! { ... }
 }
 ```
@@ -190,7 +191,7 @@ be reactive:
 ```rust
 pub enum Prop<T> {
     Static(T),
-    Reactive(Signal<T>),
+    Reactive(ReadSignal<T>),
     Derived(Memo<T>),
 }
 
@@ -211,7 +212,7 @@ Passing:
 
 ```rust
 view! {
-    <Label text=title />              // Signal<String> -> Prop::Reactive
+    <Label text=title />              // ReadSignal<String> -> Prop::Reactive
     <Label text="Static" />           // literal -> Prop::Static("Static".into())
     <Label text=move || format!("{first} {last}") /> // closure -> Prop::Derived(memo)
 }
@@ -220,7 +221,7 @@ view! {
 The macro decides syntactically:
 
 - a closure `move || ...` becomes a `Memo<T>` wrapped in `Prop::Derived`;
-- an expression whose type is `Signal<T>` or `Memo<T>` becomes
+- an expression whose type is `ReadSignal<T>` or `Memo<T>` becomes
   `Prop::Reactive`/`Prop::Derived`;
 - any other expression becomes `Prop::Static`.
 
@@ -230,8 +231,8 @@ reading `props.text` in Solid is always a lazy accessor; `Prop<T>` makes that
 explicit without forcing a node for static values.
 
 We do **not** use a blanket `impl<T> IntoProp<T> for T`: in Rust it conflicts
-with `impl<T> IntoProp<T> for Signal<T>` (the compiler cannot rule out
-`T = Signal<U>`). The syntactic rule avoids coherence problems and gives better
+with `impl<T> IntoProp<T> for ReadSignal<T>` (the compiler cannot rule out
+`T = ReadSignal<U>`). The syntactic rule avoids coherence problems and gives better
 error messages.
 
 #### Props design tradeoffs
@@ -239,10 +240,10 @@ error messages.
 | Design | Update granularity | Ergonomics | Cost |
 |---|---|---|---|
 | Plain `T` only | None; child must be replaced | Simplest signatures | Unusable for live props; footgun |
-| `Signal<T>` only | Fine-grained | Uniform; macro wraps statics | Every static prop allocates a stored signal/node unless `Signal` has a constant variant |
+| `ReadSignal<T>` only | Fine-grained | Uniform; macro wraps statics | Every static prop allocates a stored signal/node unless `ReadSignal` has a constant variant |
 | **`Prop<T>` enum (chosen)** | Fine-grained for `Reactive`/`Derived`; none for `Static` | Uniform signatures; macro chooses variant | One match per read; enum size |
 | `Fn() -> T` derived closure | Fine-grained, uncached | Flexible | Recomputed at every read; no memoization |
-| `RwSignal<T>`/`ReadSignal<T>` split | Fine-grained | Clear read/write split | More types; write access may be too broad |
+| `ReadSignal<T>`/`WriteSignal<T>` split | Fine-grained | Clear read/write split | More types; write access may be too broad |
 
 **Leptos comparison.** Leptos uses:
 
@@ -301,7 +302,7 @@ struct CounterPrimitive {
 }
 
 fn create_counter(cx: &Cx, initial: i32) -> CounterPrimitive {
-    let (count, increment) = Signal::new(cx, initial).split();
+    let (count, increment) = signal(cx, initial);
     CounterPrimitive { count, increment }
 }
 
@@ -370,7 +371,7 @@ builder equivalent. There is no DOM here: no `div`, `span`, or HTML `class`. If 
 primitive needs styling, use native style properties (`gap`, padding, colors)
 rather than CSS class names.
 
-For a plain `Signal<i32>`, `get` is correct and never suspends. At an imperative
+For a plain `ReadSignal<i32>`, `get` is correct and never suspends. At an imperative
 edge, check the verdict first rather than inventing a default:
 
 ```rust
@@ -654,7 +655,7 @@ struct AppState {
 
 #[component]
 fn App(state: Store<AppState>) -> impl View {
-    let filter = Signal::new(cx, Filter::All);
+    let (filter, _set_filter) = signal(cx, Filter::All);
 
     let visible = Memo::new(cx, move |cx| {
         let f = filter.get(cx);

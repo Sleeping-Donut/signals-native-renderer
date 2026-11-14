@@ -151,15 +151,16 @@ separates "async" from "signal".
 
 The correct model is orthogonal:
 
-- **`Signal<T>`** — writable. It is a plain source, a derived writable signal
-  (`createSignal(fn)` in Solid), or an async derived writable signal. A plain
+- **`ReadSignal<T>` / `WriteSignal<T>`** — the split view of a writable source:
+  plain (`signal`), derived writable (`derived_signal`, Solid's
+  `createSignal(fn)`), or async derived writable (`async_signal`). A plain
   source has no compute and is always ready.
 - **`Memo<T>`** — read-only derived. Its compute may be synchronous or
   asynchronous.
 - **Async is a property of the compute function**, not the node kind. Any
   derived signal or memo can be async.
-- Both use the same public read API (`get`, `is_pending`, `with`); both can be
-  pending. A plain signal simply never is.
+- The read halves (`ReadSignal`, `Memo`) use the same public read API (`get`,
+  `is_pending`, `with`); both can be pending. A plain signal simply never is.
 - The async state is cold: an optional `AsyncState` on the node. Sync nodes never
   allocate or touch it; the read fast path checks one flag/niche.
 
@@ -169,9 +170,9 @@ types:
 ```rust
 Memo::new(cx, |cx, prev| ...)          // sync
 Memo::new_async(cx, |cx| ...)          // async
-Signal::new(cx, value)                 // plain source
-Signal::new_derived(cx, |cx, prev| ...)// writable derived
-Signal::new_derived_async(cx, |cx| ...)// writable derived, async
+let (read, write) = signal(cx, value);// plain source
+let (read, write) = derived_signal(cx, |cx, prev| ...); // writable derived
+let (read, write) = async_signal(cx, |cx| ...);         // writable derived, async
 ```
 
 A helper taking `Memo<T>` does not care how it was built. `AsyncMemo<T>` is not a
@@ -180,7 +181,8 @@ readability.
 
 ```rust
 pub struct Memo<T> { /* NodeId */ }
-pub struct Signal<T> { /* NodeId */ }
+pub struct ReadSignal<T> { /* NodeId + read capability */ }
+pub struct WriteSignal<T> { /* NodeId + write capability */ }
 
 impl<T: 'static> Memo<T> {
     pub fn new(
@@ -205,27 +207,22 @@ impl<T: 'static> Memo<T> {
     pub fn with<R>(&self, cx: &Cx, f: impl FnOnce(&T) -> R) -> R;
 }
 
-impl<T: 'static> Signal<T> {
-    pub fn new(cx: &Cx, value: T) -> Self;
-    pub fn new_derived(
-        cx: &Cx,
-        compute: impl FnMut(&Cx, Option<&T>) -> T + 'static,
-    ) -> Self;
-    pub fn new_derived_async(
-        cx: &Cx,
-        compute: impl FnMut(&Cx) -> LocalBoxFuture<'static, Result<T, Error>> + 'static,
-    ) -> Self;
-
+impl<T: 'static> ReadSignal<T> {
     pub fn get(&self, cx: &Cx) -> T;
     pub fn is_pending(&self, cx: &Cx) -> bool;
+    pub fn with<R>(&self, cx: &Cx, f: impl FnOnce(&T) -> R) -> R;
+}
+
+impl<T: 'static> WriteSignal<T> {
     pub fn set(&self, cx: &Cx, value: T);
     pub fn update(&self, cx: &Cx, f: impl FnOnce(&mut T));
 }
 ```
 
-A plain `Signal::new` never suspends and `get` always returns a value. A derived
-writable signal may suspend if its compute is async; writes set the `prev` value
-for the next compute, matching Solid's function-form signal.
+A plain `signal()` pair never suspends and `read.get` always returns a value. A
+derived writable signal may suspend if its compute is async; writes through
+`write.update` set the `prev` value for the next compute, matching Solid's
+function-form signal. There is no combined public signal and no `RwSignal`.
 
 **`get` is the public read.** There is no `try_get`, `try_read`, or `try` method:
 
@@ -379,12 +376,17 @@ struct ProfileCardProps {
     user_id: Prop<UserId>,
 }
 
-fn profile_ui(user: &User, id: UserId, show_details: Signal<bool>) -> View {
+fn profile_ui(
+    user: &User,
+    id: UserId,
+    show_details: ReadSignal<bool>,
+    set_show_details: WriteSignal<bool>,
+) -> View {
     view! {
         <Column gap=8>
             <Text>{id}</Text>
             <Text>{user.name.clone()}</Text>
-            <Button on_click=move |cx, _| show_details.update(cx, |v| *v = !*v)>
+            <Button on_click=move |cx, _| set_show_details.update(cx, |v| *v = !*v)>
                 "Details"
             </Button>
             <Show when=move || show_details.get(cx)>
@@ -396,7 +398,7 @@ fn profile_ui(user: &User, id: UserId, show_details: Signal<bool>) -> View {
 
 #[component]
 fn ProfileCard(props: ProfileCardProps) -> impl View {
-    let show_details = Signal::new(cx, false);
+    let (show_details, set_show_details) = signal(cx, false);
 
     let user = Memo::new_async(cx, {
         let user_id = props.user_id;
@@ -412,7 +414,7 @@ fn ProfileCard(props: ProfileCardProps) -> impl View {
                 key=move |cx| props.user_id.get(cx)
                 render=move |cx| {
                     let user = user.get(cx);          // suspends if not ready
-                    profile_ui(&user, props.user_id.get(cx), show_details)
+                    profile_ui(&user, props.user_id.get(cx), show_details, set_show_details)
                 }
             />
         </LoadingBoundary>
@@ -428,7 +430,7 @@ lands, the slot renders the profile.
 
 ```rust
 fn profile_card(cx: &mut Cx, props: ProfileCardProps) -> ViewNodeId {
-    let show_details = Signal::new(cx, false);
+    let (show_details, set_show_details) = signal(cx, false);
 
     let user = Memo::new_async(cx, {
         let user_id = props.user_id;
@@ -449,7 +451,12 @@ fn profile_card(cx: &mut Cx, props: ProfileCardProps) -> ViewNodeId {
         move |cx| props.user_id.get(cx),
         move |cx| {
             let user = user.get(cx);              // suspends if not ready
-            profile_ui_builder(cx, &user, props.user_id.get(cx), show_details)
+            profile_ui_builder(
+                cx,
+                &user,
+                props.user_id.get(cx),
+                show_details,
+            )
         },
     );
     cx.insert(root, slot, None);
@@ -457,7 +464,7 @@ fn profile_card(cx: &mut Cx, props: ProfileCardProps) -> ViewNodeId {
     let toggle = cx.element(ElementKind::Button);
     cx.set_text(toggle, "Details");
     cx.on_click(toggle, move |cx, _| {
-        show_details.update(cx, |v| *v = !*v);
+        set_show_details.update(cx, |v| *v = !*v);
     });
     cx.insert(root, toggle, None);
 
@@ -472,7 +479,7 @@ fn profile_ui_builder(
     cx: &mut Cx,
     user: &User,
     id: UserId,
-    show_details: Signal<bool>,
+    show_details: ReadSignal<bool>,
 ) -> ViewNodeId {
     let column = cx.element(ElementKind::Column);
 
@@ -1073,10 +1080,10 @@ much machinery is involved; it is not a weekend addition.
 
 ## 12. Open questions
 
-1. **Colorless read mechanism.** We chose the private-unwind `get()` plus
-   explicit `get()`. The open part is whether the unwind should be a real
-   panic payload or a custom `ControlFlow`-based unwinder; `panic = "abort"`
-   forces the explicit API.
+1. **Colorless read mechanism.** We chose the private-unwind `get()`; there is
+   no public try/default read. The open part is whether the unwind should be a
+   real panic payload or a custom `ControlFlow`-based unwinder; `panic = "abort"`
+   forces the internal fallback.
 2. **Boundary content lifetime.** v1 disposes on fallback; Solid keeps alive.
    Which is the better default for a native app with scroll/focus state?
 3. **Action writes after await (v2).** `ActionCx` is required. Is that too

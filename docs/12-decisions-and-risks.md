@@ -351,15 +351,17 @@ a signal with a compute function, not a read-only memo.
 
 **Decision.** Async is a property of the compute function:
 
-- `Signal<T>` is writable: a plain source, a derived writable signal, or an
-  async derived writable signal.
+- Writable sources are split: `signal()` / `derived_signal()` / `async_signal()`
+  return `(ReadSignal<T>, WriteSignal<T>)`. There is no combined public signal
+  and no `RwSignal`.
 - `Memo<T>` is read-only derived; its compute may be sync or async.
-- Both use `get`/`is_pending`/`latest`. A plain signal never suspends.
+- Both halves use `get`/`is_pending`/`latest`. A plain signal never suspends.
 - Async state is cold (`Option<Box<AsyncState>>`); sync nodes do not pay for it.
 - Constructors differ (`Memo::new` / `Memo::new_async`,
-  `Signal::new_derived` / `Signal::new_derived_async`) because Rust has no
-  overloading, but they return the same `Memo<T>`/`Signal<T>`. A helper taking
-  `Memo<T>` does not care how it was built.
+  `signal` / `derived_signal` / `async_signal`) because Rust has no overloading,
+  but the read half is always `ReadSignal<T>` and the write half is always
+  `WriteSignal<T>`. A helper taking `ReadSignal<T>` or `Memo<T>` does not care
+  how it was built.
 - Do not add a normalizing `new` trait. Sync/async blanket impls overlap; a
   `Sync`/`Async` or `Compute` wrapper is still visible at the call site and only
   hides the mode. Keep the explicit constructors; a `Compute` wrapper may exist
@@ -494,7 +496,7 @@ changes, keyed lists, or as a default.
 ```rust
 pub enum Prop<T> {
     Static(T),
-    Reactive(Signal<T>),
+    Reactive(ReadSignal<T>),
     Derived(Memo<T>),
 }
 ```
@@ -705,3 +707,99 @@ without guessing.
 | §12 open problems | Part C above | Reclamation is resolved by design; async subset, store persistence, and incremental layout remain open. |
 | Crate names `renderer-gpui`, `universal` | ADR-010 | Renamed `renderer-native`, `renderer-api`. |
 
+
+---
+
+## Part F — Remaining open questions (audit)
+
+This is the consolidated audit of the `Open questions` sections in the section
+docs. Items marked **resolved** are no longer open; they are listed in Part C or
+the ADRs. The lists below are the items that still need a decision, a prototype,
+or a measurement.
+
+### Resolved / no longer open
+
+- Async is a compute mode, not a separate `AsyncMemo` type.
+- Signals are split by default: `signal()` returns
+  `(ReadSignal<T>, WriteSignal<T>)`; no `RwSignal`.
+- Public reads are `get` + `is_pending`; no `try`/`try_get`/`get_or`.
+- Props are `Prop<T>` (`Static`, `Reactive(ReadSignal)`, `Derived(Memo)`).
+- `ViewSlot` is a sibling of specialized `Show`/`Switch`/`For`; no rebuild
+  primitive.
+- `on`, actions, `latest`, `affects`, optimism, and lanes are v2.
+- Background work is allowed; the graph stays UI-thread-affine; cancellation is
+  cooperative.
+- Frame batching is the write batch; `flush(fn)` is the imperative escape hatch.
+- License is GPL-2.0-or-later; GPUI is reference-only for v1.
+- `DynamicStore` is v2 with a Leptos-style fallback.
+
+### Leaning, needs confirmation (recommendation exists)
+
+| Area | Question | Current leaning |
+|---|---|---|
+| Core equality | Require `T: PartialEq` by default? | Yes; `signal_unchecked`/custom comparator escape |
+| Memo reads | Guards or clones? | Both: guards internally, `Clone` convenience for app code |
+| Effects | Public `EffectHandle` or owner-only? | Both: handles for bindings, owner-scoped for app effects |
+| Ownership | Public `OwnerId`? | No; opaque `Scope`, IDs for diagnostics |
+| Cleanup panic | Halt or report/continue? | Report and continue; halt only for uncaught compute/apply errors |
+| Boundary content | Dispose on fallback or keep alive? | Dispose in v1; `KeepAlive` opt-in |
+| Store draft | Clone-modify-swap or `Draft` guard? | Clone-modify-swap v1; draft v2 |
+| Store patch | Require `PartialEq`? | Yes; manual `Patch` trait for other types |
+| Renderer style | Full `ResolvedStyle` or property diffs? | Full struct v1; diff adapter later |
+| Text ownership | Renderer or shared text system? | Shared; capability reports which |
+| Frame hooks | Required or optional? | Optional |
+| Runtime loop | Runtime owns winit or host owns loop? | Both: `run` convenience, host-owned `frame` |
+| Frame phases | Separate layout/paint frames? | One frame with phase skips |
+| Windows | One runtime per window? | One graph/runtime, multiple window hosts |
+| Child order | Linked list or cached Vec? | Links first; measure |
+| Focus restore | Parent/sibling or exact remount? | Parent/sibling; `KeepAlive` for exact |
+| Text width | Content-sized or fill parent? | Content-sized with `wrap` opt-in |
+| A11y build | Full or incremental? | Full when active first; measure |
+| Fuzz corpus | Seeds or corpus dir? | Both; seeds are small |
+
+### Genuinely open — needs a prototype or measurement
+
+| Phase | Question | Why it is still open | Next step |
+|---|---|---|---|
+| 1 | Equality default and comparator API | Affects every constructor and generic bound | Decide before core API freeze |
+| 1 | Memo read representation (guard vs clone vs both) | Borrow conflicts vs ergonomics | Prototype both on the demo |
+| 1 | EffectHandle visibility | Public API surface vs binding lifetime | Decide before prelude freeze |
+| 2 | Colorless suspension implementation | Private panic payload vs custom unwinder; `panic = "abort"` | Prototype Path A/B; measure |
+| 2 | Transaction merge criterion | Sharing a reader vs sharing a node | Fuzz independent-widget shapes |
+| 2 | Re-ask detection | Explicit `refresh()` vs hashing tracked inputs | Decide with async rule tests |
+| 2 | `on` full semantics | Needs full boundary/txn/lane model | v2; keyed remount in v1 |
+| 3 | Stable renderer `NodeId` contract | `u64` opaque; `0` invalid; backend pointer option | Freeze in `renderer-api` |
+| 3 | Event model richness | Generic `Event` vs typed pointer/key/IME | Prototype with real input |
+| 4 | Component-local state representation | Per-mount struct vs closure captures | Decide with macro design |
+| 4 | Child order representation | Linked list vs cached Vec | Benchmark mount/reorder |
+| 4 | `KeepAlive` scope | v1 or v1.1? Tabs/navigation need it | Decide before M4 |
+| 4 | Paint roots / damage layering | Window vs layer roots | Prototype overlays/tooltips |
+| 5 | Text engine | parley vs cosmic-text vs platform | Prototype on demo text |
+| 5 | Persistent taffy style updates | Rebuild vs patch style structs | Benchmark |
+| 5 | Incremental layout | Layout roots vs dirty-subtree pass | Measure Phase 5 frame time |
+| 5 | Text intrinsic sizing/default width | Layout invalidation vs UI expectations | Decide with text prototype |
+| 5 | Subpixel text | Grayscale vs LCD subpixel | Platform/quality study |
+| 5 | Font loading | Bundle vs system vs both | Decide with test font |
+| 6 | Dispatch tree vs parent walk | Portals and logical parents | Prototype portal |
+| 6 | Gesture scope | Click/drag/wheel vs double/pinch/long-press | Decide v1 scope |
+| 6 | A11y tree build cost | Full vs incremental when active | Measure with AccessKit |
+| 6 | Cursor/tooltip layers | Separate vs shared overlay layer | Hit-test prototype |
+| 7 | Store persistent vector vs copy-on-write | O(n) writes vs dependency/API | 10k-row benchmark |
+| 7 | Store field read/write split | Apply `ReadField`/`WriteField` like signals? | Prototype before store API freeze |
+| 8 | `view!` syntax strictness | Tree syntax vs builder vs both | Macro prototype |
+| 8 | Reactive attribute detection | Macro type inference vs explicit syntax | `trybuild` prototype |
+| 8 | Optional props | `Prop<Option<T>>` vs `MaybeProp<T>` | Decide with props macro |
+| 8 | `For` key inference | Explicit key vs `Keyed` trait | Prototype macro |
+| 8 | Macro error spans | Proc-macro diagnostics quality | Budget time; `trybuild` |
+| 8 | `view_builder!` | Fluent macro front-end | Stretch only; not scheduled |
+
+### Deferred (not open for v1)
+
+- `on` full re-arm, actions, `latest`, `affects`, optimism, lanes.
+- `DynamicStore` unless a v1 app needs it.
+- Store projections / async derived stores.
+- `KeepAlive` if not in v1.
+- `view_builder!`.
+- Incremental layout beyond layout roots.
+- True partial present (native backend).
+- SSR/hydration, server functions, hot reload.

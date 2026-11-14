@@ -447,7 +447,7 @@ dyn_store.get(&["a".into()]).set(json!(2));
 | Snapshot + memo | whole value | simplest | recompute whole subtree |
 | Immer-style draft | field | good | clone or persistent container |
 
-The store layer is opt-in. Flat state can use `Signal<T>` directly; a single
+The store layer is opt-in. Flat state can use a `signal()` pair directly; a single
 struct with a handful of fields does not need a store.
 
 ## 10. Tests
@@ -477,7 +477,7 @@ struct with a handful of fields does not need a store.
    guard? (Leaning: clone-modify-swap for v1, draft in v2.)
 3. **Field API naming.** `state.user().name()` vs `state.user.name()`. The
    method-call form is Rust-idiomatic and composes with `Field`; keep it.
-4. **Dynamic store in v1.** Probably defer; a config editor can use `Signal<Value>`
+4. **Dynamic store in v1.** Probably defer; a config editor can use a `signal()` pair
    and rebuild bindings.
 5. **`Patch` for arbitrary types.** Require `PartialEq`; provide a manual
    `Patch` trait for types that cannot derive it.
