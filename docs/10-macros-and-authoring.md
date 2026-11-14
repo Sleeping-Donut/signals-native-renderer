@@ -286,6 +286,104 @@ fn Card(children: Children) -> impl View {
 once during the parent's mount. For a child that can change structurally, pass a
 `ViewFn` and wrap it in a `Show`/`ViewSlot`.
 
+### 3.5 Custom primitives: `create_counter`
+
+Core primitives use `Type::new`; custom abstractions use `create_*`. A custom
+primitive is just a function that wraps core handles and exposes an ergonomic
+surface:
+
+```rust
+use std::sync::Arc;
+
+#[derive(Clone)]
+struct CounterPrimitive {
+    pub count: Signal<i32>,
+    increment_fn: Arc<dyn Fn(&Cx)>,
+}
+
+fn create_counter(cx: &Cx, initial: i32) -> CounterPrimitive {
+    let count = Signal::new(cx, initial);
+    let increment_fn = {
+        let count = count;
+        Arc::new(move |cx: &Cx| count.update(cx, |c| *c += 1))
+    };
+    CounterPrimitive { count, increment_fn }
+}
+
+impl CounterPrimitive {
+    fn increment(&self, cx: &Cx) {
+        (self.increment_fn)(cx);
+    }
+}
+```
+
+With `view!`:
+
+```rust
+#[component]
+fn Counter(label: Prop<String>) -> impl View {
+    let counter = create_counter(cx, 0);
+
+    view! {
+        <div class="counter">
+            <span>{label}</span>
+            <span>{counter.count}</span>
+            <button on_click={
+                let counter = counter.clone();
+                move |cx, _| counter.increment(cx)
+            }>"+"</button>
+        </div>
+    }
+}
+```
+
+Without the macro:
+
+```rust
+fn counter(cx: &mut Cx, label: Prop<String>) -> ViewNodeId {
+    let counter = create_counter(cx, 0);
+
+    let root = cx.element(ElementKind::Box);
+    cx.set_class(root, "counter");
+
+    let label_text = cx.text("");
+    cx.bind_text(label_text, {
+        let label = label.clone();
+        move |cx| label.get(cx)
+    });
+    cx.insert(root, label_text, None);
+
+    let count_text = cx.text("");
+    cx.bind_text(count_text, {
+        let count = counter.count;
+        move |cx| count.get(cx).to_string()
+    });
+    cx.insert(root, count_text, None);
+
+    let button = cx.element(ElementKind::Button);
+    cx.set_text(button, "+");
+    cx.on_click(button, {
+        let counter = counter.clone();
+        move |cx, _| counter.increment(cx)
+    });
+    cx.insert(root, button, None);
+
+    root
+}
+```
+
+For a plain `Signal<i32>`, `get` is correct and `try_read` always returns `Ok`.
+Use `try_read` only when the read may be pending or errored:
+
+```rust
+match counter.count.try_read(cx) {
+    Ok(n) => n.to_string(),
+    Err(ReadError::NotReady) => "…".into(),
+    Err(ReadError::Error(e)) => format!("error: {e}"),
+    Err(ReadError::Disposed) => "—".into(),
+}
+```
+
 ## 4. Control-flow helpers
 
 ### 4.1 `Show`

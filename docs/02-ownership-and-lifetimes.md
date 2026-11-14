@@ -93,7 +93,7 @@ pub enum AccessError { Disposed, WrongKind }
 
 Public convenience methods (`get`, `set`) panic in debug with a diagnostic and
 return the last known/placeholder value in release. Internal renderer code uses
-`try_get` and treats `Disposed` as "remove the binding".
+`try_read` and treats `Disposed` as "remove the binding".
 
 ## 3. The owner tree
 
@@ -236,7 +236,7 @@ later read because the JS object is still reachable. In Rust we make this an
 error:
 
 ```rust
-match memo.try_get(cx) {
+match memo.try_read(cx) {
     Ok(v) => ...,
     Err(AccessError::Disposed) => // binding is stale; remove it
 }

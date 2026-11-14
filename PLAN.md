@@ -374,7 +374,7 @@ section docs.
    `Reactive(Signal<T>)`, `Derived(Memo<T>)`). No bare-`T` props for values that
    may change; static props allocate no node. See
    [docs/10-macros-and-authoring.md](docs/10-macros-and-authoring.md) §3.2.
-3. **Async read type.** `try_get() -> Result<T, ReadError>` is the explicit base;
+3. **Async read type.** `try_read() -> Result<T, ReadError>` is the explicit base;
    `get() -> T` is the colorless mode inside tracked computations, implemented
    by a private `NotReady` suspension caught at the computation boundary. `Option<T>`
    is rejected because it conflates absence and readiness. `panic = "abort"`

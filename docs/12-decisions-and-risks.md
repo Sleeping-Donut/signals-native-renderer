@@ -354,7 +354,7 @@ a signal with a compute function, not a read-only memo.
 - `Signal<T>` is writable: a plain source, a derived writable signal, or an
   async derived writable signal.
 - `Memo<T>` is read-only derived; its compute may be sync or async.
-- Both use `get`/`try_get`/`isPending`/`latest`. A plain signal never suspends.
+- Both use `get`/`try_read`/`isPending`/`latest`. A plain signal never suspends.
 - Async state is cold (`Option<Box<AsyncState>>`); sync nodes do not pay for it.
 - Constructors differ (`Memo::new` / `Memo::new_async`,
   `Signal::new_derived` / `Signal::new_derived_async`) because Rust has no
@@ -369,7 +369,7 @@ a signal with a compute function, not a read-only memo.
 **Consequences.** Writable derived signals are preserved. A derived node can be
 async without changing its consumer's type. The sync fast path stays clean via
 cold async state. The read API remains colorless (`get`) with an explicit
-`try_get` fallback.
+`try_read` fallback.
 
 ---
 
@@ -519,7 +519,7 @@ or a node per static prop.
 
 **Decision:** hybrid.
 
-- `try_get() -> Result<T, ReadError>` is the fundamental, explicit API.
+- `try_read() -> Result<T, ReadError>` is the fundamental, explicit API.
 - `get() -> T` is the colorless API inside a tracked computation. On
   `NotReady`, it suspends via a private unwind caught at the computation
   boundary; the scheduler holds/replays the reader.
@@ -527,7 +527,7 @@ or a node per static prop.
   `Option<Option<T>>`, and has no error channel.
 - A `MaybeReady<T>` enum is a possible ergonomic wrapper over `Result`, not a
   third mechanism.
-- `panic = "abort"` builds cannot use `get()`; they use `try_get()` and `?`.
+- `panic = "abort"` builds cannot use `get()`; they use `try_read()` and `?`.
 - User code must not catch the private suspension token; `D-42` still applies.
 
 This is the Rust translation of Solid throwing `NotReadyError`: the throw is a

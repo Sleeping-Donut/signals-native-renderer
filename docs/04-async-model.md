@@ -158,7 +158,7 @@ The correct model is orthogonal:
   asynchronous.
 - **Async is a property of the compute function**, not the node kind. Any
   derived signal or memo can be async.
-- Both use the same read API (`get`/`try_get`); both can be pending. A plain
+- Both use the same read API (`get`/`try_read`); both can be pending. A plain
   signal simply never is.
 - The async state is cold: an optional `AsyncState` on the node. Sync nodes never
   allocate or touch it; the read fast path checks one flag/niche.
@@ -206,7 +206,7 @@ impl<T: 'static> Memo<T> {
     ) -> Self;
 
     /// Explicit, safe, no unwinding. The base API.
-    pub fn try_get(&self, cx: &Cx) -> Result<T, ReadError>;
+    pub fn try_read(&self, cx: &Cx) -> Result<T, ReadError>;
 
     /// Colorless inside a tracked computation: on NotReady, suspends the
     /// current computation and lets the scheduler hold/replay it.
@@ -228,17 +228,22 @@ impl<T: 'static> Signal<T> {
     ) -> Self;
 
     pub fn get(&self, cx: &Cx) -> T;
-    pub fn try_get(&self, cx: &Cx) -> Result<T, ReadError>;
+    pub fn try_read(&self, cx: &Cx) -> Result<T, ReadError>;
     pub fn set(&self, cx: &Cx, value: T);
 }
 ```
 
-A plain `Signal::new` never suspends and `try_get` always returns `Ok`. A
+A plain `Signal::new` never suspends and `try_read` always returns `Ok`. A
 derived writable signal may suspend if its compute is async; writes set the
 `prev` value for the next compute, matching Solid's function-form signal.
 
+**Rust naming note.** `try` is a reserved keyword in Rust 2018+ (try blocks), so
+an inherent method cannot be named `try`. The call is `try_read(cx)`; if you
+insist on the literal name, it must be spelled `r#try(cx)`, which is noisier at
+every call site. `try_read` is the recommended explicit API.
+
 Both `Signal<T>` and `Memo<T>` implement a common `Read<T>` trait (`get`,
-`try_get`, `with`). Generic code can accept `impl Read<T>` and remain unaware of
+`try_read`, `with`). Generic code can accept `impl Read<T>` and remain unaware of
 writable-vs-derived and sync-vs-async; only the constructor knows the difference.
 
 **Constructor ergonomics.** The 2/3 explicit constructors are deliberate; a
@@ -273,7 +278,7 @@ explicit waits:
 
 It does **not** appear in view/binding/render code or in ordinary signal/memo
 reads. `get(cx)` is synchronous; it may suspend the current computation through
-the graph, but it is not an `async fn`. `try_get(cx)` is synchronous and returns
+the graph, but it is not an `async fn`. `try_read(cx)` is synchronous and returns
 `ReadError`. When dependencies change, the async compute runs again and its
 internal `.await`s run again; consumers still read synchronously.
 
@@ -290,7 +295,7 @@ you `Result<User, FetchError>`, and `?` unwraps `Ok(User)` or returns
 That error becomes the memo's error state and is caught by an `ErrorBoundary` —
 it is not `NotReady`.
 
-`NotReady` is produced only by **reactive reads** (`get`, `try_get`, store reads),
+`NotReady` is produced only by **reactive reads** (`get`, `try_read`, store reads),
 and it is control flow, not an application error:
 
 ```rust
@@ -315,7 +320,7 @@ Rules that keep them separate:
 
 - Use `get(cx)` for reactive dependencies. It suspends the computation on
   `NotReady`; it never returns a value that `?` could unwrap.
-- Use `try_get(cx)` only when you want to branch. It returns
+- Use `try_read(cx)` only when you want to branch. It returns
   `Result<T, ReadError>`; **do not** `?` it into `AppError`. If you do,
   `NotReady` becomes a user error and goes to the `ErrorBoundary` instead of the
   `LoadingBoundary`.
@@ -347,7 +352,7 @@ The choices, and why the hybrid wins:
 
 **Recommendation: the hybrid.**
 
-- `try_get() -> Result<T, ReadError>` is the **fundamental** API. Library code,
+- `try_read() -> Result<T, ReadError>` is the **fundamental** API. Library code,
   boundaries, tests, and `panic = "abort"` builds use it. `ReadError::NotReady`
   is a control signal, not a user-facing failure; `D-42` still applies (do not
   catch it as if it were an application error).
@@ -356,7 +361,7 @@ The choices, and why the hybrid wins:
   catches that token at the computation boundary, records the reader/flight, and
   either shows a boundary fallback or parks the transaction. The caller never
   sees an `async` signature or a `Result`.
-- `MaybeReady<T>` is useful as the return of `try_get()` if we want to avoid
+- `MaybeReady<T>` is useful as the return of `try_read()` if we want to avoid
   `Result`'s error connotation, but it is not a third fundamental mechanism. It
   is a naming/ergonomics choice. Start with `Result`; add `MaybeReady` as a
   convenience if the API feels wrong.
@@ -378,7 +383,7 @@ The hybrid avoids that:
 
 - `get()` inside a tracked computation is colorless; a helper can stay a plain
   function and the graph suspends at the computation boundary.
-- `try_get()` is for code that already returns `Result`/`Option`, for library
+- `try_read()` is for code that already returns `Result`/`Option`, for library
   APIs, for boundaries, and for `panic = "abort"` builds.
 - Push reads to the edges: read in a binding/memo and pass plain values down.
   This is good style regardless of coloring.
@@ -418,7 +423,7 @@ let text = Memo::new(cx, move |cx| greeting(&user.get(cx)));
 
 // 4. Explicit at a boundary: no unwind, caller chooses the placeholder.
 fn profile_or_skeleton(cx: &Cx, user: Memo<User>) -> View {
-    match user.try_get(cx) {
+    match user.try_read(cx) {
         Ok(user) => view! { <Profile user=user /> },
         Err(ReadError::NotReady) => view! { <Skeleton /> },
         Err(ReadError::Error(e)) => view! { <ErrorView error=e /> },
@@ -426,15 +431,15 @@ fn profile_or_skeleton(cx: &Cx, user: Memo<User>) -> View {
     }
 }
 
-// 5. A library API that is already fallible uses try_get and ?.
+// 5. A library API that is already fallible uses try_read and ?.
 fn header_text(cx: &Cx, user: Memo<User>) -> Result<String, AppError> {
-    let user = user.try_get(cx).map_err(AppError::from)?;
+    let user = user.try_read(cx).map_err(AppError::from)?;
     Ok(greeting(&user))
 }
 
-// 6. Event handlers are at the edge; data should be ready, but try_get is safe.
+// 6. Event handlers are at the edge; data should be ready, but try_read is safe.
 button.on_click(move |cx, _| {
-    if let Ok(user) = user.try_get(cx) {
+    if let Ok(user) = user.try_read(cx) {
         open_profile(cx, user.id);
     }
 });
@@ -444,7 +449,7 @@ Notice what does **not** happen: `greeting` never returns `Result`; the memo
 never returns `Result`; only the explicit boundary and the already-fallible
 library API name `ReadError`. That is the coloring discipline.
 
-#### Comparing `get` and `try_get` with a prop and a signal
+#### Comparing `get` and `try_read` with a prop and a signal
 
 The component receives `user_id: Prop<UserId>` and creates `show_details:
 Signal<bool>` locally. It also creates an async `user` memo from the prop.
@@ -507,7 +512,7 @@ No `Result` in `profile_ui` or in the slot render. If `user` is not ready, the
 graph suspends the render and the boundary shows the skeleton. When the user
 lands, the slot renders the profile.
 
-**With `try_get()` — explicit; the function chooses the UI:**
+**With `try_read()` — explicit; the function chooses the UI:**
 
 ```rust
 #[component]
@@ -525,7 +530,7 @@ fn ProfileCard(props: ProfileCardProps) -> impl View {
     view! {
         <ViewSlot
             key=move |cx| props.user_id.get(cx)
-            render=move |cx| match user.try_get(cx) {
+            render=move |cx| match user.try_read(cx) {
                 Ok(user) => profile_ui(&user, props.user_id.get(cx), show_details),
                 Err(ReadError::NotReady) => view! {
                     <ProfileSkeleton id=props.user_id.get(cx) />
@@ -576,7 +581,7 @@ fn profile_card(cx: &mut Cx, props: ProfileCardProps) -> ViewNodeId {
 
     let slot = cx.view_slot(
         move |cx| props.user_id.get(cx),
-        move |cx| match user.try_get(cx) {
+        move |cx| match user.try_read(cx) {
             Ok(user) => profile_ui_builder(cx, &user, props.user_id.get(cx), show_details),
             Err(ReadError::NotReady) => cx.element(ElementKind::Box).class("skeleton").id(),
             Err(ReadError::Error(e)) => error_view_builder(cx, e),
@@ -624,7 +629,7 @@ The builder form makes the pieces explicit: `element`/`text` create nodes,
 `view!` macro is syntax over this; it is not a different runtime.
 
 **The unwind caveat.** "Colorless" is only true if the build allows unwinding.
-With `panic = "abort"`, `get()` cannot suspend; code must use `try_get()` and
+With `panic = "abort"`, `get()` cannot suspend; code must use `try_read()` and
 `?`. The private token is not a user panic: the panic hook suppresses it, and
 user code must not catch it (the same rule as `D-42`: a reactive read is not an
 `await` and `try/catch` is not a channel). A helper function that calls `get()`
@@ -731,7 +736,7 @@ fn suspend() -> ! {
   loud instead of silently publishing a partial value.
 - Catch at each computation, not only at the render effect, so a memo can be
   marked pending and its reader can re-suspend cleanly.
-- `panic = "abort"` cannot use this path; `try_get()` is required.
+- `panic = "abort"` cannot use this path; `try_read()` is required.
 - Unwinding across `extern "C"` is undefined/aborts. User computations must not
   cross FFI before a suspension; document this.
 
@@ -743,7 +748,7 @@ closest to Solid's throw model and the only path that is truly colorless.
 
 #### Path B — explicit `Result`/`?` everywhere
 
-`try_get()` returns `Result<T, ReadError>`; every helper that reads a pending
+`try_read()` returns `Result<T, ReadError>`; every helper that reads a pending
 value returns `Result` and uses `?`. The `view!` macro can wrap dynamic
 expressions in a generated `Result` context, but a plain Rust helper still has to
 be written in the colored style.
@@ -779,11 +784,11 @@ a complement to Path A/B, not a replacement.
 
 #### Recommendation
 
-Implement Path B first (`try_get`, explicit, tested everywhere). Add Path A behind
+Implement Path B first (`try_read`, explicit, tested everywhere). Add Path A behind
 a `colorless` feature and make `get()` available only there. Prototype both on the
 same navigation/hold tests, measure the `catch_unwind` overhead, and keep the
 `suspended` flag diagnostic. If the panic hook or unwinding proves unacceptable on
-a target, that target uses `try_get` and `?`; no semantics change, only ergonomics.
+a target, that target uses `try_read` and `?`; no semantics change, only ergonomics.
 
 ## 4. Reader classes
 
@@ -1138,7 +1143,7 @@ not ambient thread state.
 
 ### 9.1 Documented deviations from Solid 2.0
 
-- **Reads have two APIs.** `try_get()` returns `Result` and is the safe base;
+- **Reads have two APIs.** `try_read()` returns `Result` and is the safe base;
   `get()` is colorless inside a tracked computation and suspends by a private
   unwind. This is not a throw-to-user-code channel; `D-42` still applies.
 - **Content is disposed on fallback entry.** Solid keeps it alive but off screen.
@@ -1180,7 +1185,7 @@ Required tests:
 - Error: rejected fetch shows error fallback; retry replaces it.
 - Cancellation: dispose mid-flight; no landing, no panic.
 - `isPending`: true for a new question, false for a re-ask, false for loading.
-- `try_get`: returns `NotReady` before first value; `get` suspends inside a
+- `try_read`: returns `NotReady` before first value; `get` suspends inside a
   computation and resumes at commit; `get` outside a tracked computation errors.
 - Fuzz: random graph of async memos, writes, and boundaries; assert every frame
   is a snapshot consistent with some committed txn state.
@@ -1212,7 +1217,7 @@ much machinery is involved; it is not a weekend addition.
 ## 12. Open questions
 
 1. **Colorless read mechanism.** We chose the private-unwind `get()` plus
-   explicit `try_get()`. The open part is whether the unwind should be a real
+   explicit `try_read()`. The open part is whether the unwind should be a real
    panic payload or a custom `ControlFlow`-based unwinder; `panic = "abort"`
    forces the explicit API.
 2. **Boundary content lifetime.** v1 disposes on fallback; Solid keeps alive.
