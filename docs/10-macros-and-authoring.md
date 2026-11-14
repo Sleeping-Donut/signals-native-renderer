@@ -761,3 +761,8 @@ What runs when a todo is toggled:
    `ViewSlot` and for exposing methods.
 6. **Error messages.** Proc macros are notoriously bad at spans. Budget time for
    `syn::Error` spans and `trybuild` tests.
+7. **`view_builder!` (stretch, not scheduled).** A second front-end that parses
+   fluent chain syntax (`Row.gap(8).child(Text.value(label))`) and emits the same
+   direct `cx.element`/component-mount code as `view!`; no runtime builder. It is
+   unimportant and adds a second syntax/tooling burden. Only pursue if fluent
+   syntax is strongly requested.

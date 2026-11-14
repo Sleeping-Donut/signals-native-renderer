@@ -567,6 +567,28 @@ graph. `Memo<T>` and `Prop<T>` are already read-only. Use `ReadSignal<T>` in a
 component's public API and keep `WriteSignal<T>` private to the primitive; the
 compiler then prevents downstream writes.
 
+The trade-off is API safety vs call-site convenience:
+
+| Default | Benefit | Cost |
+|---|---|---|
+| **Split** (read + write) | Least privilege; readers cannot write; component APIs are explicit; mirrors `&T` vs `&mut T`; most state is read in many places, written in one | Two handles to thread; tuple returns; more verbose local state |
+| **Combined** (`Signal<T>`) | One handle; convenient for local counters/state | Any reader can write; capability leaks through APIs; harder to audit |
+
+Leptos defaults to the split shape: `signal(value)` returns
+`(ReadSignal<T>, WriteSignal<T>)`; the combined handle is the explicit
+`RwSignal::new(value)`. Solid likewise returns `[get, set]` from `createSignal`.
+This matches the common case: a component receives a read handle and the owner
+keeps the write handle.
+
+Our current low-level `Signal::new` returns the combined handle, with `.split()`
+as opt-in. That is convenient for local state, but it is the less safe default.
+If we mirror Leptos, the default primitive should return
+`(ReadSignal<T>, WriteSignal<T>)` and the combined form should be explicit
+(`RwSignal::new` or `Signal::new_combined`). That is a better default for a
+framework, but it is an API change from the current `Signal::new` shape; decide
+before the public API freezes. Until then, split at API boundaries by convention
+and keep the write handle private.
+
 ```rust
 #[derive(Clone, Copy)]
 struct CounterPrimitive {

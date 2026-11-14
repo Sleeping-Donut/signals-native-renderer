@@ -244,6 +244,16 @@ arena compaction only if measurements demand it, fuzzers, benchmarks, devtools.
 **Exit:** published performance report; no unbounded growth in a 24-hour churn
 test; third-party null renderer conformance suite is green.
 
+### Stretch goals (not scheduled)
+
+- **`view_builder!`** — a second proc-macro front-end that parses fluent
+  builder-chain syntax (`Row.gap(8).child(Text.value(label))`) and emits the
+  same direct `cx.element` / component-mount calls as `view!`. It is a syntax
+  front-end, not a runtime builder, so runtime cost should match `view!` when the
+  emitter is shared. It is explicitly unimportant and not in any phase: it adds a
+  second syntax, documentation, and weaker IDE/type diagnostics inside the macro.
+  Only pursue if fluent syntax is strongly requested.
+
 ### Milestones
 
 | Milestone | Phase | Demo |
