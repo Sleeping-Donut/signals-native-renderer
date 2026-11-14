@@ -1002,15 +1002,27 @@ pub struct ErrorBoundary {
   invariant violation, or a fallible sync computation that should replace the
   subtree becomes the node's error state; `ErrorBoundary` catches it.
 
-Auto-unwrapping every `Result` read and hoisting `Err` to the nearest boundary is
-not recommended:
+Leptos has a useful middle ground: **`Result<T, E>` in view position is
+type-directed auto-hoist.** `Result` implements `IntoView`/`Render` when
+`E: std::error::Error`; an `Err` renders nothing and registers with the nearest
+`ErrorBoundary` via the `throw_error` hook. It is not an auto-unwrap on every
+read; it happens only when you render a `Result` as a view. We can adopt the
+same: `impl IntoView for Result<T, E> where E: Error` hoists to the boundary and
+renders a placeholder. The boundary collects errors and renders its fallback;
+when the binding re-renders `Ok`, the old error is cleared.
+
+This is compatible with the domain-value rule: if a 404 should be inline, match
+it or map it to a domain enum before rendering; do not render the raw `Result`.
+
+Auto-unwrapping every `Result` **read** and hoisting `Err` to the nearest
+boundary is still not recommended:
 
 - it turns expected domain errors into full-subtree failures;
 - it makes `Result` a second, implicit error channel;
 - it does not say which error wins when several bindings fail in one frame;
 - recovery is unclear—when does the boundary re-render content?
 
-Instead, expose an explicit hoist:
+Instead, expose an explicit hoist for the read path:
 
 ```rust
 // Exceptional: raise to the nearest ErrorBoundary.
@@ -1026,7 +1038,7 @@ match user_result {
 
 A `try`-binding or `try_view!` can make the exceptional case concise, but it
 should be opt-in. The default remains: domain errors are values; graph errors go
-to `ErrorBoundary`.
+to `ErrorBoundary`; rendered `Result` values hoist by type.
 
 ### 6.3 Boundary placement rules
 
