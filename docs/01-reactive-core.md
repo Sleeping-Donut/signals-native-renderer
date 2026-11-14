@@ -520,14 +520,14 @@ Signal::new(cx, v) -> Signal<T>                 // plain source
 Signal::new_derived(cx, |cx, prev| ...) -> Signal<T>       // writable derived
 Signal::new_derived_async(cx, |cx| ...) -> Signal<T>       // writable derived, async
 Signal::new_unchecked(cx, v) -> Signal<T>
-signal.get(cx) / signal.get_or(cx, default) / signal.is_pending(cx)
+signal.get(cx) / signal.is_pending(cx)
 signal.set(cx, v) / signal.update(cx, |v| ...)
 
 // Derivations
 Memo::new(cx, |cx, prev| ...) -> Memo<T>         // sync
 Memo::new_async(cx, |cx| ...) -> Memo<T>         // async
 Memo::new_lazy(cx, |cx, prev| ...) -> Memo<T>
-memo.get(cx) / memo.get_or(cx, default) / memo.is_pending(cx)
+memo.get(cx) / memo.is_pending(cx)
 memo.with(cx, |v| ...)
 
 // Effects
@@ -551,6 +551,40 @@ functions take plain values, so they do not thread `cx` through.
 not by sync/async. Async is a compute mode: `Memo::new_async` and
 `Signal::new_derived_async` return the same `Memo<T>`/`Signal<T>` as their sync
 counterparts. `AsyncMemo<T>` is not a separate type.
+
+**Read/write split.** `Signal<T>` is the full handle. A primitive that does not
+want to expose writes can split it:
+
+```rust
+let (read, write) = Signal::new(cx, 0).split();
+// read:  ReadSignal<i32>   — get/with/is_pending, no set
+// write: WriteSignal<i32>  — set/update, no get
+```
+
+`Signal::read_only()` and `Signal::write_only()` produce either half. They are
+`Copy` wrappers over the same node: no allocation, no runtime cost, no separate
+graph. `Memo<T>` and `Prop<T>` are already read-only. Use `ReadSignal<T>` in a
+component's public API and keep `WriteSignal<T>` private to the primitive; the
+compiler then prevents downstream writes.
+
+```rust
+#[derive(Clone, Copy)]
+struct CounterPrimitive {
+    pub count: ReadSignal<i32>,
+    increment: WriteSignal<i32>,
+}
+
+fn create_counter(cx: &Cx, initial: i32) -> CounterPrimitive {
+    let (count, increment) = Signal::new(cx, initial).split();
+    CounterPrimitive { count, increment }
+}
+
+impl CounterPrimitive {
+    fn increment(&self, cx: &Cx) {
+        self.increment.update(cx, |c| *c += 1);
+    }
+}
+```
 
 `Memo::new_lazy` defers the first computation until first read and disposes when
 unobserved, matching Solid's `lazy` option. This is useful for expensive

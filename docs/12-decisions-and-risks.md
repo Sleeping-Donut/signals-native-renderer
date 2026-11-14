@@ -354,7 +354,7 @@ a signal with a compute function, not a read-only memo.
 - `Signal<T>` is writable: a plain source, a derived writable signal, or an
   async derived writable signal.
 - `Memo<T>` is read-only derived; its compute may be sync or async.
-- Both use `get`/`get_or`/`is_pending`/`latest`. A plain signal never suspends.
+- Both use `get`/`is_pending`/`latest`. A plain signal never suspends.
 - Async state is cold (`Option<Box<AsyncState>>`); sync nodes do not pay for it.
 - Constructors differ (`Memo::new` / `Memo::new_async`,
   `Signal::new_derived` / `Signal::new_derived_async`) because Rust has no
@@ -368,8 +368,8 @@ a signal with a compute function, not a read-only memo.
 
 **Consequences.** Writable derived signals are preserved. A derived node can be
 async without changing its consumer's type. The sync fast path stays clean via
-cold async state. The read API remains colorless (`get`) with a `get_or` fallback
-and an `is_pending` verdict.
+cold async state. The read API remains colorless (`get`) with an `is_pending`
+verdict; there is no defaulting read.
 
 ---
 
@@ -522,15 +522,14 @@ or a node per static prop.
 - `get() -> T` is the only public value read. Inside a tracked computation, a
   not-ready value suspends via a private `NotReady` token caught at the
   computation boundary; the scheduler holds/replays the reader.
-- `get_or(cx, default) -> T` is the explicit non-suspending fallback for
-  imperative code and snapshots. It never returns `Result`.
 - `is_pending(cx) -> bool` is the verdict; it never suspends.
-- There is no public `try_get`, `try_read`, or `try`. `try` is a reserved Rust
-  keyword, and a public `Result` read colors every helper.
+- There is no public `try_get`, `try_read`, or `try`, and no defaulting read.
+  `try` is a reserved Rust keyword; a default would claim a value the graph does
+  not have; a public `Result` read colors every helper.
 - `Option<T>`/`Result<T, ReadError>` are rejected as the public shape: they
   conflate pending/error/absence and force propagation through pure helpers.
-- `panic = "abort"` builds cannot use the unwind path; they use
-  `get_or`/explicit state, or an internal runtime fallback, not a public API.
+- `panic = "abort"` builds cannot use the unwind path; they use a
+  boundary/domain state or an internal runtime fallback, not a public API.
 - User code must not catch the private suspension token; `D-42` still applies.
 
 This is the Rust translation of Solid throwing `NotReadyError`: the throw is a

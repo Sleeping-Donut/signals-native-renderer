@@ -203,6 +203,10 @@ and frame loop.
 **Cx** — the per-call context that borrows the runtime and tracks the current
 owner, observer, and frame phase. All reactive operations take `&Cx`.
 
+**Signal** — a source node with a settable value. The full `Signal<T>` handle is
+read/write; `ReadSignal<T>` and `WriteSignal<T>` are `Copy` views that expose one
+half only.
+
 **Core constructor** — `Signal::new`, `Memo::new`, `Memo::new_async`,
 `Store::new`, `ViewSlot::new`. This is the API shape for built-in primitives.
 

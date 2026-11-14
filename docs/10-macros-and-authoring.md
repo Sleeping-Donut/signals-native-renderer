@@ -296,26 +296,28 @@ surface:
 ```rust
 #[derive(Clone, Copy)]
 struct CounterPrimitive {
-    pub count: Signal<i32>,
+    pub count: ReadSignal<i32>,
+    increment: WriteSignal<i32>,
 }
 
 fn create_counter(cx: &Cx, initial: i32) -> CounterPrimitive {
-    CounterPrimitive {
-        count: Signal::new(cx, initial),
-    }
+    let (count, increment) = Signal::new(cx, initial).split();
+    CounterPrimitive { count, increment }
 }
 
 impl CounterPrimitive {
     fn increment(&self, cx: &Cx) {
-        self.count.update(cx, |c| *c += 1);
+        self.increment.update(cx, |c| *c += 1);
     }
 }
 ```
 
-The primitive is `Copy` because it contains only a `Signal` handle. No `Arc`,
-no stored callback, no clone at the call site. If a primitive needs shared
-non-`Copy` state, use `Rc` (the graph is single-threaded); `Arc` is only for
-state that must cross into a background/Send task.
+The primitive is `Copy` because it contains only `ReadSignal`/`WriteSignal`
+wrappers. No `Arc`, no stored callback, no clone at the call site. The public
+`count` is read-only; the `WriteSignal` is private, so downstream code cannot
+write it. If a primitive needs shared non-`Copy` state, use `Rc` (the graph is
+single-threaded); `Arc` is only for state that must cross into a background/Send
+task.
 
 With `view!`:
 
@@ -368,12 +370,14 @@ builder equivalent. There is no DOM here: no `div`, `span`, or HTML `class`. If 
 primitive needs styling, use native style properties (`gap`, padding, colors)
 rather than CSS class names.
 
-For a plain `Signal<i32>`, `get` is correct and never suspends. For a
-non-suspending fallback use `get_or`; for a verdict use `is_pending`:
+For a plain `Signal<i32>`, `get` is correct and never suspends. At an imperative
+edge, check the verdict first rather than inventing a default:
 
 ```rust
-let current = counter.count.get_or(cx, 0);
-let updating = counter.count.is_pending(cx);
+if !counter.count.is_pending(cx) {
+    let current = counter.count.get(cx);
+    log_count(current);
+}
 ```
 
 ## 4. Control-flow helpers

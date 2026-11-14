@@ -158,7 +158,7 @@ The correct model is orthogonal:
   asynchronous.
 - **Async is a property of the compute function**, not the node kind. Any
   derived signal or memo can be async.
-- Both use the same public read API (`get`, `get_or`, `is_pending`); both can be
+- Both use the same public read API (`get`, `is_pending`, `with`); both can be
   pending. A plain signal simply never is.
 - The async state is cold: an optional `AsyncState` on the node. Sync nodes never
   allocate or touch it; the read fast path checks one flag/niche.
@@ -195,13 +195,9 @@ impl<T: 'static> Memo<T> {
 
     /// Read the value. Inside a tracked computation, a not-ready value suspends
     /// the computation; the scheduler holds/replays it. Outside a tracked
-    /// computation, use `get_or` or `is_pending`; a not-ready `get` is a
-    /// diagnostic, not a value.
+    /// computation, check `is_pending`; a not-ready `get` is a diagnostic, not
+    /// a value.
     pub fn get(&self, cx: &Cx) -> T;
-
-    /// Never suspends. Returns `default` when the value is not ready, errored,
-    /// or disposed.
-    pub fn get_or(&self, cx: &Cx, default: T) -> T;
 
     /// Verdict only: is a new question still in flight or staged?
     pub fn is_pending(&self, cx: &Cx) -> bool;
@@ -221,7 +217,6 @@ impl<T: 'static> Signal<T> {
     ) -> Self;
 
     pub fn get(&self, cx: &Cx) -> T;
-    pub fn get_or(&self, cx: &Cx, default: T) -> T;
     pub fn is_pending(&self, cx: &Cx) -> bool;
     pub fn set(&self, cx: &Cx, value: T);
     pub fn update(&self, cx: &Cx, f: impl FnOnce(&mut T));
@@ -240,15 +235,16 @@ for the next compute, matching Solid's function-form signal.
   `ReadError` would leak through layers that have nothing to do with loading.
 - The scheduler uses a private `NotReady` control token internally. It is not a
   public error and should never be converted into one.
-- `get_or` is the explicit non-suspending fallback. `is_pending` is the verdict.
-  Boundaries handle loading and error UI; helpers take plain values.
+- `is_pending` is the verdict. Boundaries handle loading and error UI; helpers
+  take plain values.
+- There is no defaulting read (`get_or`). A default would lie about the graph:
+  it would return a value the graph does not have. Use `is_pending` and a
+  boundary/domain state instead.
 
-`get_or` has no exact Solid equivalent. Solid's closest tools are `latest(x)` for
-the newest produced value, `isPending(x)` for the verdict, and
-`createDeferred`/`loadingValue` for stale/default UI. `get_or` is a Rust
-imperative convenience: it hides pending and error, so use it only when a default
-is genuinely correct (snapshots, event handlers, diagnostics), not as a
-replacement for a boundary.
+Solid has no defaulting read either. Its closest tools are `latest(x)` for the
+newest produced value, `isPending(x)` for the verdict, and
+`createDeferred`/`loadingValue` for stale/default UI. Those are truthful about
+the state; a `get_or` default is not.
 
 **Coloring and composition.** If every read returned `Result`, then every
 function that reads a signal either returns `Result<T, ReadError>` or unwraps.
@@ -259,7 +255,8 @@ computation boundary; a helper stays a plain function.
 
 Push reads to the edges: read in a binding/memo and pass plain values down. This
 is good style regardless. `with`/`read_with` closures localize a read when you
-want to avoid clones. Use `get_or` only when you deliberately want a fallback.
+want to avoid clones. At an imperative edge, check `is_pending`; do not invent a
+default.
 
 **Where `.await` appears.** `.await` is confined to async producers and explicit
 waits:
@@ -289,8 +286,8 @@ you `Result<User, FetchError>`, and `?` unwraps `Ok(User)` or returns
 That error becomes the memo's error state and is caught by an `ErrorBoundary` —
 it is not `NotReady`.
 
-`NotReady` is produced only by **reactive reads** (`get`, `get_or`, store reads),
-and it is control flow, not an application error:
+`NotReady` is produced only by **reactive reads** (`get`, store reads), and it is
+control flow, not an application error:
 
 ```rust
 #[derive(Debug, thiserror::Error)]
@@ -314,9 +311,9 @@ Rules that keep them separate:
 
 - Use `get(cx)` for reactive dependencies. It suspends the computation on
   `NotReady`; it never returns a value that `?` could unwrap.
-- Use `get_or(cx, default)` only when you deliberately want a fallback in a
-  non-suspending context (event handler, snapshot, diagnostic). It hides pending
-  and error; do not use it where the boundary should show loading/error.
+- Do not default a pending value. `is_pending` tells you whether a new question
+  is in flight; a boundary or a domain state carries the loading/error UI. A
+  default would be a value the graph does not have.
 - `LoadingBoundary` catches pending; `ErrorBoundary` catches the memo's `Err`.
   A 404 from `fetch_user` is an `Err`, so it is an error, not loading.
 - If a 404 is domain absence rather than failure, return a domain value instead:
@@ -358,11 +355,10 @@ fn greeting(user: &User) -> String {
 
 let text = Memo::new(cx, move |cx| greeting(&user.get(cx)));
 
-// 4. Non-suspending fallback at an imperative edge.
-button.on_click(move |cx, _| {
-    let count = count.get_or(cx, 0);
-    log_click(count);
-});
+// 4. Imperative edge: read only when the value is ready.
+if !count.is_pending(cx) {
+    log_click(count.get(cx));
+}
 
 // 5. Verdict only; no value read.
 if !user.is_pending(cx) {
@@ -605,14 +601,15 @@ closest to Solid's throw model and the only path that is truly colorless.
 
 For `panic = "abort"` builds, the computation runtime can carry a `Result`
 internally: the scheduler knows a pass suspended, and the public read stays
-`get`/`get_or`. There is no public `try` method. This path is an implementation
-fallback for targets without unwinding, not the authoring API; library code still
-receives plain values, and boundaries still own loading/error UI.
+`get`/`is_pending`. There is no public `try` method. This path is an
+implementation fallback for targets without unwinding, not the authoring API;
+library code still receives plain values, and boundaries still own loading/error
+UI.
 
 - Safe, portable, works with `panic = "abort"`, no panic hooks.
 - Not colorless for computations that need to suspend; those targets must use
-  `get_or`/explicit state or enable unwinding.
-- The public surface is unchanged: `get`, `get_or`, `is_pending`, `with`.
+  a boundary/domain state or enable unwinding.
+- The public surface is unchanged: `get`, `is_pending`, `with`.
 
 #### Path C — custom `setjmp`/`longjmp`
 
@@ -643,11 +640,11 @@ needs a suspension mechanism. It is a complement to Path A/B, not a replacement.
 
 Implement Path A first (colorless `get`) where unwinding is available. Use the
 internal Path B only for `panic = "abort"` targets. The public API stays
-`get` / `get_or` / `is_pending` / `with`; there is no public `try` method.
-Prototype both on the same navigation/hold tests, measure the `catch_unwind`
-overhead, and keep the `suspended` flag diagnostic. If unwinding is unacceptable
-on a target, that target uses `get_or`/explicit state or enables unwinding; no
-public semantics change.
+`get` / `is_pending` / `with`; there is no public `try` method. Prototype both on
+the same navigation/hold tests, measure the `catch_unwind` overhead, and keep the
+`suspended` flag diagnostic. If unwinding is unacceptable on a target, that
+target uses a boundary/domain state or enables unwinding; no public semantics
+change.
 
 ## 4. Reader classes
 
@@ -1003,9 +1000,9 @@ not ambient thread state.
 ### 9.1 Documented deviations from Solid 2.0
 
 - **The public read is `get`.** `get()` suspends inside a tracked computation via
-  a private `NotReady` token; there is no public `Result`/`try` read.
-  `get_or(default)` is the non-suspending fallback and `is_pending` is the
-  verdict. This is not a throw-to-user-code channel; `D-42` still applies.
+  a private `NotReady` token; there is no public `Result`/`try` read and no
+  defaulting read. `is_pending` is the verdict. This is not a throw-to-user-code
+  channel; `D-42` still applies.
 - **Content is disposed on fallback entry.** Solid keeps it alive but off screen.
   Use `KeepAlive` (v1.1) for state that must survive.
 - **No born-held mounts outside a boundary.** A newly mounted subtree that reads
