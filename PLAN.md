@@ -1,6 +1,6 @@
 # PLAN
 
-**Status:** Draft 1 — for review before implementation starts.
+**Status:** Draft 2 — review decisions folded in (v1/v2 scope, async reads, props, rebuild, license).
 **Supersedes:** `PLAN-OUTLINE.md` (kept as the original brief).
 **Companion docs:** [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`docs/`](docs/README.md).
 
@@ -49,10 +49,12 @@ hidden background executor owned by the framework.
 - Reactive core with signals, memos, split effects, render effects, batching, and
   ownership.
 - Generational arena and opaque `Copy` handles.
-- Async memos with flight generations, held values, `isPending`, and frame-level
-  holds.
+- Async memos with flight generations, held values, basic `isPending`, and
+  frame-level holds.
 - `LoadingBoundary` and `ErrorBoundary`, with the subset of Solid's hold model
-  described in [04-async-model.md](docs/04-async-model.md).
+  described in [04-async-model.md](docs/04-async-model.md): first load, held
+  navigation, disarmed forwarding, and errors. A `key`-triggered boundary remount
+  substitutes for `on` in v1.
 - Derived stores with per-field and per-key granularity.
 - Universal renderer contract, null renderer, and a conformance suite.
 - Retained native renderer: element tree, bindings, keyed lists, conditionals,
@@ -65,8 +67,12 @@ hidden background executor owned by the framework.
 
 ### 3.2 Explicitly out of scope for v1
 
-- Optimistic writes (`F-11`) and full display-ahead/lane semantics (`F-6`). The
-  node shape leaves room for them; the machinery lands after v1.
+- Optimistic writes (`F-11`), actions, `latest`, `affects`, and full
+  display-ahead/lane semantics (`F-6`). The node shape leaves room for them; the
+  machinery lands in v2.
+- Full `LoadingBoundary::on` re-arm semantics. v1 uses a `key` that remounts the
+  boundary, which covers navigation and reload without the re-arm edge cases
+  (`F-4`/`F-5`, `D-15`/`D-16`).
 - SSR, hydration, and server functions. The renderer contract must not assume a
   DOM, but no server target is built.
 - Multi-window collaboration, presence, and CRDT state.
@@ -91,10 +97,13 @@ hidden background executor owned by the framework.
 
 ## 4. Reference inputs and how they are used
 
-All reference repos are read-only under `refs/` (git-ignored). Licences are
-permissive (Solid MIT, Leptos MIT, GPUI Apache-2.0), but the implementation should
-be independent; where an algorithm is ported, record the source file and licence
-in the module header.
+All reference repos are read-only under `refs/` (git-ignored). The project itself
+is licensed **GPL-2.0-only** (see `LICENSE`). Solid and Leptos are MIT and
+GPLv2-compatible; GPUI is Apache-2.0, which is not compatible with GPLv2.
+Therefore GPUI is an architectural reference only: do not copy its code into this
+project. If GPUI code ever needs to be incorporated, the project must first be
+relicensed to GPLv3 (or permission obtained). Where an algorithm is ported from
+an MIT source, record the source file and license in the module header.
 
 | Reference | What we take | What we do not take |
 |---|---|---|
@@ -163,15 +172,18 @@ context, owners, cleanup, disposal.
 
 ### Phase 2 — Async and holds (3–5 weeks)
 
-**Build:** `Spawner` trait, continuation queue, flight generations, async memos,
-`isPending`, `latest`, `LoadingBoundary`, `ErrorBoundary`, staged holds,
-reader classes (derive / display / observe), deterministic virtual clock.
+**Build:** `Spawner`/`BackgroundSpawner` traits, continuation queue, flight
+generations, async memos, basic `isPending`, `LoadingBoundary` (first load,
+disarmed forwarding, `key` remount), `ErrorBoundary`, staged holds, reader classes
+(derive / display / observe), deterministic virtual clock. Actions, `latest`,
+`affects`, and full `on` are v2.
 
 **Exit:**
 - A navigation test: click → page B data loads → old page stays on screen →
   page B appears whole.
 - A first-load test suspends to the nearest boundary; a disarmed boundary
   forwards and keeps content.
+- A `key` change remounts the boundary and shows the fallback on a fresh load.
 - Held async never shows a partial frame: a snapshot assertion on every frame.
 - Stale flight completions are dropped; cancellation runs teardown exactly once.
 
@@ -250,7 +262,7 @@ test; third-party null renderer conformance suite is green.
 
 | Risk | Likelihood | Impact | Mitigation | Trigger to change course |
 |---|---|---|---|---|
-| Hold/async semantics are too large for v1 | High | High | Ship a defined subset (`F-1,2,3,4,5,9,10,12`) and gate optimistic lanes. Keep the node shape extensible. | If Phase 2 exceeds 7 weeks, cut `latest`/`isPending` to read-only diagnostics and ship navigation holds only. |
+| Hold/async semantics are too large for v1 | High | High | Ship a defined subset (`F-1,2,3,4,5,9,10,12`) and gate optimistic lanes/actions/`latest`. Keep the node shape extensible. | If Phase 2 exceeds 7 weeks, cut `isPending` to a read-only diagnostic and ship navigation holds only. |
 | Retained tree structural updates are harder than expected | High | High | Start with keyed list + `Show` only; disallow arbitrary re-parenting; keep cached-rebuild escape hatch. | If keyed list reorder is not stable by Phase 4 exit, fall back to GPUI-style per-view rebuild for that subtree. |
 | Incremental layout is not achievable with taffy | Medium | Medium | Treat full layout on layout-dirty frames as v1; add layout boundaries and measure caching later. | If layout exceeds 30% of frame time in the demo, add a dirty-subtree layout prototype before Phase 8. |
 | Text shaping dominates frame time | Medium | Medium | Cache shaped lines by content+font+width; keep a platform text system boundary; profile early. | If shaping > 5 ms/frame, move to a retained line layout with incremental reflow. |
@@ -346,29 +358,43 @@ data; reduce inline bindings; add damage regions for GPU overdraw.
 
 ---
 
-## 9. Open questions
+## 9. Decisions from the open questions
 
-These need a decision before or during the named phase. They are tracked in
-[docs/12-decisions-and-risks.md](docs/12-decisions-and-risks.md).
+These were open in Draft 1 and are now resolved; the detailed rationale is in
+[docs/12-decisions-and-risks.md](docs/12-decisions-and-risks.md) Part C and the
+section docs.
 
-1. **Component rebuild semantics.** Default is mount-once; do we expose
-   `#[component(rebuild)]` as a first-class attribute, or only via an explicit
-   `RebuildView` wrapper? (Phase 4)
-2. **Props representation.** `Props` struct with `Signal<T>` fields, or a
-   `Memo`-backed struct with field getters? (Phase 4)
-3. **Async memo return type.** `AsyncMemo<T>` with `Option<T>` reads, or
-   `Result<T, NotReady>` guards, or `AsyncMemo<T>` that throws `NotReady` and is
-   caught by boundaries? (Phase 2)
-4. **Boundary scope.** Do we implement Solid's full `on` re-arm and
-   display-ahead `latest` in v1, or only first-load and held navigation? (Phase 2)
-5. **Dynamic stores.** Interned path map in v1, or defer until a real app needs
-   it? (Phase 7)
-6. **Threading.** Is background async allowed to compute pure values and send
-   them to the UI thread, or must all user code run on the UI thread? (Phase 2)
-7. **Renderer contract batching.** Does the renderer contract include
-   `begin_frame`/`end_frame`, or is per-operation batching enough? (Phase 3)
-8. **Licence and attribution.** MIT/Apache-2.0 for the framework; do we include
-   ported code notices in each module or one `NOTICE` file? (Phase 1)
+1. **Component rebuild semantics.** v1 exposes an explicit `Rebuild` wrapper,
+   not `#[component(rebuild)]`. It replaces the subtree under the same parent and
+   preserves state captured outside the rebuild closure. See
+   [docs/10-macros-and-authoring.md](docs/10-macros-and-authoring.md) §4.1.
+2. **Props representation.** Reactive props are `Signal<T>` or `Memo<T>` handles;
+   static props are plain `T`. The macro wraps literals/plain expressions in
+   constants syntactically. No runtime `Prop<T>` enum in v1. See
+   [docs/10-macros-and-authoring.md](docs/10-macros-and-authoring.md) §3.2.
+3. **Async read type.** `try_get() -> Result<T, ReadError>` is the explicit base;
+   `get() -> T` is the colorless mode inside tracked computations, implemented
+   by a private `NotReady` suspension caught at the computation boundary. `Option<T>`
+   is rejected because it conflates absence and readiness. `panic = "abort"`
+   builds must use the explicit API. See
+   [docs/04-async-model.md](docs/04-async-model.md) §3.4.
+4. **Boundary scope.** v1 implements first-load, held navigation, disarmed
+   forwarding, errors, and a `key` that remounts the boundary. Full `on` re-arm
+   and `latest` are v2. See
+   [docs/04-async-model.md](docs/04-async-model.md) §6.1 and §7.2.
+5. **Dynamic stores.** The static macro path is v1; `DynamicStore` with an
+   interned path map is v2 unless a real app needs it in v1. See
+   [docs/03-store-layer.md](docs/03-store-layer.md) §5.
+6. **Threading.** Background work is allowed. The graph and view tree remain
+   UI-thread-affine; results return as continuations. The host supplies a
+   background spawner in addition to the UI-local one. See
+   [docs/04-async-model.md](docs/04-async-model.md) §3.1.
+7. **Renderer contract batching.** `begin_frame`/`end_frame` stay optional; the
+   native path uses its own frame. No required per-backend batching API.
+8. **License and attribution.** GPL-2.0-only; one `THIRD_PARTY.md` plus module
+   headers for ported MIT code. GPUI is reference-only because Apache-2.0 is not
+   GPLv2-compatible. See `LICENSE` and
+   [docs/reference-repos.md](docs/reference-repos.md).
 
 ---
 

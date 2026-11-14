@@ -40,6 +40,17 @@ provenance. Where it conflicts with `PLAN.md`, the newer documents win; the
 deviations are recorded in
 [docs/12-decisions-and-risks.md](docs/12-decisions-and-risks.md).
 
+## License
+
+This project is licensed under **GPL-2.0-only**. See [`LICENSE`](LICENSE) and
+[`THIRD_PARTY.md`](THIRD_PARTY.md).
+
+The reference repositories in `refs/` have their own licenses. Solid and Leptos
+are MIT (compatible with GPLv2); GPUI is Apache-2.0, which is **not** compatible
+with GPLv2. GPUI is an architectural reference only — do not copy its code into
+this project. See [`docs/reference-repos.md`](docs/reference-repos.md) for the
+compatibility note.
+
 ## The one-paragraph summary
 
 One reactive graph, one retained tree, one checkpoint per frame. State and

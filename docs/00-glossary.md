@@ -113,14 +113,15 @@ suspends to a boundary or holds the mount.
 
 **Latest** — the newest value a node has produced, including a held staged value.
 `latest` is display-ahead: it may show a held change before the screen reveals
-it (`F-6`).
+it (`F-6`). It arrives with the lane model in v2.
 
 **Display-ahead** — a read that shows a held value or a verdict about it now,
-without joining the hold. `latest` and `isPending` are the v1 forms (`F-6`).
+without joining the hold. `isPending` is the v1 form; `latest` arrives with lanes
+in v2 (`F-6`).
 
 **Lane** — the world a display-ahead read opens: the screen plus what it shows
-ahead. A lane holds on its own async separately from the hold it reads. Full lane
-semantics are deferred past v1; only the `latest`/`isPending` read subset ships.
+ahead. A lane holds on its own async separately from the hold it reads. Lanes and
+`latest` are v2; v1 ships only the `isPending` probe.
 
 **Question** — the inputs a node's value answers. An input change asks a new
 question; `refresh()` re-asks the same one quietly (`F-9`).

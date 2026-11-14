@@ -198,23 +198,39 @@ engine (too large).
 
 ### ADR-008: wgpu for the first-party backend
 
-**Status:** Accepted.
+**Status:** Accepted, with a native-backend escape hatch.
 
 **Context.** GPUI uses platform-specific backends (Metal, DirectX, Blade) for
 maximum performance. We need cross-platform reach and a testable offscreen path.
+"wgpu vs native" is not "portable API vs Metal/Vulkan"; wgpu is a portable front
+end that uses Metal, Vulkan, or DX12 underneath. The real trade-off is control
+and overhead, not API availability.
 
-**Decision.** Use `wgpu` for v1. Keep a `PaintBackend` trait so a platform-specific
-backend can be added later. The null/software backend is always available for
-tests.
+| Option | Pros | Cons |
+|---|---|---|
+| **wgpu (chosen)** | One API, one shader language (WGSL), Metal/Vulkan/DX12/WebGPU, offscreen testing, faster to first pixel | Runtime validation/command encoding, less control over present/partial damage, driver quirks, heavier dependency |
+| GPUI-style native backends | Lowest overhead, platform features (IOSurface, partial present, display link), best latency | 3× implementation, shaders, testing, unsafe/platform code; large team commitment |
+| CPU (`tiny-skia`) | Simple, deterministic, no GPU risk | Slow for large scenes; not the flagship |
+
+**Decision.** Use `wgpu` for v1 behind a `PaintBackend` trait. The scene,
+paint-cache, and batching layers are backend-agnostic, so a native Metal/Vulkan/
+DX12 backend is an additive change, not a rewrite. The null/software backend is
+always available for tests.
 
 **Consequences.**
 
-- One shader path, WebGPU-ready.
-- Possible driver quirks and a heavier dependency.
-- Device loss must be handled; tests use a software backend.
+- One shader path, WebGPU-ready, tests on any machine.
+- Possible driver quirks and a heavier dependency; device loss must be handled.
+- v1 presents the whole scene; partial damage is a later backend capability.
+- A platform-specific fast path is justified only if profiling shows wgpu
+  overhead above ~10–15% of frame time or a required platform feature is missing.
 
-**Alternatives.** Platform-specific backends (faster, three implementations);
-`tiny-skia` CPU only (simple, slow for large scenes).
+**Alternatives.** Platform-specific backends from day one (premature); CPU only
+(simple, slow for large scenes).
+
+**Revisit trigger.** If the demo misses the frame budget because of command
+encoding/present overhead, add a Metal backend on macOS first while keeping wgpu
+for other targets.
 
 ---
 
@@ -302,6 +318,24 @@ cycles).
 
 ---
 
+### ADR-013: GPL-2.0-only, with GPUI kept reference-only
+
+**Status:** Accepted.
+
+**Context.** The project is being published as free software. The references have
+different licenses: Solid MIT, Leptos MIT, GPUI Apache-2.0.
+
+**Decision.** License the project GPL-2.0-only. Treat GPUI as an architectural
+reference only; do not copy its code. Ported MIT code keeps its notice.
+
+**Consequences.** The project can use Solid/Leptos code and ideas with
+attribution. It cannot incorporate Apache-2.0 GPUI code. If that changes, the
+project must move to GPLv3 (or GPLv2-or-later, letting recipients choose GPLv3)
+or obtain permission. The scene/paint/input designs in this plan are
+independent descriptions and can be implemented from scratch.
+
+---
+
 ## Part B — Risk detail
 
 The PLAN's risk table is the summary. This section states each risk's warning
@@ -312,7 +346,8 @@ signs and the decision that would change.
 - **Warning signs:** Phase 2 slips past 7 weeks; the rule tests for `F-3`/`F-5`
   keep finding new edge cases; `isPending` tests depend on reader placement.
 - **Mitigation:** ship the subset in [04-async-model.md](04-async-model.md); cut
-  `latest`/`isPending` to diagnostics if needed; defer actions and `affects`.
+  `isPending` to a diagnostic if needed; defer actions, `latest`, `affects`, and
+  full `on` to v2.
 - **Course change:** if the txn model cannot express a case without lanes, stop
   and add the lane abstraction rather than piling special cases.
 
@@ -381,67 +416,170 @@ signs and the decision that would change.
 
 ## Part C — Open questions
 
-These are unresolved and should be decided in the named phase. Each has a
-recommendation; the decision goes in this file when made.
+These were open in Draft 1. Most are now resolved; the remaining engineering
+questions are flagged.
 
-### Q1. Component rebuild syntax (Phase 4)
+### Q1. Component rebuild syntax (resolved for v1)
 
-Should `#[component(rebuild)]` be a first-class attribute, or only an explicit
-`Rebuild` wrapper?
+**Decision:** v1 exposes an explicit `Rebuild` wrapper, not
+`#[component(rebuild)]`. The wrapper takes a closure; the closure re-runs when
+its tracked reads change; its result replaces the previous subtree under the same
+parent. State captured outside the closure survives; locals created inside it do
+not. Old owners and bindings are disposed; the new subtree is initialized before
+layout; focus/scroll inside is lost unless `KeepAlive` is used.
 
-**Recommendation:** attribute, because it is discoverable and the macro already
-knows the body. Keep `Rebuild` for manual composition.
+**Why not an attribute:** an attribute would have to decide whether `let`
+bindings in the body are re-created (state resets) or hoisted (state survives).
+Both are defensible, and guessing wrong is a surprising bug. The wrapper makes
+the state boundary explicit. Once the semantics are proven, the macro can expand
+to the wrapper.
 
-### Q2. Props representation (Phase 4)
+**Why rebuild at all:** mount-once is the default because it preserves identity
+and makes updates cheap. Rebuild is the escape hatch for highly dynamic
+structure, cheap leaves, and code that is simpler as a function of state than as
+a set of bindings. It is the GPUI model applied to one subtree.
 
-`Signal<T>` fields for reactive props, or a `Prop<T>` enum (`Static(T)` |
-`Reactive(Signal<T>)`)?
+Options considered:
 
-**Recommendation:** `Signal<T>` for dynamic props and plain `T` for static props;
-the macro chooses based on the argument type. Avoid a runtime enum.
+| Semantics | Effect | Verdict |
+|---|---|---|
+| Replace subtree under same parent | Parent/sibling identity preserved; subtree state lost | **Chosen** |
+| Replace the component node itself | Simpler, but loses position/focus and breaks sibling assumptions | Rejected |
+| Reconcile keyed children across rebuilds | Preserves child identity | That is a virtual DOM; rejected |
+| Rebuild with cached/memoized children | Shallow rebuild, expensive children retained | Supported by composing `Rebuild` with `CachedView`/`Memo` |
+| Attribute that re-runs the body | Ambiguous state lifetime | Deferred until semantics settle |
 
-### Q3. Async read style (Phase 2)
+### Q2. Props representation (resolved for v1)
 
-`Result<T, NotReady>` vs a `T` that throws to the boundary.
+**Decision:** reactive props are `Signal<T>` or `Memo<T>` handles; static props
+are plain `T`. The `view!` macro decides syntactically: closures become memos,
+handle expressions pass through, other expressions are wrapped in
+`Signal::constant`. No runtime `Prop<T>` enum in v1.
 
-**Recommendation:** `Result` internally; the view binding converts `NotReady` to
-a boundary/hold. This keeps Rust code explicit and testable.
+**Leptos comparison:**
 
-### Q4. Boundary content lifetime (Phase 2)
+- Leptos uses `Signal<T>` (a type-erased enum of read signal, memo, derived
+  closure, or stored value), `MaybeSignal<T>` (static value or reactive value),
+  `MaybeProp<T>` for optional props, `#[prop(into)]` for conversions, and
+  `Callback<In, Out>`/`Children` for events and slots.
+- `MaybeSignal<T>` is the closest analogue to a `Prop<T>` enum. It buys one
+  uniform prop type at the cost of a runtime match on every read and a larger
+  type surface.
+- Our `Signal<T>`/`Memo<T>` props are monomorphic and avoid the match; the macro
+  supplies ergonomics. The cost is that static and reactive props are different
+  types, so component signatures must choose. That is usually obvious at the
+  call site.
 
-Dispose content when showing a fallback, or keep it alive but hidden?
+**Tradeoff:** if a component must accept either a static or reactive value
+without two constructors, add a `MaybeSignal<T>` later. Do not make every prop a
+runtime enum in v1; the hot path and the type errors are better monomorphic.
 
-**Recommendation:** dispose in v1; add `KeepAlive` for state that matters. This
-matches the retained tree's ownership model and avoids "hidden content holds
-nothing" bookkeeping.
+### Q3. Async read style (resolved for v1)
 
-### Q5. Dynamic stores (Phase 7)
+**Decision:** hybrid.
 
-Ship `DynamicStore` in v1 or defer?
+- `try_get() -> Result<T, ReadError>` is the fundamental, explicit API.
+- `get() -> T` is the colorless API inside a tracked computation. On
+  `NotReady`, it suspends via a private unwind caught at the computation
+  boundary; the scheduler holds/replays the reader.
+- `Option<T>` is rejected: it conflates "absent" with "not ready", nests as
+  `Option<Option<T>>`, and has no error channel.
+- A `MaybeReady<T>` enum is a possible ergonomic wrapper over `Result`, not a
+  third mechanism.
+- `panic = "abort"` builds cannot use `get()`; they use `try_get()` and `?`.
+- User code must not catch the private suspension token; `D-42` still applies.
 
-**Recommendation:** defer; `Signal<Value>` + rebuild covers config editors.
+This is the Rust translation of Solid throwing `NotReadyError`: the throw is a
+graph control token, not an application error, and the explicit API remains
+available. See [04-async-model.md](04-async-model.md) §3.4.
 
-### Q6. Threading of background computation (Phase 2)
+### Q4. Boundary content lifetime and `on` (resolved for v1)
 
-Can background tasks compute pure values and send them, or must all user code be
-on the UI thread?
+**Decision:** v1 disposes content when the fallback is shown; `KeepAlive` is the
+opt-in for state that must survive. Solid keeps content alive but off screen;
+that buys state preservation at the cost of "hidden readers hold nothing"
+bookkeeping. For a first native version, disposal is simpler and matches the
+retained tree's owner model.
 
-**Recommendation:** allow pure values; require `Send + 'static` for the result.
-The graph stays UI-thread-affine.
+**`on`:** deferred to v2. v1 uses a `key` memo that remounts the boundary. A key
+change produces a fresh armed boundary, which shows the fallback on a new load
+and then content. This covers navigation/reload.
 
-### Q7. Renderer contract batching (Phase 3)
+Full `on` is not a simple reset: it must arm without remounting, show the
+fallback with the frame of the change that armed it, avoid showing it when the
+same data is read outside the boundary, collect readers that were already
+forwarded, and interact with lanes when the `on` read is display-ahead. Those are
+`D-15`/`D-16`; implementing a partial version produces wrong-frame fallbacks and
+stranded holds. It belongs with the v2 lane/hold work.
 
-Do we need `begin_frame`/`end_frame` in the base trait?
+### Q5. Dynamic stores and the interned path map (resolved for v1)
 
-**Recommendation:** keep them optional. The native path uses its own frame; a DOM
-renderer can ignore them.
+**Decision:** the static `#[derive(Store)]` path is v1. `DynamicStore` with an
+interned path map is v2 unless a real v1 app needs it.
 
-### Q8. Licence notices (Phase 1)
+An interned path map is:
 
-Per-module port notices or one `NOTICE` file?
+```
+path ["users", Key(42), "name"]
+  → canonical PathKey (interned segments)
+  → PathId(17)                 // u32, dense
+  → nodes[17] = NodeId(...)    // trigger node
+```
 
-**Recommendation:** one `NOTICE` plus a header comment in modules that port an
-algorithm, naming the source repository and licence.
+A `HashMap<PathKey, PathId>` is consulted on first access; after that, a read or
+write uses the integer `PathId` and a dense `Vec<NodeId>`. Benefits: no repeated
+long-path hashing, stable node identity, cheap equality, shared prefixes, and no
+duplicate strings. Costs: a canonicalization step on first access, an intern
+table that must be bounded/evicted, and a requirement that keys are
+`Hash + Eq + 'static` (or interned to `u32`). The alternatives are a per-access
+`HashMap<Vec<Segment>, Node>` (simple, slow, allocates), a trie (good prefixes,
+pointer chasing), or string paths (easy, slow). Static stores avoid the question
+entirely: the macro generates a const field index/path.
+
+### Q6. Threading of background computation (resolved for v1)
+
+**Decision:** background work is allowed. The user is not misunderstanding: you
+can spawn a thread or a `tokio` task from the UI thread. The rule is that the
+**graph, view tree, layout, and scene stay on the UI thread**. A background task
+must compute a plain `Send + 'static` value and return it through a continuation;
+it must not retain or mutate handles.
+
+The runtime provides `Spawner::spawn_local` for UI-local futures and an optional
+`BackgroundSpawner::spawn` for `Send` futures. The host can implement the latter
+with tokio, rayon, or its own pool; the framework never owns threads. If the host
+provides no background spawner, user code may use its own executor and send the
+result back through a `UiHandle`/channel. The UI-local future must not block on
+CPU or blocking I/O directly, or it will stall the frame; await a background task
+instead.
+
+### Q7. Batching (resolved for v1)
+
+**Reactive write batching.** The choice is frame checkpoint (chosen), microtask,
+explicit `batch` scopes, or immediate writes. Frame batching gives deterministic
+one-flush/one-paint semantics and is required for holds; its cost is that
+read-after-write needs `flush(fn)`, and non-frame contexts need an explicit
+flush. Microtask batching is a JS event-loop artifact; immediate writes tear and
+lose glitch freedom; a separate `batch` API is mostly redundant when the tick is
+already the batch. v1 keeps `flush(fn)` as the imperative escape hatch and does
+not add `batch`.
+
+**Renderer contract batching.** The base trait is per-operation; `begin_frame`/
+`end_frame` are optional. Per-operation is simplest for DOM-like backends and
+conformance; frame hooks let a native/GPU backend coalesce command encoding.
+Requiring frame hooks would burden simple backends; forbidding them would force
+one call per primitive. Optional is the right split. The native path does not use
+the contract at all; it has its own frame.
+
+### Q8. License notices (resolved)
+
+**Decision:** the project is **GPL-2.0-only** (see `LICENSE`). Use one
+`THIRD_PARTY.md`/`NOTICE` for reference attributions and a module header for any
+ported MIT code.
+
+**Important compatibility note:** GPUI is Apache-2.0, which is incompatible with
+GPLv2. GPUI is a reference for architecture only; do not copy its code. If GPUI
+code must be incorporated later, relicense to GPLv3 first (or obtain permission).
+Solid and Leptos are MIT and compatible; keep their notices when porting code.
 
 ### Q9. Text default width (Phase 5)
 

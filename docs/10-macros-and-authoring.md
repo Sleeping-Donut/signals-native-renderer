@@ -214,6 +214,33 @@ not free. For static props that never change, the macro can pass the value
 directly if the prop type is not `Signal<T>`. Keep both: `Signal<T>` for
 dynamic, plain `T` for static.
 
+#### Props design tradeoffs
+
+| Design | Update granularity | Ergonomics | Cost |
+|---|---|---|---|
+| Plain `T` only | None; child must be rebuilt | Simplest signatures | Unusable for live props |
+| `Signal<T>`/`Memo<T>` only | Fine-grained | Parent must pass a handle or macro wraps | One node per prop unless constant-folded |
+| `Prop<T>`/`MaybeSignal<T>` enum | Fine-grained | One uniform type for call sites | Runtime match per read; larger type surface |
+| `Fn() -> T` (derived signal) | Fine-grained, uncached | Flexible | Recomputed at every read; no memoization |
+| `RwSignal<T>`/`ReadSignal<T>` split | Fine-grained | Clear read/write split | More types; write access may be too broad |
+
+**Leptos comparison.** Leptos uses:
+
+- `Signal<T>` — a type-erased enum of read signal, memo, derived closure, or
+  stored value;
+- `MaybeSignal<T>` — static value or reactive value, the closest analogue to a
+  `Prop<T>` enum;
+- `MaybeProp<T>` — optional prop handling;
+- `#[prop(into)]` — call-site conversion into the prop type;
+- `Callback<In, Out>` and `Children` — events and slots.
+
+Leptos' `MaybeSignal<T>` buys a single prop type at the cost of a runtime match
+and a larger enum. Its `#[prop(into)]` keeps call sites clean. Our v1 choice is
+the monomorphic version: `Signal<T>` for reactive, plain `T` for static, with the
+macro doing the syntactic conversion. If a component genuinely needs "static or
+reactive" in one signature, add `MaybeSignal<T>` later rather than making every
+prop pay for the enum.
+
 ### 3.3 Prop identity
 
 A reactive prop is a handle. If the parent passes a stable `Signal`/`Memo`, the
@@ -377,14 +404,46 @@ Explicit snapshot. Use for initial values, one-time setup, and measuring.
 ### 7.2 `Rebuild`
 
 ```rust
+let state = Signal::new(FormState::default()); // created at mount, outside the closure
+
 Rebuild::new(move || {
-    // reads signals; re-runs when any change
-    view! { <ExpensiveForm /> }
+    // re-runs when any tracked read changes
+    view! { <ExpensiveForm state=state /> }
 })
 ```
 
-Wraps a subtree in a rebuild computation. Use when binding is more complex than
-rebuilding. The subtree is replaced under the same parent.
+**Purpose.** Mount-once is the default because it preserves identity and makes
+updates fine-grained. Some subtrees are a poor fit for bindings: highly dynamic
+structure, cheap leaf components, or code that is far simpler as a function of
+state. `Rebuild` re-runs a closure and replaces the previous subtree under the
+same parent. It is the GPUI per-view model applied to one subtree.
+
+**Chosen semantics (v1):**
+
+- The closure re-runs when any tracked read changes.
+- The old subtree's owner, view nodes, and bindings are disposed.
+- The new subtree is mounted under the same parent, preserving the parent and
+  siblings. The component's own node identity is the parent; the subtree nodes
+  are new.
+- State captured outside the closure survives. Local bindings created inside the
+  closure do not; they reset on every rebuild. Hoist state that must survive.
+- The rebuild is structural: it marks layout and paint dirty. Focus/scroll inside
+  the subtree is lost unless the state is hoisted or `KeepAlive` is used.
+- `Rebuild` runs in the apply phase; its first-run bindings initialize
+  synchronously, so layout sees a complete subtree.
+
+**Options considered and rejected for v1:**
+
+| Semantics | Why not |
+|---|---|
+| `#[component(rebuild)]` attribute | Ambiguous whether `let` bindings are hoisted (state survives) or re-created (state resets). The wrapper makes the boundary explicit. |
+| Replace the component node itself | Loses sibling position/focus and complicates parent references for little gain. |
+| Reconcile keyed children across rebuilds | This is a virtual DOM; it reintroduces the diff tax and duplicate identity rules. |
+| Keep both branches alive | That is `KeepAlive`, a separate feature. |
+
+Compose `Rebuild` with `CachedView`/`Memo` to keep expensive children alive
+across rebuilds (a shallow rebuild). If a subtree needs row identity, use `For`
+inside it; `Rebuild` is not a substitute for keyed lists.
 
 ### 7.3 `RenderOnce`
 
@@ -513,17 +572,19 @@ What runs when a todo is toggled:
 1. **Syntax.** How close to JSX should `view!` be? A tag syntax is familiar but
    requires a proc macro parser; a builder API is simpler but more verbose. We
    can ship both: `view!` for apps, builders for libraries.
-2. **Reactive attribute detection.** Type-based `IntoReactive` vs explicit
-   `move ||`. The former is ergonomic but can surprise; the latter is verbose.
-   (Leaning: type-based with an explicit `static` marker.)
-3. **Props defaults.** `Signal<T>` for all reactive props makes the common case
-   easy but allocates a node per constant prop. A const-generic `Prop<T>` can
-   avoid that later.
+2. **Reactive attribute detection.** The v1 decision is syntactic: closures are
+   memos, handles pass through, other expressions become constants. The open
+   part is how much type information the macro can use without hurting error
+   messages. Do not add a blanket `IntoSignal` trait; Rust coherence rejects it.
+3. **Props defaults.** `Signal<T>` for reactive props and plain `T` for static
+   props is the v1 decision. A runtime `MaybeSignal<T>` is the fallback if a
+   component genuinely needs both in one signature; it is not the default.
 4. **`For` key ergonomics.** Requiring a key is correct but annoying. Can the
    macro infer `id` when the item implements a `Keyed` trait? Yes, with an
    explicit override.
-5. **Component state.** A per-mount `struct` vs closure captures. The macro can
-   choose closure captures for simplicity; a state struct is needed for
-   `Rebuild` and for exposing methods.
+5. **Component state.** A per-mount `struct` vs closure captures. `Rebuild`
+   requires state to be captured outside its closure; the macro can choose
+   closure captures for simple components and a state struct for `Rebuild` and
+   for exposing methods.
 6. **Error messages.** Proc macros are notoriously bad at spans. Budget time for
    `syn::Error` spans and `trybuild` tests.

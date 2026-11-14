@@ -47,17 +47,29 @@ The docs primarily cite:
 - `refs/leptos/tachys/`
 - `refs/zed/crates/gpui/`
 
-## Licences
+## Licenses and compatibility
 
-| Repo | Licence |
-|---|---|
-| Solid | MIT |
-| Leptos | MIT |
-| GPUI | Apache-2.0 |
+| Repo | License | Compatible with GPL-2.0-only? |
+|---|---|---|
+| This project | GPL-2.0-only | — |
+| Solid | MIT | Yes |
+| Leptos | MIT | Yes |
+| GPUI | Apache-2.0 | **No** |
 
-All three are permissive. The implementation should still be independent; where
-an algorithm is ported, add a module header naming the source file, commit, and
-licence, and keep a top-level `NOTICE` (see ADR Q8 in
+MIT code may be incorporated into a GPLv2 work with attribution. Apache-2.0 is
+compatible with GPLv3, not GPLv2. So:
+
+- Use Solid and Leptos as both references and, where useful, as sources for
+  ported algorithms; keep the MIT notice.
+- Use GPUI as an **architectural reference only**. Reimplement its ideas
+  independently; do not copy code, comments, or other expressive content.
+- If you later need to copy GPUI code, relicense the project to GPL-3.0-or-later
+  (or GPL-2.0-or-later, which lets recipients choose GPLv3) or obtain permission
+  from the copyright holder first.
+
+The implementation should still be independent. Where an algorithm is ported,
+add a module header naming the source file, commit, and license, and keep a
+top-level `NOTICE`/`THIRD_PARTY.md` (see ADR Q8 in
 [12-decisions-and-risks.md](12-decisions-and-risks.md)).
 
 ## Why these three

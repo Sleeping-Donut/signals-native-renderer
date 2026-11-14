@@ -8,7 +8,7 @@ just once.
 | Doc | Owns |
 |---|---|
 | [00-glossary.md](00-glossary.md) | Terms shared across all docs. |
-| [reference-repos.md](reference-repos.md) | Exact refs/ commits, clone commands, licences. |
+| [reference-repos.md](reference-repos.md) | Exact refs/ commits, clone commands, licenses. |
 | [01-reactive-core.md](01-reactive-core.md) | Signals, memos, effects, the height heap, read/write paths. |
 | [02-ownership-and-lifetimes.md](02-ownership-and-lifetimes.md) | Arenas, handles, owners, cleanup, reclamation. |
 | [03-store-layer.md](03-store-layer.md) | Field-granular stores, patches, keyed collections. |

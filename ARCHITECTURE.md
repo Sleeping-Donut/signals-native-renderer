@@ -391,11 +391,23 @@ pub trait Spawner {
     fn spawn_local(&self, fut: LocalBoxFuture<'static, ()>);
     fn wake_ui(&self);
 }
+
+/// Optional; host-provided thread pool / tokio / rayon.
+pub trait BackgroundSpawner {
+    fn spawn(&self, fut: BoxFuture<'static, ()>) -> TaskHandle;
+}
 ```
+
+- `spawn_local` is for UI-affine futures (async memos). It must not block.
+- `BackgroundSpawner` is for `Send` work. The result returns through a
+  continuation; the background future never touches a graph handle.
+- If the host provides no background spawner, user code may use its own executor
+  and send the result back through a `UiHandle`/channel.
 
 - `ManualSpawner` for tests runs futures only when `pump` is called; this makes
   async tests deterministic.
-- A multi-threaded graph is an explicit non-goal (see PLAN D11).
+- A multi-threaded graph is an explicit non-goal (see PLAN D11). Background
+  computation is not a multi-threaded graph.
 
 The only thread-local in the design is the executor context used while polling a
 local future. It carries a runtime pointer so `ScopedFuture` can set the node's

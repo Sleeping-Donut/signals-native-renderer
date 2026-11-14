@@ -450,6 +450,22 @@ loop {
 The async settle step is a no-op when async is not compiled or no flights are
 outstanding. Its details live in [04-async-model.md](04-async-model.md).
 
+### 10.1 Why frame batching
+
+| Model | Latency / determinism | Cost |
+|---|---|---|
+| Immediate write | Every write marks and may recompute; no glitch freedom across a multi-write change. | Simple reads, but tears and re-runs. |
+| Microtask batching (Solid 2.0) | Coalesces within a JS event-loop turn; effect timing follows microtasks. | Good for JS, but an executor-turn concept in Rust; can flush at surprising points. |
+| **Frame checkpoint (chosen)** | One flush and one paint per frame; async holds and layout share the same boundary. | Read-after-write needs `flush(fn)`; non-frame contexts need an explicit flush. |
+| Explicit `batch(fn)` | Groups writes and flushes at the end. | Largely redundant when the tick is already the batch; nested-scope rules. |
+| Per-signal synchronous flush | Immediate visibility. | No cross-write consistency; expensive. |
+
+Frame batching is the only model that makes `F-1` (the screen is whole), async
+holds, and one paint per frame fall out of the same checkpoint. It also makes
+tests deterministic. The price is that imperative code must call `flush(fn)` (or
+run a frame) when it needs to read its own write. There is no separate `batch`
+API in v1: the tick is the batch.
+
 ## 11. Equality
 
 ```rust

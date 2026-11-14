@@ -245,7 +245,13 @@ For JSON-like or schema-less data, the macro path is unavailable. Provide:
 ```rust
 pub struct DynamicStore {
     value: RwLock<Value>,
-    nodes: RwLock<HashMap<InternedPath, NodeId>>,
+    paths: RwLock<PathInterner>,
+    nodes: RwLock<Vec<NodeId>>,          // indexed by PathId
+}
+
+pub struct PathInterner {
+    by_key: HashMap<PathKey, PathId>,    // canonical path -> dense id
+    entries: Vec<PathEntry>,             // PathId -> segments + hash
 }
 
 impl DynamicStore {
@@ -254,9 +260,46 @@ impl DynamicStore {
 }
 ```
 
-- Paths are interned; a `HashMap<InternedPath, NodeId>` maps to trigger nodes.
+**What "interned path map" means.** A dynamic path is a runtime sequence such as
+`["users", Key(42), "name"]`. Hashing that sequence on every read/write is
+expensive and allocates if you build a `Vec` each time. An interner assigns each
+unique, canonical path a dense integer:
+
+```
+["users", Key(42), "name"]
+  → canonical PathKey (interned segments)
+  → PathId(17)                 // u32, dense
+  → nodes[17] = NodeId(...)    // trigger node
+```
+
+- `PathKey` is a canonical sequence of interned segments. Segment strings and
+  keys are interned once; equality and hashing are cheap.
+- `by_key` is consulted only on the first access (or when a new segment
+  combination appears). After that, a field handle can cache its `PathId` and
+  reads/writes are an index into `nodes`.
+- `nodes` is a dense `Vec<NodeId>`, so node lookup is O(1) and cache-friendly.
+- Prefixes can share structure: a trie is an optional refinement for enumerating
+  children or invalidating a subtree.
+
+**Costs.** The interner is a hash table plus canonical segment storage; it grows
+with the number of distinct paths. It must be bounded or reference-counted by
+live `DynamicField` handles, otherwise a long-lived app that generates arbitrary
+paths leaks. Keys must be `Hash + Eq + 'static` or be interned to `u32`/`Arc<str>`.
+The first access pays canonicalization; subsequent accesses are cheap.
+
+**Alternatives:** a per-access `HashMap<Vec<PathSegment>, NodeId>` (simple, but
+allocates and hashes a long key on every access); a trie (good for prefixes and
+subtree invalidation, more pointer chasing); string paths (easy, slow); static
+macro-generated paths (fastest, but not dynamic).
+
+**v1 decision:** the static `#[derive(Store)]` path is v1; `DynamicStore` with
+interning is v2 unless a real app needs it. Static stores avoid the question
+entirely: the macro generates a const field index/path, so there is no runtime
+interning or hash lookup.
+
 - Reads/writes go through `DynamicField`, which resolves the path each time.
-- Cost: hash lookup + type check per access, no compile-time field checking.
+- Cost: hash lookup (first) or `PathId` index (after) + type check; no
+  compile-time field checking.
 - Use for plugins, inspectors, and configuration editors, not for app state.
 
 ## 6. Async derived stores and projections (v2)

@@ -2,7 +2,8 @@
 
 **Crates:** `reactive-core` (async state, holds) + `runtime` (spawner, queues)
 **Owns:** flights, continuations, staged values, holds, reader classes,
-boundaries, `isPending`, `latest`, and the async subset of the Solid 2.0 rules.
+boundaries, `isPending`, and the v1 async subset of the Solid 2.0 rules.
+`latest`, actions, `affects`, and full `on` are v2.
 
 ---
 
@@ -27,12 +28,18 @@ a native app feel correct:
 
 We defer:
 
-- `F-6` display-ahead/lane semantics beyond a minimal `latest`/`isPending`;
+- `F-6` display-ahead/lane semantics, including `latest`;
 - `F-11` optimistic writes;
+- actions and `affects` (they rely on the hold/verdict machinery we are not
+  building yet);
+- full `LoadingBoundary::on` re-arm (v1 uses a `key` remount; see §6.1);
 - `F-8` (withdrawn in the reference) and the deferred/lag rules;
 - optimistic store overlays and lane-derived async.
 
-The node and transaction shapes leave room for them; see §11.
+`isPending` stays in v1 in its basic form (a new question is in flight or a
+landed answer is held). It does not need optimism or lanes.
+
+The node and transaction shapes leave room for the deferred pieces; see §11.
 
 ## 2. Vocabulary mapped to Rust
 
@@ -56,13 +63,25 @@ pub trait Spawner {
     fn spawn_local(&self, fut: LocalBoxFuture<'static, ()>);
     fn wake_ui(&self);
 }
+
+/// Optional: the host may provide a thread pool / tokio / rayon.
+pub trait BackgroundSpawner {
+    fn spawn(&self, fut: BoxFuture<'static, ()>) -> TaskHandle;
+}
 ```
 
-- The runtime calls `spawn_local` for every async memo and action.
+- The runtime calls `spawn_local` for every async memo (and, in v2, action).
 - The future must be `'static` and run on the UI thread's local executor. It may
-  await I/O; the actual I/O happens wherever the host's reactor runs.
+  `await` I/O; the actual I/O happens wherever the host's reactor or background
+  executor runs.
+- `spawn_background` (the optional trait) is for CPU work, blocking I/O, or
+  parallelism. Its future must be `Send + 'static`, and its result must come back
+  through a continuation; it must not touch the graph.
 - `wake_ui` asks the host's event loop to run a frame soon. It is called when a
   continuation is posted, never polled.
+- If the host has no background spawner, user code may use its own executor
+  (`tokio::spawn`, `std::thread::spawn`, rayon) and send the result back through
+  a `UiHandle`/channel. The framework never owns threads.
 - The framework does not own a thread pool, timers, or a reactor. Hosts provide:
   - `ManualSpawner` for tests (futures run only when the test pumps),
   - `WinitSpawner` / `PlatformSpawner` for desktop,
@@ -123,10 +142,22 @@ Rules:
   the UI thread, user code inside it must not touch the graph except by staging
   writes. The landing is applied at the next pump, never from inside the future.
 
-### 3.4 The async memo API
+### 3.4 The async memo API and read style
 
 ```rust
 pub struct AsyncMemo<T> { /* NodeId */ }
+
+pub enum ReadError {
+    NotReady,
+    Disposed,
+    Error(Arc<Error>),
+}
+
+pub enum MaybeReady<T> {
+    Ready(T),
+    Pending,
+    Failed(Arc<Error>),
+}
 
 impl<T: 'static> AsyncMemo<T> {
     pub fn new(
@@ -134,31 +165,66 @@ impl<T: 'static> AsyncMemo<T> {
         compute: impl FnMut(&Cx) -> LocalBoxFuture<'static, Result<T, Error>> + 'static,
     ) -> Self;
 
-    pub fn get(&self, cx: &Cx) -> Result<T, AsyncReadError>
-    where T: Clone;
+    /// Explicit, safe, no unwinding. The base API.
+    pub fn try_get(&self, cx: &Cx) -> Result<T, ReadError>;
+
+    /// Colorless inside a tracked computation: on NotReady, suspends the
+    /// current computation and lets the scheduler hold/replay it. Outside a
+    /// tracked computation this is an error.
+    pub fn get(&self, cx: &Cx) -> T;
+
+    /// Display fallback for code that explicitly wants a value now.
+    pub fn get_or(&self, cx: &Cx, default: T) -> T;
 }
 ```
 
-Alternatives considered:
+The choices, and why the hybrid wins:
 
-- **Result style (chosen):** `get` returns `Result<T, AsyncReadError>` where
-  `NotReady` is a distinct variant. The view layer's binding interprets
-  `NotReady` by suspending/holding or by using `latest`.
-- **Boundary style (rejected):** `get` returns `T`, and reading before ready
-  panics/throws a `NotReady` error that only boundaries catch. This matches
-  Solid's read-throw model, but it makes ordinary application code awkward in
-  Rust and hides the control flow.
+| Style | Colorless? | Composes with `?`? | Distinguishes pending/error/absent? | Main cost |
+|---|---|---|---|---|
+| `Option<T>` | No | Only if caller returns `Option` | No; `Option<Option<T>>` nests | Every read site handles `None`; "no value" and "loading" are conflated |
+| `Result<T, ReadError>` | No | Yes | Yes | Colors helper functions with `Result`; `NotReady` is not a user error |
+| `MaybeReady<T>` | No | Custom | Yes, explicit | Best explicit ergonomics, but still colors every helper |
+| `T` + private suspension | **Yes** | N/A | Yes (scheduler sees the token) | Requires unwinding; `panic = "abort"` cannot use it |
 
-The Result style keeps control flow explicit, which is the Rust-native
-translation of Solid's "throw to the graph, not to the caller" rule (`D-42`).
+**Recommendation: the hybrid.**
+
+- `try_get() -> Result<T, ReadError>` is the **fundamental** API. Library code,
+  boundaries, tests, and `panic = "abort"` builds use it. `ReadError::NotReady`
+  is a control signal, not a user-facing failure; `D-42` still applies (do not
+  catch it as if it were an application error).
+- `get() -> T` is the **colorless** API, available only inside a tracked
+  computation. On `NotReady` it unwinds with a private token. The scheduler
+  catches that token at the computation boundary, records the reader/flight, and
+  either shows a boundary fallback or parks the transaction. The caller never
+  sees an `async` signature or a `Result`.
+- `MaybeReady<T>` is useful as the return of `try_get()` if we want to avoid
+  `Result`'s error connotation, but it is not a third fundamental mechanism. It
+  is a naming/ergonomics choice. Start with `Result`; add `MaybeReady` as a
+  convenience if the API feels wrong.
+
+Why not `Option<T>`: it collapses three states into two. A missing optional value
+and a not-yet-ready value are different, and a first load has no value at all.
+`Option<Option<T>>` is the type-level tax, and every helper becomes `Option`-viral
+without gaining error information.
+
+**The unwind caveat.** "Colorless" is only true if the build allows unwinding.
+With `panic = "abort"`, `get()` cannot suspend; code must use `try_get()` and
+`?`. The private token is not a user panic: the panic hook suppresses it, and
+user code must not catch it (the same rule as `D-42`: a reactive read is not an
+`await` and `try/catch` is not a channel). A helper function that calls `get()`
+deep inside is allowed to unwind through user code; RAII cleanups run. This is the
+Rust translation of Solid throwing `NotReadyError` through the graph, with the
+difference that the token is private and the explicit API is always available.
 
 **Polling context.** The future is polled through a `ScopedFuture` wrapper that
 sets the node's owner and observer before each poll and restores them after. This
 is how reads after an `await` are tracked: without it, only reads in the
 synchronous prefix would create dependencies. Leptos uses exactly this wrapper
 (`refs/leptos/reactive_graph/src/computed/async_derived/mod.rs`,
-`ScopedFuture::poll`). Actions, by contrast, poll untracked: they are commands,
-not derivations, and should not re-run because a signal they read changed.
+`ScopedFuture::poll`). Actions (v2), by contrast, poll untracked: they are
+commands, not derivations, and should not re-run because a signal they read
+changed.
 
 A `Resource<T>` convenience wraps `AsyncMemo<T>` with a `set_reload` trigger and
 a `refresh()` method.
@@ -171,7 +237,7 @@ Every compute pass has a class, set by what created it:
 pub enum ReaderClass {
     Derive,    // a memo or a user-effect compute
     Display,   // a render effect / binding
-    Observe,   // isPending/latest probe
+    Observe,   // isPending probe (latest arrives with lanes in v2)
 }
 ```
 
@@ -182,7 +248,7 @@ The class determines how a read of a pending/staged node is served:
 | Committed, clean | committed | committed | committed |
 | Staged new value, txn open | join txn: stage result | serve committed; register replay | serve committed / verdict |
 | Loading (no committed) | propagate `NotReady` | `NotReady` → boundary or hold | `NotReady` (loading) |
-| Error | propagate error | boundary or halt | `isPending` false, `latest` errors |
+| Error | propagate error | boundary or halt | `isPending` false |
 | Flight in progress, same question | committed (quiet) | committed | `isPending` false |
 | Flight in progress, new question | committed + pending flag | committed + register replay | `isPending` true |
 
@@ -313,7 +379,8 @@ nodes/readers/flights; the older id survives.
 ```rust
 pub struct LoadingBoundary {
     armed: bool,
-    on: Option<Memo<()>>,      // re-arm trigger (v1.1)
+    key: Option<Memo<Key>>,    // v1: changing the key remounts the boundary
+    on: Option<Memo<()>>,      // v2: dependency-list re-arm
     content: ViewNodeId,
     fallback: ViewNodeId,
 }
@@ -328,11 +395,25 @@ Semantics:
 - **Disarmed** (has shown content): a `NotReady` is forwarded to the enclosing
   transaction. The boundary keeps showing content, registers as a display reader,
   and replays at commit. This is `F-5`.
-- **`on` re-arm** (v1.1): when the `on` memo changes, the boundary arms again.
-  If something under it is pending, it shows the fallback with the change's
-  frame; otherwise the arm is a no-op.
+- **`key` remount (v1)**: if the key memo changes, the boundary is disposed and
+  remounted under the same parent. The new boundary is fresh/armed, so a load
+  shows the fallback, then content. This covers the common navigation/reload
+  shape without the full `on` semantics. State inside the content is lost.
+- **`on` re-arm (v2)**: when the `on` memo changes, the boundary arms again
+  without remounting. If something under it is pending, it shows the fallback
+  with the change's frame; otherwise the arm is a no-op. This requires the full
+  boundary/txn interaction (`F-4`/`F-5`, `D-15`/`D-16`), so it is deferred.
 - **Nested boundaries**: the nearest armed boundary catches. A disarmed inner
   boundary forwards to the outer boundary/transaction.
+
+Why `on` is v2: it is not just "reset a bool". It must identify the frame of the
+change that armed it, keep the fallback off screen when the same data is read
+outside the boundary, collect pending readers that were already forwarded, and
+interact with lanes when the `on` read is display-ahead. Those are the cases in
+`D-15`/`D-16`; implementing the simple version would produce a boundary that
+sometimes shows a fallback with the wrong frame or strands a hold. The `key`
+remount gives the same observable behavior for the common case with far less
+machinery.
 
 v1 simplification: content behind a fallback is **disposed** when the fallback is
 shown, and rebuilt on reveal. Solid keeps it alive but off screen. Disposing is
@@ -366,7 +447,7 @@ pub struct ErrorBoundary {
 
 These are direct translations of `F-4`/`F-5`/`F-9`.
 
-## 7. Verdicts: `isPending` and `latest`
+## 7. Verdicts: `isPending` (v1), `latest` and `affects` (v2)
 
 ### 7.1 `isPending`
 
@@ -377,8 +458,7 @@ pub fn is_pending<T>(cx: &Cx, memo: AsyncMemo<T>) -> bool
 Returns true iff a **new question** has no committed answer:
 
 - a dependency changed and the new flight has not landed;
-- a landed value is staged in an open txn;
-- an `affects()` mark is live.
+- a landed value is staged in an open txn.
 
 Returns false when:
 
@@ -386,10 +466,10 @@ Returns false when:
 - the node is loading (no committed value) — that is loading, not pending;
 - the node is idle or errored with a committed previous value and no new question.
 
-v1 implements the first two causes and `affects` as a simple mark API. The
+`affects()` marks are v2; v1 implements the two flight/staging causes. The
 "landed value staged" case is the txn's `staged` flag.
 
-### 7.2 `latest`
+### 7.2 `latest` (v2)
 
 ```rust
 pub fn latest<T: Clone>(cx: &Cx, memo: AsyncMemo<T>) -> Result<T, LatestError>
@@ -400,23 +480,21 @@ pub fn latest<T: Clone>(cx: &Cx, memo: AsyncMemo<T>) -> Result<T, LatestError>
 - Else return `Err(Loading)` (no value has ever been produced).
 
 `latest` is a display-ahead read: it does not join the txn and does not make the
-frame wait. Using it inside a derived memo is unsupported in v1 (it would derive
-from a future value without a lane; the result is a normal memo that recomputes
-at commit, which can tear against the screen). Restrict it to render bindings and
-diagnostics.
+frame wait. It belongs with the lane model because a derived value over `latest`
+needs a lane to stay consistent. Without lanes, using it in a memo can tear
+against the screen, so v1 does not expose it. It returns with the v2 lane work.
 
-### 7.3 `affects`
+### 7.3 `affects` (v2)
 
 ```rust
 pub fn affects<T>(cx: &Cx, node: &T);
 ```
 
 Declares "this data is changing" without a value write. It marks the node and
-its derivations pending until the next commit. Used for optimistic UI and for
-manually declared reloads. In v1 it is a simple counter with a commit-time
-release; it does not propagate through the full mark-sentinel machinery.
+its derivations pending until the next commit. It is the declared-pending half of
+the optimistic/verdict model, so it moves with that model to v2.
 
-## 8. Actions (v1.1)
+## 8. Actions (v2)
 
 An action is an explicit hold around a future:
 
@@ -451,29 +529,28 @@ not ambient thread state.
 | `F-3` reader holds while display | Partial | Display readers register per txn; disposed readers are removed. No "fallback hidden reader" edge cases. |
 | `F-4` armed boundary catches | Yes | First-load fallback; no txn for caught readers. |
 | `F-5` disarmed boundary forwards | Yes | Keeps content; reader joins txn. |
-| `F-6` display-ahead lanes | Minimal | `latest`/`isPending` only; no derived lanes. |
-| `F-7` nothing reveals ahead | Yes by construction | Only txn commit reveals; `latest` is explicit. |
-| `F-9` pending semantics | Subset | New question vs re-ask; no store-wide marks. |
+| `F-6` display-ahead lanes | No (v2) | `latest` and lanes are deferred. |
+| `F-7` nothing reveals ahead | Yes by construction | Only txn commit reveals; there is no v1 display-ahead read. |
+| `F-9` pending semantics | Subset | New question vs re-ask; basic `isPending`; no `affects`/store-wide marks. |
 | `F-10` flush visibility | Yes | Staged writes. |
-| `F-11` optimistic | No | Deferred. |
+| `F-11` optimistic | No (v2) | Deferred with actions/affects. |
 | `F-12` errors | Yes | ErrorBoundary; pending is not an error. |
 
 ### 9.1 Documented deviations from Solid 2.0
 
-- **Reads are `Result`, not throws.** `NotReady` is a value the view layer handles;
-  it is not an exception thrown through user code. See `D-42` for the rule we are
-  translating.
+- **Reads have two APIs.** `try_get()` returns `Result` and is the safe base;
+  `get()` is colorless inside a tracked computation and suspends by a private
+  unwind. This is not a throw-to-user-code channel; `D-42` still applies.
 - **Content is disposed on fallback entry.** Solid keeps it alive but off screen.
   Use `KeepAlive` (v1.1) for state that must survive.
 - **No born-held mounts outside a boundary.** A newly mounted subtree that reads
   loading async must be under an armed boundary. The full model ties the mount to
   the hold (`A29`); we defer it.
-- **`latest` is display-only.** It is not allowed in derived state in v1 because
-  there is no lane to keep the derivation consistent.
-- **No optimistic writes or lanes.** The node shape reserves space; the
-  machinery is not present.
-- **Actions require `ActionCx`.** There is no ambient async context in Rust, so a
-  write after `await` joins an action only through the action's capability.
+- **No `latest` in v1.** It arrives with the lane model in v2.
+- **No optimistic writes, actions, or `affects` in v1.** The node shape reserves
+  space; the machinery is v2.
+- **Actions require `ActionCx` (v2).** There is no ambient async context in Rust,
+  so a write after `await` joins an action only through the action's capability.
 
 ## 10. Testing
 
@@ -503,12 +580,12 @@ Required tests:
 - Error: rejected fetch shows error fallback; retry replaces it.
 - Cancellation: dispose mid-flight; no landing, no panic.
 - `isPending`: true for a new question, false for a re-ask, false for loading.
-- `latest`: shows staged, errors before first value.
-- Action: writes before/after await commit together; `flush` inside is refused.
+- `try_get`: returns `NotReady` before first value; `get` suspends inside a
+  computation and resumes at commit; `get` outside a tracked computation errors.
 - Fuzz: random graph of async memos, writes, and boundaries; assert every frame
   is a snapshot consistent with some committed txn state.
 
-## 11. Future: lanes and optimism
+## 11. v2: lanes, optimism, actions, `latest`, `on`
 
 The node shape reserves:
 
@@ -524,6 +601,8 @@ When we add `F-6`/`F-11`:
 3. A guess is a displayed value over a hold; it reverts at commit or on a
    differing truth.
 4. The store layer gets per-key guesses and rebase.
+5. Actions, `affects`, and full `on` arrive with the same verdict/hold
+   machinery; they are not independent features.
 
 Do not start this until the v1 navigation model is stable and the conformance
 suite is green. The reference implementation
@@ -532,15 +611,16 @@ much machinery is involved; it is not a weekend addition.
 
 ## 12. Open questions
 
-1. **Result vs throw.** We chose `Result` reads. Does this make boundary
-   composition too explicit? Could a `?`-based view binding hide the plumbing
-   while keeping the semantics?
+1. **Colorless read mechanism.** We chose the private-unwind `get()` plus
+   explicit `try_get()`. The open part is whether the unwind should be a real
+   panic payload or a custom `ControlFlow`-based unwinder; `panic = "abort"`
+   forces the explicit API.
 2. **Boundary content lifetime.** v1 disposes on fallback; Solid keeps alive.
    Which is the better default for a native app with scroll/focus state?
-3. **Action writes after await.** `ActionCx` is required. Is that too
+3. **Action writes after await (v2).** `ActionCx` is required. Is that too
    restrictive for library code that takes a plain `Cx`?
-4. **`affects` in v1.** Is a simple mark enough, or should it be omitted until
-   the full verdict machinery exists?
+4. **`affects` (v2).** It should move with the verdict machinery; confirm the
+   arity and store coverage at that point.
 5. **Merging transactions.** Sharing a reader is our merge criterion. Is sharing
    a *node* enough, or does that over-merge independent widgets?
 6. **Re-ask detection.** We use `refresh()` as the only quiet path. Should an
