@@ -277,6 +277,65 @@ the graph, but it is not an `async fn`. `try_get(cx)` is synchronous and returns
 `ReadError`. When dependencies change, the async compute runs again and its
 internal `.await`s run again; consumers still read synchronously.
 
+**`?` is for your errors, not `NotReady`.** In
+
+```rust
+let user = fetch_user(id).await?;
+```
+
+`fetch_user` returns `Future<Output = Result<User, FetchError>>`. `.await` gives
+you `Result<User, FetchError>`, and `?` unwraps `Ok(User)` or returns
+`Err(FetchError)` from the async block. The async block returns
+`Result<User, AppError>`, so `?` converts via `From<FetchError> for AppError`.
+That error becomes the memo's error state and is caught by an `ErrorBoundary` —
+it is not `NotReady`.
+
+`NotReady` is produced only by **reactive reads** (`get`, `try_get`, store reads),
+and it is control flow, not an application error:
+
+```rust
+#[derive(Debug, thiserror::Error)]
+enum AppError {
+    #[error(transparent)]
+    Fetch(#[from] FetchError),
+    // ...
+}
+
+let user = Memo::new_async(cx, {
+    let user_id = props.user_id;
+    move |cx| async move {
+        let id = user_id.get(cx);          // sync tracked read; no ?
+        let user = fetch_user(id).await?;  // ? is FetchError -> AppError
+        Ok(user)
+    }
+});
+```
+
+Rules that keep them separate:
+
+- Use `get(cx)` for reactive dependencies. It suspends the computation on
+  `NotReady`; it never returns a value that `?` could unwrap.
+- Use `try_get(cx)` only when you want to branch. It returns
+  `Result<T, ReadError>`; **do not** `?` it into `AppError`. If you do,
+  `NotReady` becomes a user error and goes to the `ErrorBoundary` instead of the
+  `LoadingBoundary`.
+- `LoadingBoundary` catches `NotReady`; `ErrorBoundary` catches the memo's
+  `Err`. A 404 from `fetch_user` is an `Err`, so it is an error, not loading.
+- If a 404 is domain absence rather than failure, return a domain value instead:
+
+```rust
+match fetch_user(id).await {
+    Ok(user) => Ok(ProfileState::Ready(user)),
+    Err(FetchError::NotFound) => Ok(ProfileState::Missing),
+    Err(e) => Err(AppError::from(e)),
+}
+```
+
+- If you need to read another async node inside an async compute, either
+  `get(cx)` it (the graph holds the outer compute until it is ready) or await its
+  readiness explicitly (`until`/`resolve`). Do not launder `ReadError` through
+  `?`.
+
 The choices, and why the hybrid wins:
 
 | Style | Colorless? | Composes with `?`? | Distinguishes pending/error/absent? | Main cost |
