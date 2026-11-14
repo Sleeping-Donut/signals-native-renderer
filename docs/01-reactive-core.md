@@ -335,12 +335,12 @@ legitimate feedback loop in event-driven code.
 ### 8.1 API
 
 ```rust
-pub fn effect(cx: &Cx, compute: impl FnMut() -> T + 'static,
-              apply: impl FnMut(&T) + 'static) -> EffectHandle
+pub fn effect(cx: &Cx, compute: impl FnMut(&Cx) -> T + 'static,
+              apply: impl FnMut(&Cx, &T) + 'static) -> EffectHandle
 where T: 'static;
 
-pub fn render_effect(cx: &Cx, compute: impl FnMut() -> T + 'static,
-                     apply: impl FnMut(&T) + 'static) -> EffectHandle
+pub fn render_effect(cx: &Cx, compute: impl FnMut(&Cx) -> T + 'static,
+                     apply: impl FnMut(&Cx, &T) + 'static) -> EffectHandle
 where T: 'static;
 ```
 
@@ -482,9 +482,9 @@ Default for `T: PartialEq` is `PartialEq`; for non-`PartialEq` types, use
 comparator. The default is chosen at the constructor via a trait bound:
 
 ```rust
-Signal::new(value)                 // requires T: PartialEq
-Signal::new_unchecked(value)       // no equality, always notify
-Signal::new_with(value, equals)    // custom
+Signal::new(cx, value)             // requires T: PartialEq
+Signal::new_unchecked(cx, value)   // no equality, always notify
+Signal::new_with(cx, value, equals) // custom
 ```
 
 A comparator panic is a compute error: the value is replaced by the error, and
@@ -494,26 +494,31 @@ the error boundary / root error hook handles it (Solid's A3 rule).
 
 ```rust
 // Sources
-Signal::new(v) -> Signal<T>
-Signal::new_unchecked(v) -> Signal<T>
-signal.get() / signal.with(|v| ...) / signal.set(v) / signal.update(|v| ...)
+Signal::new(cx, v) -> Signal<T>
+Signal::new_unchecked(cx, v) -> Signal<T>
+signal.get(cx) / signal.with(cx, |v| ...) / signal.set(cx, v) / signal.update(cx, |v| ...)
 
 // Derivations
-Memo::new(f) -> Memo<T>
-Memo::new_lazy(f) -> Memo<T>
-memo.get() / memo.with(|v| ...)
+Memo::new(cx, |cx| ...) -> Memo<T>
+Memo::new_lazy(cx, |cx| ...) -> Memo<T>
+memo.get(cx) / memo.with(cx, |v| ...)
 
 // Effects
-effect(compute, apply) -> EffectHandle
-render_effect(compute, apply) -> EffectHandle
-effect_once(apply) -> EffectHandle          // no compute value; runs once
-on_cleanup(f)
+effect(cx, compute, apply) -> EffectHandle
+render_effect(cx, compute, apply) -> EffectHandle
+effect_once(cx, apply) -> EffectHandle      // no compute value; runs once
+on_cleanup(cx, f)
 
 // Control
-untrack(f)
+untrack(cx, f)
 flush(cx)
-flush(f)                                     // run f, then flush synchronously
+flush(cx, f)                                 // run f, then flush synchronously
 ```
+
+Every reactive operation takes `&Cx`. The context resolves the runtime and
+current owner; there is no global graph. The `view!` macro has `cx` in scope, so
+application code rarely writes it. `Prop::Static` needs no `cx`. Helper
+functions take plain values, so they do not thread `cx` through.
 
 `Memo::new_lazy` defers the first computation until first read and disposes when
 unobserved, matching Solid's `lazy` option. This is useful for expensive

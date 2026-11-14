@@ -40,6 +40,10 @@ trigger node. Reads and writes go through the handle, which records the path.
 This is a compile-time, monomorphized, zero-proxy design. The trade-off is that
 dynamic shapes need an explicit dynamic store.
 
+Code sketches in this document sometimes omit `cx` on reads/writes for brevity.
+The real API takes `&Cx`: `field.set(cx, v)`, `field.read(cx)`,
+`field.update(cx, |v| ...)`. There is no global graph.
+
 ## 2. Core types
 
 ```rust

@@ -31,9 +31,9 @@ In our model:
 ```rust
 #[component]
 fn Counter() -> impl View {
-    let count = Signal::new(0);
+    let count = Signal::new(cx, 0);
     view! {
-        <button on_click=move |_cx, _| count.update(|c| *c += 1)>
+        <button on_click=move |cx, _| count.update(cx, |c| *c += 1)>
             {count}
         </button>
     }
@@ -47,6 +47,16 @@ fn Counter() -> impl View {
 
 For users, the syntax looks similar; the semantics are more like Solid's compiled
 output than its component function.
+
+**Conventions in this document.** All reactive operations take `&Cx`:
+`Signal::new(cx, v)`, `Memo::new(cx, |cx| ...)`, `AsyncMemo::new(cx, ...)`,
+`signal.get(cx)`, `signal.set(cx, v)`. There is no global graph; the context
+resolves the runtime and owner. Code sketches sometimes omit `cx` where the
+surrounding `view!` macro supplies it, but the real API takes it.
+
+Tags are native element kinds, not HTML. `div` is a generic box/stack and
+`span` is inline text; they do not imply a DOM. The builder form uses
+`ElementKind::Box`, `ElementKind::Text`, `ElementKind::Button`, etc.
 
 ## 2. `view!`
 
@@ -79,13 +89,13 @@ view! {
 ```rust
 // view! { <button on_click=f>{count}</button> }
 {
-    let button = cx.element("button");
+    let button = cx.element(ElementKind::Button);
     cx.set_style(button, Style::default());
     let text = cx.text("");
     cx.add_binding(text, render_effect(
         cx,
-        move || count.get().to_string(),
-        move |s| cx.set_text(text, s),
+        move |cx| count.get(cx).to_string(),
+        move |cx, s| cx.set_text(text, s),
     ));
     cx.insert(button, text, None);
     cx.on_click(button, f);
@@ -143,7 +153,7 @@ for a retained list; if omitted, it uses the item's index and emits a dev warnin
 ```rust
 #[component]
 fn Counter(initial: Prop<i32>, step: Prop<i32>) -> impl View {
-    let count = Signal::new(initial.get_untracked());
+    let count = Signal::new(cx, initial.get_untracked(cx));
     view! { ... }
 }
 ```
@@ -543,11 +553,11 @@ struct AppState {
 
 #[component]
 fn App(state: Store<AppState>) -> impl View {
-    let filter = Signal::new(Filter::All);
+    let filter = Signal::new(cx, Filter::All);
 
-    let visible = Memo::new(move || {
-        let f = filter.get();
-        state.todos().read().iter()
+    let visible = Memo::new(cx, move |cx| {
+        let f = filter.get(cx);
+        state.todos().read(cx).iter()
             .filter(|t| f.matches(t))
             .cloned()
             .collect::<Vec<_>>()
@@ -558,7 +568,7 @@ fn App(state: Store<AppState>) -> impl View {
             <h1>"Todos"</h1>
             <input
                 value=state.draft()
-                on_input=move |cx, text| state.draft().set(text)
+                on_input=move |cx, text| state.draft().set(cx, text)
                 on_key_down=move |cx, key| if key.is_enter() { add_todo(cx, state) }
             />
             <button on_click=move |cx, _| add_todo(cx, state)>"Add"</button>
@@ -569,7 +579,7 @@ fn App(state: Store<AppState>) -> impl View {
                 <FilterButton label="Done" selected=filter value=Filter::Done />
             </div>
 
-            <Show when=move || !visible.get().is_empty()
+            <Show when=move |cx| !visible.get(cx).is_empty()
                   fallback=|| view! { <p class="empty">"Nothing here"</p> }>
                 <For each=visible key=|t| t.id children=|t| view! {
                     <TodoRow todo=t />
@@ -580,24 +590,24 @@ fn App(state: Store<AppState>) -> impl View {
 }
 
 fn add_todo(cx: &mut Cx, state: Store<AppState>) {
-    let title = state.draft().get();
+    let title = state.draft().get(cx);
     if title.is_empty() { return; }
-    state.draft().set(String::new());
+    state.draft().set(cx, String::new());
     let id = next_id(cx);
-    state.todos().push(Todo { id, title, done: false });
+    state.todos().push(cx, Todo { id, title, done: false });
 }
 ```
 
 What runs when the user types:
 
-1. `on_input` stages `state.draft().set(text)`.
+1. `on_input` stages `state.draft().set(cx, text)`.
 2. Flush marks the draft path and the `input.value` binding.
 3. Apply sets the input's value and the caret.
 4. The list does not re-run; the draft is not in `visible`.
 
 What runs when a todo is toggled:
 
-1. `todo.done().set(!done)` marks the row's done path and the `visible` memo.
+1. `todo.done().set(cx, !done)` marks the row's done path and the `visible` memo.
 2. The row's checkbox binding updates.
 3. `visible` may remove the row from the filtered list; the keyed `For` diff
    removes it (or keeps it if the filter still matches).

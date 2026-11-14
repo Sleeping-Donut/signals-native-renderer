@@ -144,6 +144,23 @@ Rules:
 
 ### 3.4 The async memo API and read style
 
+Why a separate `AsyncMemo<T>` instead of overloading `Memo::new`? Rust has no
+function overloading, and a trait-based constructor (`IntoComputation<T>` with
+impls for `T` and `Future<Output = T>`) would only hide the constructor. The
+types still need different state and read semantics:
+
+- a sync memo always has a value; an async memo can be loading, pending, held,
+  errored, or ready;
+- an async memo carries a flight generation, cancellation, a staged landing, and
+  join/hold behavior; a sync memo should not pay for that cold state;
+- reads differ: `Memo<T>::get` is infallible, while `AsyncMemo<T>::try_get`
+  returns `NotReady` and `get` may suspend.
+
+One type would either force every memo into an async-shaped API or need an enum/
+`dyn` dispatch on every read. `Memo` and `AsyncMemo` keep the sync hot path clean
+and make the read contract explicit. `Signal` is always synchronous; it never
+needs a flight.
+
 ```rust
 pub struct AsyncMemo<T> { /* NodeId */ }
 
@@ -321,7 +338,7 @@ fn profile_ui(user: &User, id: UserId, show_details: Signal<bool>) -> View {
 ```rust
 #[component]
 fn ProfileCard(props: ProfileCardProps) -> impl View {
-    let show_details = Signal::new(false);
+    let show_details = Signal::new(cx, false);
 
     let user = AsyncMemo::new(cx, {
         let user_id = props.user_id;
@@ -354,7 +371,7 @@ lands, the slot renders the profile.
 ```rust
 #[component]
 fn ProfileCard(props: ProfileCardProps) -> impl View {
-    let show_details = Signal::new(false);
+    let show_details = Signal::new(cx, false);
 
     let user = AsyncMemo::new(cx, {
         let user_id = props.user_id;
@@ -385,12 +402,21 @@ fn ProfileCard(props: ProfileCardProps) -> impl View {
 No `LoadingBoundary` is required for this read; the skeleton and error are
 ordinary branches of the returned view. The trade-off is the explicit match.
 
+**Why `ViewSlot` and not just a `profile_ui` component?** They are different
+roles. `profile_ui` is a mount function for **loaded** data; it does not own the
+async read, the key, or the replacement decision. The `ViewSlot` is the host that
+re-runs the async read when `user_id` changes and replaces the child subtree.
+`profile_ui` could be a component, but a component mounts once; without a
+control-flow host keyed on `user_id`, it would not be re-mounted for a new user.
+The slot supplies the identity/key; `profile_ui` supplies the content.
+
 **The same component without `view!`** — this is the builder form the macro
-expands to, and the escape hatch for library code:
+expands to, and the escape hatch for library code. `ElementKind::Box` is the
+native generic box; the `view!` `<div>` tag lowers to it. There is no DOM here.
 
 ```rust
 fn profile_card(cx: &mut Cx, props: ProfileCardProps) -> ViewNodeId {
-    let show_details = Signal::new(false);
+    let show_details = Signal::new(cx, false);
 
     let user = AsyncMemo::new(cx, {
         let user_id = props.user_id;
@@ -400,7 +426,7 @@ fn profile_card(cx: &mut Cx, props: ProfileCardProps) -> ViewNodeId {
         }
     });
 
-    let root = cx.element("div");
+    let root = cx.element(ElementKind::Box);
     cx.set_class(root, "profile");
 
     let title = cx.text("");
@@ -411,17 +437,17 @@ fn profile_card(cx: &mut Cx, props: ProfileCardProps) -> ViewNodeId {
         move |cx| props.user_id.get(cx),
         move |cx| match user.try_get(cx) {
             Ok(user) => profile_ui_builder(cx, &user, props.user_id.get(cx), show_details),
-            Err(ReadError::NotReady) => cx.element("div").class("skeleton").id(),
+            Err(ReadError::NotReady) => cx.element(ElementKind::Box).class("skeleton").id(),
             Err(ReadError::Error(e)) => error_view_builder(cx, e),
             Err(ReadError::Disposed) => cx.fragment(),
         },
     );
     cx.insert(root, slot, None);
 
-    let toggle = cx.element("button");
+    let toggle = cx.element(ElementKind::Button);
     cx.set_text(toggle, "Details");
-    cx.subscribe_click(toggle, move |_cx, _| {
-        show_details.update(|v| *v = !*v);
+    cx.on_click(toggle, move |cx, _| {
+        show_details.update(cx, |v| *v = !*v);
     });
     cx.insert(root, toggle, None);
 
@@ -434,7 +460,7 @@ fn profile_ui_builder(
     id: UserId,
     show_details: Signal<bool>,
 ) -> ViewNodeId {
-    let root = cx.element("div");
+    let root = cx.element(ElementKind::Box);
 
     let name = cx.text(&user.name);
     cx.insert(root, name, None);
