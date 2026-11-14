@@ -133,7 +133,7 @@ bindings). A section-by-section mapping from the outline is in
 | D3 | **Arena + generational `Copy` handles**; no resurrection. | Fast reads, stable identity, safe disposal, no `Rc` cycles, and stale handles fail deterministically. | `Arc<RwLock<Node>>` (allocation and lock per node); raw indices (ABA). |
 | D4 | **Writes stage; the flush promotes.** Staged writes are invisible to readers until the frame checkpoint. | `F-10` is load-bearing for async holds and for `latest`/`isPending`. Retrofitting it later would touch every read path. | Eager writes with a "dirty" notification. |
 | D5 | **Async is Phase 2, not Phase 6.** | Flight state, staged values, and reader classes determine the node shape and scheduler. Building the renderer first would force a core rewrite. | Outline order (renderer before async). |
-| D6 | **Retained element tree with per-node bindings**, plus a `Dynamic` view slot for structural replacement. | Matches the fine-grained graph: one signal write updates one text run, not a whole component subtree. Retains a GPUI-like subtree replacement as the escape hatch, without making it a second renderer model. | GPUI's fully ephemeral element tree (coarse); a virtual DOM (diff tax). |
+| D6 | **Retained element tree with per-node bindings**, plus a `ViewSlot` for structural replacement. | Matches the fine-grained graph: one signal write updates one text run, not a whole component subtree. Retains a GPUI-like subtree replacement as the escape hatch, without making it a second renderer model. | GPUI's fully ephemeral element tree (coarse); a virtual DOM (diff tax). |
 | D7 | **Taffy full layout on layout-dirty frames; incremental layout is a later optimization.** | Correctness first; paint-only frames can skip layout entirely, which is the common case. | Promising incremental flex/grid layout in v1. |
 | D8 | **wgpu** for the first-party paint backend. | Cross-platform, testable offscreen, one shader path. | Metal/D3D/Blade per platform in v1. |
 | D9 | **Derive-macro stores** (Leptos-style), not a proxy emulation. | Compile-time paths are fast and Rust-idiomatic; dynamic stores are an explicit opt-in. | A `Deref`-based fake proxy with runtime interception. |
@@ -365,9 +365,10 @@ These were open in Draft 1 and are now resolved; the detailed rationale is in
 [docs/12-decisions-and-risks.md](docs/12-decisions-and-risks.md) Part C and the
 section docs.
 
-1. **Component rebuild.** No special rebuild primitive. A `Dynamic` view slot
-   replaces a subtree under a stable host; `Rebuild` is sugar over it. Solid and
-   Leptos express the same with `Show`/`Switch`/`Dynamic`/function children. See
+1. **Component rebuild.** No special rebuild primitive. A `ViewSlot` replaces a
+   subtree under a stable host; `Rebuild` is sugar over it. Solid uses
+   `Show`/`Switch`/`dynamic()`/function children; Leptos uses specialized control
+   flow and `AnyView`/`Either`. Neither needs a generic control-flow base. See
    [docs/10-macros-and-authoring.md](docs/10-macros-and-authoring.md) §7.2.
 2. **Props representation.** All props are `Prop<T>` (`Static(T)`,
    `Reactive(Signal<T>)`, `Derived(Memo<T>)`). No bare-`T` props for values that

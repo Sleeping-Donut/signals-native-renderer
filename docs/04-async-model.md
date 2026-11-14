@@ -233,6 +233,59 @@ If unwinding is unavailable, you accept coloring; the mitigation is the same
 "reads at the edge" discipline, not a different error type. `MaybeReady<T>` does
 not change this trade-off; it is only a nicer name for the explicit shape.
 
+**Examples at the edges.** Reads belong in bindings, memos, and render effects;
+helpers take plain values. (The sketches pass `&Cx` into compute closures so
+reads are tracked; constructor names are illustrative.)
+
+```rust
+// 1. Colorless in a memo: the memo stays pending, its readers hold.
+let label = Memo::new(cx, move |cx| {
+    let user = user.get(cx);          // suspends if not ready
+    format!("{} ({})", user.name, user.role)
+});
+
+// 2. Colorless in a render binding, under a boundary.
+let binding = render_effect(
+    cx,
+    move |cx| user.get(cx).name.clone(),
+    move |cx, name| cx.set_text(name_node, name),
+);
+
+// 3. A helper takes a value; it never reads a signal and never colors.
+fn greeting(user: &User) -> String {
+    format!("Hi {}", user.name)
+}
+
+let text = Memo::new(cx, move |cx| greeting(&user.get(cx)));
+
+// 4. Explicit at a boundary: no unwind, caller chooses the placeholder.
+fn profile_or_skeleton(cx: &Cx, user: AsyncMemo<User>) -> View {
+    match user.try_get(cx) {
+        Ok(user) => view! { <Profile user=user /> },
+        Err(ReadError::NotReady) => view! { <Skeleton /> },
+        Err(ReadError::Error(e)) => view! { <ErrorView error=e /> },
+        Err(ReadError::Disposed) => View::empty(),
+    }
+}
+
+// 5. A library API that is already fallible uses try_get and ?.
+fn header_text(cx: &Cx, user: AsyncMemo<User>) -> Result<String, AppError> {
+    let user = user.try_get(cx).map_err(AppError::from)?;
+    Ok(greeting(&user))
+}
+
+// 6. Event handlers are at the edge; data should be ready, but try_get is safe.
+button.on_click(move |cx, _| {
+    if let Ok(user) = user.try_get(cx) {
+        open_profile(cx, user.id);
+    }
+});
+```
+
+Notice what does **not** happen: `greeting` never returns `Result`; the memo
+never returns `Result`; only the explicit boundary and the already-fallible
+library API name `ReadError`. That is the coloring discipline.
+
 **The unwind caveat.** "Colorless" is only true if the build allows unwinding.
 With `panic = "abort"`, `get()` cannot suspend; code must use `try_get()` and
 `?`. The private token is not a user panic: the panic hook suppresses it, and

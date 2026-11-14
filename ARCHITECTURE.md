@@ -301,7 +301,7 @@ are arena-resident; a later "flattened sibling vec" optimization is possible.
 
 A component is a function run once under an owner, returning a `ViewNode`
 subtree. It may create signals, memos, and bindings. It is not re-run on every
-change; structural replacement is an explicit `Dynamic` view slot. Props are
+change; structural replacement is an explicit `ViewSlot`. Props are
 `Prop<T>` values (`Static`, `Reactive`, `Derived`), not bare `T` for values that
 may change.
 
@@ -313,8 +313,10 @@ pub trait Component: 'static {
 ```
 
 The `#[component]` macro generates the props struct and the mount shim. A
-`Dynamic` slot (or its `Rebuild` sugar) replaces a subtree when needed; there is
-no special rebuild component mode.
+`ViewSlot` (or its `Rebuild` sugar) replaces a subtree when needed; there is no
+special rebuild component mode. Control-flow nodes (`Show`, `Switch`, `For`) are
+specialized and do not require a `ViewSlot`; a Solid-style `dynamic()`
+component-switch helper would be a thin wrapper over one.
 
 ---
 
@@ -520,8 +522,9 @@ Working names used in these docs:
 - **Owner** — a lifetime scope in the ownership tree.
 - **Binding** — an effect that writes one dynamic property of a view node.
 - **Mount** — the one-time construction of a component's subtree.
-- **Dynamic view slot** — a stable host whose one child subtree is replaced when
-  its key changes. `Rebuild` is sugar over it.
+- **View slot** — a stable host whose one child subtree is replaced when its key
+  changes. `Rebuild` is sugar over it. Control-flow nodes are separate,
+  specialized primitives.
 - **Hold** — a staged change whose reveal waits for async work.
 - **Boundary** — a `LoadingBoundary` or `ErrorBoundary` view.
 - **Frame** — one pass through the six phases.

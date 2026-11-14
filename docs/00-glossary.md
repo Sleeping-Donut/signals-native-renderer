@@ -142,9 +142,10 @@ component, conditional, list, or overlay.
 
 **Mount** — the one-time construction of a component's view subtree.
 
-**Dynamic view slot** — a stable host node whose one active child subtree is
-replaced when its key changes. `Rebuild` is sugar for a slot keyed on a closure's
-tracked reads. Used when binding is more expensive than replacing the subtree.
+**View slot** — a stable host node whose one active child subtree is replaced
+when its key changes. `Rebuild` is sugar for a slot keyed on a closure's tracked
+reads. Used for runtime component/view switching and whole-subtree replacement;
+`Show`/`Switch`/`For` are separate specialized control-flow nodes.
 
 **Binding** — an effect that writes one dynamic property of a view node. It
 subscribes to the signals it reads and updates the view/scene when they change.

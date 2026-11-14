@@ -425,16 +425,22 @@ questions are flagged.
 
 ### Q1. Component rebuild (resolved for v1)
 
-**Decision:** no special rebuild primitive. The primitive is a `Dynamic` view
-slot: a stable host node whose one active child is replaced when its key changes.
-`Rebuild::new(closure)` is sugar over `Dynamic` keyed on the closure's tracked
-reads, not a second renderer model.
+**Decision:** no special rebuild primitive. The generic primitive is a
+`ViewSlot`: a stable host node whose one active child is replaced when its key
+changes. `Rebuild::new(closure)` is sugar over a `ViewSlot` keyed on the
+closure's tracked reads.
 
-Why: Solid and Leptos express the same behavior with `<Show>`, `<Switch>`,
-`<Dynamic>`, `<For>`, and function children. Their components run once, like
-ours; a subtree is replaced by changing the branch of a control-flow node, not by
-re-running the component. We need the same dynamic slot, but not a special
-"rebuild component" mechanism.
+Why: Solid and Leptos already express this with control flow. Solid's `<Show>`,
+`<Switch>`, and `<For>` are specialized primitives; Solid's `dynamic()` is
+specifically for switching which component/tag is rendered, not the base of the
+control-flow components. Leptos has no `Dynamic` component; its control-flow
+components are specialized Tachys views, with `AnyView`/`Either` for erasure.
+Neither needs a generic slot to implement `Show`/`Switch`/`For`.
+
+Our `Show`/`Switch`/`For` are specialized too and should be the default API. A
+`ViewSlot` is the sibling primitive for the cases control flow cannot express:
+arbitrary view-returning closures, runtime component/view switching, and plugin
+UIs. A Solid-style `dynamic()` helper would be a thin wrapper over `ViewSlot`.
 
 Semantics:
 
@@ -444,9 +450,9 @@ Semantics:
 - replacement is structural (layout + paint dirty);
 - focus/scroll is lost unless state is hoisted or `KeepAlive` is used.
 
-When useful: generated/plugin UIs, cheap leaves, and code naturally written as
-"render this tree from this state". Not for value changes, keyed lists, or as a
-default.
+When useful: generated/plugin UIs, runtime component switching, cheap leaves, and
+code naturally written as "render this tree from this state". Not for value
+changes, keyed lists, or as a default.
 
 ### Q2. Props representation (resolved for v1)
 

@@ -267,7 +267,7 @@ fn Card(children: Children) -> impl View {
 
 `Children` is a closure that mounts the child subtree when called. It is called
 once during the parent's mount. For a child that can change structurally, pass a
-`ViewFn` and wrap it in a `Show`/`Dynamic` slot.
+`ViewFn` and wrap it in a `Show`/`ViewSlot`.
 
 ## 4. Control-flow helpers
 
@@ -403,35 +403,46 @@ let initial = untrack(|| count.get());
 
 Explicit snapshot. Use for initial values, one-time setup, and measuring.
 
-### 7.2 Dynamic view slots (and `Rebuild` sugar)
+### 7.2 View slots (and `Rebuild` sugar)
 
 ```rust
 // A stable host whose active child is replaced when `key` changes.
-Dynamic::new(
+ViewSlot::new(
     key,
     move || view! { <ExpensiveForm state=state /> },
 )
 ```
 
-`Dynamic` is the primitive: a stable host node owns one active child subtree. When
-the key changes, the old child owner is disposed and a new subtree is mounted
-under the same host. `Rebuild::new(closure)` is sugar for a `Dynamic` whose key is
-the closure's tracked dependencies: it re-evaluates the closure and replaces the
+`ViewSlot` is a stable host node that owns one active child subtree. When the key
+changes, the old child owner is disposed and a new subtree is mounted under the
+same host. `Rebuild::new(closure)` is sugar for a `ViewSlot` whose key is the
+closure's tracked dependencies: it re-evaluates the closure and replaces the
 subtree.
 
-**Why this is not a core component primitive.** Solid and Leptos express the same
-thing with control flow: `<Show>`, `<Switch>`, `<Dynamic>`, `<For>`, and function
-children. Their components run once, like ours; a subtree is replaced by changing
-the branch of a control-flow node, not by re-running the component. We need the
-same `Dynamic`/`ViewFn` slot, but not a special "rebuild component" mechanism.
-`Rebuild` is an ergonomic alias for the common "recompute this view from state"
-case, not a second renderer model.
+**It is not the base of the control-flow components.** This is the important
+distinction:
+
+- Solid's `<Show>`, `<Switch>`, and `<For>` are specialized control-flow
+  primitives. They do not go through `<Dynamic>`/`dynamic()`. Solid's
+  `dynamic()` is specifically for switching **which component or tag** is
+  rendered at a call site.
+- Leptos has no `Dynamic` component; its control-flow components are specialized
+  Tachys views, and dynamic erasure is handled by `AnyView`/`Either`.
+- Our `Show`, `Switch`, and `For` are specialized nodes too. They are the public
+  API and do not require a `ViewSlot`.
+- `ViewSlot` is a sibling primitive for the generic case: render an arbitrary
+  view-returning closure, swap a component type, or host a plugin UI whose whole
+  subtree is chosen at runtime. A Solid-style `dynamic()` helper would be a thin
+  wrapper over it; it is not the mechanism behind `Show`/`Switch`.
+
+**Why not only control-flow components?** Because control flow encodes a finite
+shape: a boolean, a branch set, a list. It cannot express "render whatever view
+this closure returns" or "switch between arbitrary component types" without a
+generic host. A `ViewSlot` is that host. It is also what `Rebuild` uses.
 
 **Use control flow first.** `Show`/`Switch`/`For` express the common shapes and
-should be the default API. `Dynamic` is the generic slot for an arbitrary
-view-returning closure, a dynamic component/view switch, or a plugin UI whose
-whole subtree is chosen at runtime. It is the implementation primitive those
-control-flow components use, not a replacement for them.
+should be the default API. Reach for a `ViewSlot` for dynamic component/view
+switching, plugin UIs, or whole-subtree replacement.
 
 **Semantics (v1):**
 
@@ -449,6 +460,7 @@ control-flow components use, not a replacement for them.
 **When to use it:**
 
 - generated/plugin UIs whose structure is a function of state;
+- switching between component types at runtime;
 - cheap leaf components where binding every property is more code than replacing
   the leaf;
 - migrating code that is naturally "render this tree from this state".
@@ -465,9 +477,9 @@ Use bindings for values, `For` for lists, and `Show`/`Switch` for branches.
 | Reconcile keyed children across rebuilds | That is a virtual DOM; it reintroduces the diff tax and duplicate identity rules. |
 | Keep both branches alive | That is `KeepAlive`, a separate feature. |
 
-Compose `Dynamic` with `CachedView`/`Memo` to keep expensive children alive
+Compose `ViewSlot` with `CachedView`/`Memo` to keep expensive children alive
 across replacements (a shallow rebuild). If a subtree needs row identity, use
-`For` inside it; `Dynamic` is not a substitute for keyed lists.
+`For` inside it; `ViewSlot` is not a substitute for keyed lists.
 
 ### 7.3 `RenderOnce`
 
@@ -574,7 +586,7 @@ What runs when a todo is toggled:
 | `view!` proc macro | concise, compile-time wiring | macro complexity, error messages |
 | Props as signals | fine-grained updates without re-render | prop identity must be stable |
 | Keyed `For` | row state survives reorder | keys required; duplicate-key checks |
-| `Dynamic` view slot | simple for dynamic forms | loses subtree state |
+| `ViewSlot` | simple for dynamic forms | loses subtree state |
 | Strict-read warnings | catches a common mistake | some false positives; needs `untrack` |
 
 ## 10. Tests
@@ -608,9 +620,9 @@ What runs when a todo is toggled:
 4. **`For` key ergonomics.** Requiring a key is correct but annoying. Can the
    macro infer `id` when the item implements a `Keyed` trait? Yes, with an
    explicit override.
-5. **Component state.** A per-mount `struct` vs closure captures. `Dynamic`
+5. **Component state.** A per-mount `struct` vs closure captures. `ViewSlot`
    requires state to be captured outside its replacement closure; the macro can
-   choose closure captures for simple components and a state struct for `Dynamic`
-   and for exposing methods.
+   choose closure captures for simple components and a state struct for
+   `ViewSlot` and for exposing methods.
 6. **Error messages.** Proc macros are notoriously bad at spans. Budget time for
    `syn::Error` spans and `trybuild` tests.

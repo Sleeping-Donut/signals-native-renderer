@@ -34,13 +34,13 @@ read it; fine-grained updates require splitting views or bindings manually.
 **Weaknesses:** component functions become "build once, bind forever"; writing a
 binding for every property is verbose; structural updates are the hard part.
 
-### Model C — chosen: retained nodes with dynamic view slots
+### Model C — chosen: retained nodes with view slots
 
 - Retained: view nodes and their child structure, built at mount.
 - Dynamic values: bindings (effects) for the properties that actually change.
 - Structure: `Show`, `For`, and keyed lists are explicit control-flow nodes with
   their own bindings.
-- Escape hatch: a `Dynamic` view slot replaces one child subtree under a stable
+- Escape hatch: a `ViewSlot` replaces one child subtree under a stable
   host when its key changes. `Rebuild` is sugar over it. Use it when binding
   overhead exceeds replacement cost (e.g. a settings form with many
   interdependent fields).
@@ -193,34 +193,35 @@ Why:
 - It makes structural updates explicit: `Show`/`For` are the only nodes that
   add/remove children.
 
-### 4.1 Dynamic view slots
+### 4.1 View slots
 
 ```rust
-Dynamic::new(
+ViewSlot::new(
     key,
     move || view! { <SettingsForm state=state /> },
 )
 ```
 
-A `Dynamic` node is a stable host whose one active child is replaced when the key
-changes. It is the primitive behind "recompute this subtree from state".
-`Rebuild::new(closure)` is sugar for a `Dynamic` keyed on the closure's tracked
+A `ViewSlot` is a stable host whose one active child is replaced when the key
+changes. It is the generic primitive behind "render this subtree from state".
+`Rebuild::new(closure)` is sugar for a `ViewSlot` keyed on the closure's tracked
 reads. Use it when:
 
 - the structure is highly dynamic (many conditionals);
 - the subtree is cheap to build;
 - binding every property would be more code than replacing the subtree;
-- the component is a leaf with no important local state.
+- the component is a leaf with no important local state;
+- the rendered component/view type is chosen at runtime.
 
-Solid and Leptos do not need a special rebuild component: `<Show>`, `<Switch>`,
-`<Dynamic>`, and function children already replace subtrees. `Dynamic` is our
-equivalent. It disposes the old child owner and mounts a new one under the same
+This is **not** how `Show`/`Switch`/`For` are implemented. Those are specialized
+control-flow nodes, and they should be used first when the shape matches. Solid's
+`dynamic()` is for switching a component/tag, not the base of `<Show>`/`<Switch>`;
+Leptos has no `Dynamic` component and uses specialized views plus
+`AnyView`/`Either`. `ViewSlot` is a sibling generic primitive for the cases those
+do not cover.
+
+A `ViewSlot` disposes the old child owner and mounts a new one under the same
 host. Focus/scroll is lost unless state is hoisted or `KeepAlive` is used.
-
-Use `Show`/`Switch`/`For` first: they express the common shapes. `Dynamic` is the
-generic slot for arbitrary view-returning closures, dynamic component switching,
-and plugin UIs. It is the primitive the control-flow nodes use internally, not a
-replacement for them.
 
 ### 4.2 Props
 
@@ -471,9 +472,9 @@ two things still need explicit notification:
 1. **External state change** (e.g. a platform theme change) that is not a
    signal. Wrap it in a signal: `theme.set(...)`. The framework does not have a
    side channel.
-2. **A dynamic view slot** keyed on non-reactive data. Put that data in a
-   signal and let the slot's key change, or call `cx.request_rebuild(host_id)` to
-   schedule a replacement for the next apply phase.
+2. **A `ViewSlot`** keyed on non-reactive data. Put that data in a signal and
+   let the slot's key change, or call `cx.request_rebuild(host_id)` to schedule a
+   replacement for the next apply phase.
 
 This is a deliberate removal of GPUI's `cx.notify()`: if a value affects the
 view, it should be a signal. `notify` becomes a diagnostic escape hatch, not the
@@ -576,7 +577,7 @@ Compiled shape (simplified):
   random edits (differential test).
 - **Dirty propagation**: a paint-only change does not mark layout; a text change
   with intrinsic width marks both.
-- **Dynamic slot**: subtree replaced under the same host; parent bindings
+- **View slot**: subtree replaced under the same host; parent bindings
   survive; old owner disposed.
 - **Identity**: keyed row ID survives reorder; accessibility ID stable.
 - **Allocation**: a paint-only update allocates zero in steady state.
