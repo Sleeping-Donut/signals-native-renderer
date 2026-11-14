@@ -360,6 +360,10 @@ a signal with a compute function, not a read-only memo.
   `Signal::new_derived` / `Signal::new_derived_async`) because Rust has no
   overloading, but they return the same `Memo<T>`/`Signal<T>`. A helper taking
   `Memo<T>` does not care how it was built.
+- Do not add a normalizing `new` trait. Sync/async blanket impls overlap; a
+  `Sync`/`Async` or `Compute` wrapper is still visible at the call site and only
+  hides the mode. Keep the explicit constructors; a `Compute` wrapper may exist
+  for macro-generated code.
 - `AsyncMemo<T>` is not a distinct type; at most a readability alias.
 
 **Consequences.** Writable derived signals are preserved. A derived node can be

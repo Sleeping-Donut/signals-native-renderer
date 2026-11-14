@@ -241,6 +241,26 @@ Both `Signal<T>` and `Memo<T>` implement a common `Read<T>` trait (`get`,
 `try_get`, `with`). Generic code can accept `impl Read<T>` and remain unaware of
 writable-vs-derived and sync-vs-async; only the constructor knows the difference.
 
+**Constructor ergonomics.** The 2/3 explicit constructors are deliberate; a
+normalizing `new` is not worth it in the core API:
+
+- Rust cannot cleanly accept both `FnMut() -> T` and `FnMut() -> Future<T>` in one
+  trait impl. The blanket impls overlap (`T = Future<…>`), so you need a wrapper
+  such as `Sync(f)`/`Async(f)` or a `Compute` enum. The wrapper remains visible
+  at the call site, so you have not removed the distinction.
+- Async closures often need boxed futures or GATs because the future may borrow
+  captured state; inference and error messages get worse.
+- The node must know sync vs async at construction to set cold async state; a
+  hidden trait only obscures that.
+- `async fn get` is the wrong read shape: it colors every read with `.await` and
+  does not model caching, holds, or cancellation. Construction and reading are
+  separate problems.
+
+Keep `Signal::new` / `derived` / `derived_async` and `Memo::new` /
+`new_async`. If generated code needs one call shape, add a `Compute` enum
+(`Compute::sync(f)` / `Compute::async_(f)`) as a convenience layer, not as the
+primary API.
+
 The choices, and why the hybrid wins:
 
 | Style | Colorless? | Composes with `?`? | Distinguishes pending/error/absent? | Main cost |
