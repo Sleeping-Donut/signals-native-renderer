@@ -455,6 +455,15 @@ replacement semantics that `AnyView`/`Either` do not carry. Tachys-style
 control-flow views hide that replacement inside the view's own state; in a
 retained tree the host node is the explicit equivalent of the DOM marker.
 
+**None of this is renderer-specific.** Control-flow nodes live in the shared
+`view` crate over a `Backend`/`ViewTree` interface; a renderer only implements
+node creation, insertion/removal, layout, and paint. Solid can keep `Show`/`For`
+in the `solid` package because they return renderer-owned `Element` values and let
+the renderer's insert path mount them; Tachys keeps its control flow generic over
+`Renderer`. We do the same: one control-flow implementation, many backends. A
+third-party renderer does not reimplement `Show`/`For`/`ViewSlot`; it implements
+the low-level operations they call.
+
 **Use control flow first.** `Show`/`Switch`/`For` express the common shapes and
 should be the default API. Reach for a `ViewSlot` for dynamic component/view
 switching, plugin UIs, or whole-subtree replacement.

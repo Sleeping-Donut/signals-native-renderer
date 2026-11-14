@@ -288,76 +288,173 @@ library API name `ReadError`. That is the coloring discipline.
 
 #### Comparing `get` and `try_get` with a prop and a signal
 
-Both versions below take a reactive prop (`user_id: Prop<UserId>`) and a local
-signal (`show_details: Signal<bool>`), and read an async `user` memo. They are
-called from a `ViewSlot`/binding, so the section re-runs when `user_id` changes;
-`show_details` stays reactive inside `profile_ui`.
-
-**With `get()` — colorless, the boundary holds:**
-
-```rust
-fn profile_section(
-    cx: &Cx,
-    user_id: Prop<UserId>,
-    show_details: Signal<bool>,
-    user: AsyncMemo<User>,
-) -> View {
-    let user = user.get(cx);            // suspends if not ready
-    profile_ui(&user, user_id.get(cx), show_details)
-}
-
-// caller
-view! {
-    <LoadingBoundary fallback=|| view! { <ProfileSkeleton /> }>
-        <ViewSlot
-            key=move |cx| user_id.get(cx)
-            render=move |cx| profile_section(cx, user_id.clone(), show_details, user.clone())
-        />
-    </LoadingBoundary>
-}
-```
-
-No `Result` in `profile_section`, `profile_ui`, or the state type. If `user` is
-not ready, the graph suspends this computation and the boundary shows the
-skeleton until it lands.
-
-**With `try_get()` — explicit, the function chooses the UI:**
+The component receives `user_id: Prop<UserId>` and creates `show_details:
+Signal<bool>` locally. It also creates an async `user` memo from the prop.
+`profile_ui` takes the loaded user and the signal handle; it never returns
+`Result`, and the details toggle stays reactive because `profile_ui` reads the
+signal through a binding.
 
 ```rust
-fn profile_section(
-    cx: &Cx,
+#[derive(Clone)]
+struct ProfileCardProps {
     user_id: Prop<UserId>,
-    show_details: Signal<bool>,
-    user: AsyncMemo<User>,
-) -> View {
-    match user.try_get(cx) {
-        Ok(user) => profile_ui(&user, user_id.get(cx), show_details),
-        Err(ReadError::NotReady) => view! { <ProfileSkeleton id=user_id.get(cx) /> },
-        Err(ReadError::Error(e)) => view! { <ProfileError id=user_id.get(cx) error=e /> },
-        Err(ReadError::Disposed) => View::empty(),
+}
+
+fn profile_ui(user: &User, id: UserId, show_details: Signal<bool>) -> View {
+    view! {
+        <div class="profile">
+            <h1>{id}</h1>
+            <p>{user.name.clone()}</p>
+            <button on_click=move |_cx, _| show_details.update(|v| *v = !*v)>
+                "Details"
+            </button>
+            <Show when=move || show_details.get(cx)>
+                <p>{user.bio.clone()}</p>
+            </Show>
+        </div>
     }
 }
+```
 
-// caller: no LoadingBoundary is required for this read;
-// the skeleton is an ordinary branch of the returned view.
-view! {
-    <ViewSlot
-        key=move |cx| user_id.get(cx)
-        render=move |cx| profile_section(cx, user_id.clone(), show_details, user.clone())
-    />
+**With `get()` — colorless; the boundary holds:**
+
+```rust
+#[component]
+fn ProfileCard(props: ProfileCardProps) -> impl View {
+    let show_details = Signal::new(false);
+
+    let user = AsyncMemo::new(cx, {
+        let user_id = props.user_id;
+        move |cx| {
+            let id = user_id.get(cx);
+            async move { fetch_user(id).await }
+        }
+    });
+
+    view! {
+        <LoadingBoundary fallback=|| view! { <ProfileSkeleton /> }>
+            <ViewSlot
+                key=move |cx| props.user_id.get(cx)
+                render=move |cx| {
+                    let user = user.get(cx);          // suspends if not ready
+                    profile_ui(&user, props.user_id.get(cx), show_details)
+                }
+            />
+        </LoadingBoundary>
+    }
 }
 ```
 
-The trade-off is visible:
+No `Result` in `profile_ui` or in the slot render. If `user` is not ready, the
+graph suspends the render and the boundary shows the skeleton. When the user
+lands, the slot renders the profile.
 
-- `get`: shorter, no `Result`, but the suspension is implicit; the surrounding
-  boundary owns the loading/error UI.
-- `try_get`: explicit states and no unwinding; the function owns the loading and
-  error UI, and every caller sees a normal `View`. It costs one match and a
-  deliberate choice at the read site.
+**With `try_get()` — explicit; the function chooses the UI:**
 
-`profile_ui` itself takes a plain `&User` and the `Signal<bool>` handle; it never
-returns `Result` in either version.
+```rust
+#[component]
+fn ProfileCard(props: ProfileCardProps) -> impl View {
+    let show_details = Signal::new(false);
+
+    let user = AsyncMemo::new(cx, {
+        let user_id = props.user_id;
+        move |cx| {
+            let id = user_id.get(cx);
+            async move { fetch_user(id).await }
+        }
+    });
+
+    view! {
+        <ViewSlot
+            key=move |cx| props.user_id.get(cx)
+            render=move |cx| match user.try_get(cx) {
+                Ok(user) => profile_ui(&user, props.user_id.get(cx), show_details),
+                Err(ReadError::NotReady) => view! {
+                    <ProfileSkeleton id=props.user_id.get(cx) />
+                },
+                Err(ReadError::Error(e)) => view! {
+                    <ProfileError id=props.user_id.get(cx) error=e />
+                },
+                Err(ReadError::Disposed) => View::empty(),
+            }
+        />
+    }
+}
+```
+
+No `LoadingBoundary` is required for this read; the skeleton and error are
+ordinary branches of the returned view. The trade-off is the explicit match.
+
+**The same component without `view!`** — this is the builder form the macro
+expands to, and the escape hatch for library code:
+
+```rust
+fn profile_card(cx: &mut Cx, props: ProfileCardProps) -> ViewNodeId {
+    let show_details = Signal::new(false);
+
+    let user = AsyncMemo::new(cx, {
+        let user_id = props.user_id;
+        move |cx| {
+            let id = user_id.get(cx);
+            async move { fetch_user(id).await }
+        }
+    });
+
+    let root = cx.element("div");
+    cx.set_class(root, "profile");
+
+    let title = cx.text("");
+    cx.bind_text(title, move |cx| props.user_id.get(cx).to_string());
+    cx.insert(root, title, None);
+
+    let slot = cx.view_slot(
+        move |cx| props.user_id.get(cx),
+        move |cx| match user.try_get(cx) {
+            Ok(user) => profile_ui_builder(cx, &user, props.user_id.get(cx), show_details),
+            Err(ReadError::NotReady) => cx.element("div").class("skeleton").id(),
+            Err(ReadError::Error(e)) => error_view_builder(cx, e),
+            Err(ReadError::Disposed) => cx.fragment(),
+        },
+    );
+    cx.insert(root, slot, None);
+
+    let toggle = cx.element("button");
+    cx.set_text(toggle, "Details");
+    cx.subscribe_click(toggle, move |_cx, _| {
+        show_details.update(|v| *v = !*v);
+    });
+    cx.insert(root, toggle, None);
+
+    root
+}
+
+fn profile_ui_builder(
+    cx: &mut Cx,
+    user: &User,
+    id: UserId,
+    show_details: Signal<bool>,
+) -> ViewNodeId {
+    let root = cx.element("div");
+
+    let name = cx.text(&user.name);
+    cx.insert(root, name, None);
+
+    let bio = cx.text(&user.bio);
+    let details = cx.conditional(
+        move |cx| show_details.get(cx),
+        move |_cx| bio,
+        None,
+    );
+    cx.insert(root, details, None);
+
+    root
+}
+```
+
+The builder form makes the pieces explicit: `element`/`text` create nodes,
+`bind_text` creates a binding, `view_slot` hosts the async choice,
+`conditional` is the `Show`, and `subscribe_click` registers the event. The
+`view!` macro is syntax over this; it is not a different runtime.
 
 **The unwind caveat.** "Colorless" is only true if the build allows unwinding.
 With `panic = "abort"`, `get()` cannot suspend; code must use `try_get()` and
