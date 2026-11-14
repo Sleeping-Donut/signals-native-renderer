@@ -351,14 +351,14 @@ a signal with a compute function, not a read-only memo.
 
 **Decision.** Async is a property of the compute function:
 
-- Writable sources are split: `signal()` / `derived_signal()` / `async_signal()`
+- Writable sources are split: `signal()` / `derived_signal()` / `async_derived_signal()`
   return `(ReadSignal<T>, WriteSignal<T>)`. There is no combined public signal
   and no `RwSignal`.
 - `Memo<T>` is read-only derived; its compute may be sync or async.
 - Both halves use `get`/`is_pending`/`latest`. A plain signal never suspends.
 - Async state is cold (`Option<Box<AsyncState>>`); sync nodes do not pay for it.
 - Constructors differ (`Memo::new` / `Memo::new_async`,
-  `signal` / `derived_signal` / `async_signal`) because Rust has no overloading,
+  `signal` / `derived_signal` / `async_derived_signal`) because Rust has no overloading,
   but the read half is always `ReadSignal<T>` and the write half is always
   `WriteSignal<T>`. A helper taking `ReadSignal<T>` or `Memo<T>` does not care
   how it was built.
@@ -739,6 +739,7 @@ or a measurement.
 |---|---|---|
 | Core equality | Require `T: PartialEq` by default? | Yes; `signal_unchecked`/custom comparator escape |
 | Memo reads | Guards or clones? | Both: guards internally, `Clone` convenience for app code |
+| Props variants | Keep `Reactive`/`Derived` or one read handle? | Collapse; both implement `Read<T>` |
 | Effects | Public `EffectHandle` or owner-only? | Both: handles for bindings, owner-scoped for app effects |
 | Ownership | Public `OwnerId`? | No; opaque `Scope`, IDs for diagnostics |
 | Cleanup panic | Halt or report/continue? | Report and continue; halt only for uncaught compute/apply errors |

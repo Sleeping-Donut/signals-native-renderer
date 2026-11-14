@@ -115,7 +115,7 @@ Memo::new(cx, |cx, prev| ...)          // sync derived
 Memo::new_async(cx, |cx| ...)          // async derived
 signal(cx, value)                      // plain source, split pair
 derived_signal(cx, |cx, prev| ...)     // writable derived, split pair
-async_signal(cx, |cx| ...)             // writable derived, async, split pair
+async_derived_signal(cx, |cx| ...)             // writable derived, async, split pair
 ```
 
 An **effect** in the graph sense has both halves. A **render effect** has only
@@ -518,7 +518,7 @@ the error boundary / root error hook handles it (Solid's A3 rule).
 // Sources — split by default
 let (count, set_count) = signal(cx, v);                 // ReadSignal<T>, WriteSignal<T>
 let (value, set_value) = derived_signal(cx, |cx, prev| ...); // writable derived
-let (value, set_value) = async_signal(cx, |cx| ...);         // writable derived, async
+let (value, set_value) = async_derived_signal(cx, |cx| ...);         // writable derived, async
 count.get(cx) / count.is_pending(cx)
 set_count.set(cx, v) / set_count.update(cx, |v| ...)
 
@@ -542,7 +542,7 @@ flush(cx, f)                                 // run f, then flush synchronously
 ```
 
 There is no combined public signal handle and no `RwSignal`. `signal()`,
-`derived_signal()`, and `async_signal()` return a `(ReadSignal<T>,
+`derived_signal()`, and `async_derived_signal()` return a `(ReadSignal<T>,
 WriteSignal<T>)` pair. `Signal<T>` in the node-model sections is the internal
 full node handle; application and library code uses the halves.
 
@@ -552,7 +552,7 @@ application code rarely writes it. `Prop::Static` needs no `cx`. Helper
 functions take plain values, so they do not thread `cx` through.
 
 `ReadSignal<T>` and `WriteSignal<T>` are differentiated by capability, not by
-sync/async. Async is a compute mode: `Memo::new_async` and `async_signal` return
+sync/async. Async is a compute mode: `Memo::new_async` and `async_derived_signal` return
 the same `ReadSignal`/`WriteSignal`/`Memo` types as their sync counterparts.
 `AsyncMemo<T>` is not a separate type.
 
@@ -591,6 +591,23 @@ impl CounterPrimitive {
     }
 }
 ```
+
+`ReadSignal` and `Memo` are both read-only handles, but they point at different
+node kinds:
+
+| | `ReadSignal<T>` | `Memo<T>` |
+|---|---|---|
+| Write capability | None on this handle; the paired `WriteSignal` may exist | None, ever |
+| Node | Read half of a signal node (plain or derived writable) | Derived memo node |
+| Caching | The source value; plain signals do not recompute | Computed value cached; recomputes on dependency change |
+| Equality | Signal equality on writes | Memo equality; equal results do not notify downstream |
+| Async | Can be the read half of an async derived signal | Can be an async memo |
+| Consumer view | `get`/`is_pending`/`with` | `get`/`is_pending`/`with` |
+
+At the consumer boundary they are equivalent accessors: both implement the same
+`Read<T>` behavior. The difference is the underlying node's caching/equality and
+whether a write half exists. Props can therefore take either; `Prop<T>` uses a
+read handle, not a node kind.
 
 `Memo::new_lazy` defers the first computation until first read and disposes when
 unobserved, matching Solid's `lazy` option. This is useful for expensive

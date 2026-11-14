@@ -50,7 +50,7 @@ output than its component function.
 
 **Conventions in this document.** Core primitives use their constructors:
 `signal(cx, v) -> (ReadSignal<T>, WriteSignal<T>)`,
-`derived_signal(cx, ...)`, `async_signal(cx, ...)`, `Memo::new(cx, ...)`,
+`derived_signal(cx, ...)`, `async_derived_signal(cx, ...)`, `Memo::new(cx, ...)`,
 `Memo::new_async(cx, ...)`, `Store::new(cx, value)`,
 `ViewSlot::new(cx, key, render)`. All reactive operations take `&Cx`. There is no
 global graph; the context resolves the runtime and owner. Code sketches sometimes
@@ -200,6 +200,13 @@ impl<T: Clone> Prop<T> {
     pub fn with<R>(&self, cx: &Cx, f: impl FnOnce(&T) -> R) -> R;
 }
 ```
+
+`Reactive(ReadSignal)` and `Derived(Memo)` are equivalent at the read boundary:
+both implement the same `Read<T>` behavior. The variants record how the prop was
+constructed, not a different read contract. If we want the smaller API, collapse
+them to one `Reactive(Read<T>)`/`ReadHandle<T>`; the underlying node still
+memoizes and equality-checks as before. This is a leaning API simplification, not
+a semantic difference.
 
 ```rust
 #[component]

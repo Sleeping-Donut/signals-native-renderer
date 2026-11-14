@@ -153,7 +153,7 @@ The correct model is orthogonal:
 
 - **`ReadSignal<T>` / `WriteSignal<T>`** — the split view of a writable source:
   plain (`signal`), derived writable (`derived_signal`, Solid's
-  `createSignal(fn)`), or async derived writable (`async_signal`). A plain
+  `createSignal(fn)`), or async derived writable (`async_derived_signal`). A plain
   source has no compute and is always ready.
 - **`Memo<T>`** — read-only derived. Its compute may be synchronous or
   asynchronous.
@@ -172,12 +172,18 @@ Memo::new(cx, |cx, prev| ...)          // sync
 Memo::new_async(cx, |cx| ...)          // async
 let (read, write) = signal(cx, value);// plain source
 let (read, write) = derived_signal(cx, |cx, prev| ...); // writable derived
-let (read, write) = async_signal(cx, |cx| ...);         // writable derived, async
+let (read, write) = async_derived_signal(cx, |cx| ...);         // writable derived, async
 ```
 
 A helper taking `Memo<T>` does not care how it was built. `AsyncMemo<T>` is not a
 distinct type or read contract; keep it, if at all, as a type alias for
 readability.
+
+`async_derived_signal` is not an "async node type." It is a **writable derived
+signal whose compute happens to be async**, and it returns the same
+`(ReadSignal<T>, WriteSignal<T>)` pair as a sync derived signal. If you only need
+a read-only async derivation, use `Memo::new_async` instead; there is no write
+half.
 
 ```rust
 pub struct Memo<T> { /* NodeId */ }

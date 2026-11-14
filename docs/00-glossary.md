@@ -208,7 +208,7 @@ owner, observer, and frame phase. All reactive operations take `&Cx`.
 (set/update). There is no combined public signal and no `RwSignal`.
 
 **Core constructor** — `signal(cx, v)` returns `(ReadSignal, WriteSignal)`;
-`derived_signal`/`async_signal` return the same pair. `Memo::new`,
+`derived_signal`/`async_derived_signal` return the same pair. `Memo::new`,
 `Memo::new_async`, `Store::new`, `ViewSlot::new` are the other core constructors.
 
 **`create_*` helper** — naming for custom primitive/abstraction wrappers, e.g.
