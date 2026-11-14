@@ -286,6 +286,79 @@ Notice what does **not** happen: `greeting` never returns `Result`; the memo
 never returns `Result`; only the explicit boundary and the already-fallible
 library API name `ReadError`. That is the coloring discipline.
 
+#### Comparing `get` and `try_get` with a prop and a signal
+
+Both versions below take a reactive prop (`user_id: Prop<UserId>`) and a local
+signal (`show_details: Signal<bool>`), and read an async `user` memo. They are
+called from a `ViewSlot`/binding, so the section re-runs when `user_id` changes;
+`show_details` stays reactive inside `profile_ui`.
+
+**With `get()` — colorless, the boundary holds:**
+
+```rust
+fn profile_section(
+    cx: &Cx,
+    user_id: Prop<UserId>,
+    show_details: Signal<bool>,
+    user: AsyncMemo<User>,
+) -> View {
+    let user = user.get(cx);            // suspends if not ready
+    profile_ui(&user, user_id.get(cx), show_details)
+}
+
+// caller
+view! {
+    <LoadingBoundary fallback=|| view! { <ProfileSkeleton /> }>
+        <ViewSlot
+            key=move |cx| user_id.get(cx)
+            render=move |cx| profile_section(cx, user_id.clone(), show_details, user.clone())
+        />
+    </LoadingBoundary>
+}
+```
+
+No `Result` in `profile_section`, `profile_ui`, or the state type. If `user` is
+not ready, the graph suspends this computation and the boundary shows the
+skeleton until it lands.
+
+**With `try_get()` — explicit, the function chooses the UI:**
+
+```rust
+fn profile_section(
+    cx: &Cx,
+    user_id: Prop<UserId>,
+    show_details: Signal<bool>,
+    user: AsyncMemo<User>,
+) -> View {
+    match user.try_get(cx) {
+        Ok(user) => profile_ui(&user, user_id.get(cx), show_details),
+        Err(ReadError::NotReady) => view! { <ProfileSkeleton id=user_id.get(cx) /> },
+        Err(ReadError::Error(e)) => view! { <ProfileError id=user_id.get(cx) error=e /> },
+        Err(ReadError::Disposed) => View::empty(),
+    }
+}
+
+// caller: no LoadingBoundary is required for this read;
+// the skeleton is an ordinary branch of the returned view.
+view! {
+    <ViewSlot
+        key=move |cx| user_id.get(cx)
+        render=move |cx| profile_section(cx, user_id.clone(), show_details, user.clone())
+    />
+}
+```
+
+The trade-off is visible:
+
+- `get`: shorter, no `Result`, but the suspension is implicit; the surrounding
+  boundary owns the loading/error UI.
+- `try_get`: explicit states and no unwinding; the function owns the loading and
+  error UI, and every caller sees a normal `View`. It costs one match and a
+  deliberate choice at the read site.
+
+`profile_ui` itself takes a plain `&User` and the `Signal<bool>` handle; it never
+returns `Result` in either version.
+
 **The unwind caveat.** "Colorless" is only true if the build allows unwinding.
 With `panic = "abort"`, `get()` cannot suspend; code must use `try_get()` and
 `?`. The private token is not a user panic: the panic hook suppresses it, and

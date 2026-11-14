@@ -218,7 +218,9 @@ control-flow nodes, and they should be used first when the shape matches. Solid'
 `dynamic()` is for switching a component/tag, not the base of `<Show>`/`<Switch>`;
 Leptos has no `Dynamic` component and uses specialized views plus
 `AnyView`/`Either`. `ViewSlot` is a sibling generic primitive for the cases those
-do not cover.
+do not cover. `AnyView`/`Either` are type-erasure tools; they do not supply a
+stable host, key, or replacement lifecycle. A `ViewSlot` can hold either of them,
+but the slot is what owns identity and replacement.
 
 A `ViewSlot` disposes the old child owner and mounts a new one under the same
 host. Focus/scroll is lost unless state is hoisted or `KeepAlive` is used.

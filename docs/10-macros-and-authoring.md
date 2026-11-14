@@ -440,6 +440,21 @@ shape: a boolean, a branch set, a list. It cannot express "render whatever view
 this closure returns" or "switch between arbitrary component types" without a
 generic host. A `ViewSlot` is that host. It is also what `Rebuild` uses.
 
+**Why not just `AnyView`/`Either`?** They are type-erasure tools, not lifecycle
+hosts:
+
+| Mechanism | What it does | What it lacks |
+|---|---|---|
+| `AnyView` | boxes/erases a concrete view type | no stable host/key; allocating a new box does not define when/whether to replace the mounted subtree |
+| `Either<A, B>` | compile-time two-branch view type | fixed alternatives; cannot hold an arbitrary runtime view without erasure |
+| `ViewSlot` | stable host node + keyed child replacement | an extra host node; child state is lost on replacement |
+
+`ViewSlot` can hold an `AnyView`, an `Either`, or a concrete view type; the
+erasure choice is orthogonal. The slot supplies the identity, key, ownership, and
+replacement semantics that `AnyView`/`Either` do not carry. Tachys-style
+control-flow views hide that replacement inside the view's own state; in a
+retained tree the host node is the explicit equivalent of the DOM marker.
+
 **Use control flow first.** `Show`/`Switch`/`For` express the common shapes and
 should be the default API. Reach for a `ViewSlot` for dynamic component/view
 switching, plugin UIs, or whole-subtree replacement.
