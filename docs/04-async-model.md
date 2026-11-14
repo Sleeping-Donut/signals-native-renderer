@@ -204,6 +204,25 @@ A wrapper (`Value(v)`, `Sync(f)`, `Async(f)`) or a `Compute` enum can make one
 call shape work, but the wrapper is still visible and the constructors are still
 semantically distinct. Keep the explicit constructors.
 
+An **internal** `Source<T>`/`Compute<T>` enum is still a good idea:
+
+```rust
+enum Source<T> {
+    Value(T),
+    Sync(Box<dyn FnMut(&Cx, Option<&T>) -> T>),
+    Async(Box<dyn FnMut(&Cx) -> LocalBoxFuture<'static, Result<T, Error>>>),
+}
+
+fn signal_from<T>(cx: &Cx, source: Source<T>) -> (ReadSignal<T>, WriteSignal<T>);
+```
+
+It centralizes node setup and keeps the node kind explicit. The public
+constructors (`signal`, `derived_signal`, `async_derived_signal`) call it. A
+macro (`create_signal!(cx, ...)`) could parse the value/closure/async-closure
+forms and emit the right variant, but that is a macro DSL, not a trait; it adds
+tooling/error-span cost. The explicit constructors are the simpler public
+surface.
+
 ```rust
 pub struct Memo<T> { /* NodeId */ }
 pub struct ReadSignal<T> { /* NodeId + read capability */ }
