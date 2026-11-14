@@ -243,6 +243,13 @@ for the next compute, matching Solid's function-form signal.
 - `get_or` is the explicit non-suspending fallback. `is_pending` is the verdict.
   Boundaries handle loading and error UI; helpers take plain values.
 
+`get_or` has no exact Solid equivalent. Solid's closest tools are `latest(x)` for
+the newest produced value, `isPending(x)` for the verdict, and
+`createDeferred`/`loadingValue` for stale/default UI. `get_or` is a Rust
+imperative convenience: it hides pending and error, so use it only when a default
+is genuinely correct (snapshots, event handlers, diagnostics), not as a
+replacement for a boundary.
+
 **Coloring and composition.** If every read returned `Result`, then every
 function that reads a signal either returns `Result<T, ReadError>` or unwraps.
 `?` flattens the types but not the signatures: `fn label(user: &User) -> String`
@@ -378,16 +385,16 @@ struct ProfileCardProps {
 
 fn profile_ui(user: &User, id: UserId, show_details: Signal<bool>) -> View {
     view! {
-        <div class="profile">
-            <h1>{id}</h1>
-            <p>{user.name.clone()}</p>
-            <button on_click=move |cx, _| show_details.update(cx, |v| *v = !*v)>
+        <Column gap=8>
+            <Text>{id}</Text>
+            <Text>{user.name.clone()}</Text>
+            <Button on_click=move |cx, _| show_details.update(cx, |v| *v = !*v)>
                 "Details"
-            </button>
+            </Button>
             <Show when=move || show_details.get(cx)>
-                <p>{user.bio.clone()}</p>
+                <Text>{user.bio.clone()}</Text>
             </Show>
-        </div>
+        </Column>
     }
 }
 
@@ -435,8 +442,7 @@ fn profile_card(cx: &mut Cx, props: ProfileCardProps) -> ViewNodeId {
         }
     });
 
-    let root = cx.element(ElementKind::Box);
-    cx.set_class(root, "profile");
+    let root = cx.element(ElementKind::Column);
 
     let title = cx.text("");
     cx.bind_text(title, move |cx| props.user_id.get(cx).to_string());
@@ -463,11 +469,40 @@ fn profile_card(cx: &mut Cx, props: ProfileCardProps) -> ViewNodeId {
 }
 ```
 
+`profile_ui_builder` is the same content without `view!`:
+
+```rust
+fn profile_ui_builder(
+    cx: &mut Cx,
+    user: &User,
+    id: UserId,
+    show_details: Signal<bool>,
+) -> ViewNodeId {
+    let column = cx.element(ElementKind::Column);
+
+    let id_text = cx.text(&id.to_string());
+    cx.insert(column, id_text, None);
+
+    let name = cx.text(&user.name);
+    cx.insert(column, name, None);
+
+    let bio = cx.text(&user.bio);
+    let details = cx.conditional(
+        move |cx| show_details.get(cx),
+        move |_cx| bio,
+        None,
+    );
+    cx.insert(column, details, None);
+
+    column
+}
+```
+
 `ViewSlot` is the host; `profile_ui` is the content. The slot re-runs the async
 read when `user_id` changes and replaces the child subtree. `profile_ui` could
 be a component, but a component mounts once; without a keyed host it would not
-re-mount for a new user. `ElementKind::Box` is the native generic box; `view!`'s
-`<div>` lowers to it. There is no DOM here.
+re-mount for a new user. `ElementKind::Column` is the native vertical stack;
+`view!`'s `<Column>` lowers to it. There is no DOM here.
 
 ### 3.5 Cancellation and background threads
 

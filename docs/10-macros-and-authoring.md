@@ -61,9 +61,10 @@ Custom primitive/abstraction helpers use Solid/Leptos-style `create_*` naming:
 are thin wrappers over the core types and take `&Cx`; the naming distinguishes
 them from the built-in constructors.
 
-Tags are native element kinds, not HTML. `div` is a generic box/stack and
-`span` is inline text; they do not imply a DOM. The builder form uses
-`ElementKind::Box`, `ElementKind::Text`, `ElementKind::Button`, etc.
+Tags are native view components, not HTML: `Row`, `Column`, `Box`, `Text`,
+`Button`, `TextInput`. There is no `div`, `span`, or DOM `class` in the core
+vocabulary; use native style properties (`gap`, `padding`, colors). The builder
+form uses `ElementKind::Row`, `ElementKind::Text`, `ElementKind::Button`, etc.
 
 ## 2. `view!`
 
@@ -71,13 +72,13 @@ Tags are native element kinds, not HTML. `div` is a generic box/stack and
 
 ```rust
 view! {
-    <div class="app" style:padding="8px">
+    <Column padding=8.0>
         <Header title="Todos" />
         <Show when=move || !todos.is_empty() fallback=|| view! { <Empty /> }>
             <For each=todos key=|t| t.id children=|t| view! { <Row todo=t /> } />
         </Show>
-        <button on_click=move |cx, _| add_todo(cx)>"Add"</button>
-    </div>
+        <Button on_click=move |cx, _| add_todo(cx)>"Add"</Button>
+    </Column>
 }
 ```
 
@@ -116,7 +117,7 @@ are set once.
 
 ### 2.3 Reactivity of attributes
 
-`<div title={name}>`:
+`<Box title={name}>`:
 
 - If `name` is a signal read, it becomes a binding.
 - If it is a plain value, it is set once.
@@ -202,7 +203,7 @@ impl<T: Clone> Prop<T> {
 ```rust
 #[component]
 fn Label(text: Prop<String>) -> impl View {
-    view! { <span>{text}</span> }
+    view! { <Text>{text}</Text> }
 }
 ```
 
@@ -278,7 +279,7 @@ frame; they are `Prop<T>` values that live as long as the child.
 ```rust
 #[component]
 fn Card(children: Children) -> impl View {
-    view! { <div class="card">{children}</div> }
+    view! { <Column>{children}</Column> }
 }
 ```
 
@@ -293,29 +294,28 @@ primitive is just a function that wraps core handles and exposes an ergonomic
 surface:
 
 ```rust
-use std::sync::Arc;
-
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct CounterPrimitive {
     pub count: Signal<i32>,
-    increment_fn: Arc<dyn Fn(&Cx)>,
 }
 
 fn create_counter(cx: &Cx, initial: i32) -> CounterPrimitive {
-    let count = Signal::new(cx, initial);
-    let increment_fn = {
-        let count = count;
-        Arc::new(move |cx: &Cx| count.update(cx, |c| *c += 1))
-    };
-    CounterPrimitive { count, increment_fn }
+    CounterPrimitive {
+        count: Signal::new(cx, initial),
+    }
 }
 
 impl CounterPrimitive {
     fn increment(&self, cx: &Cx) {
-        (self.increment_fn)(cx);
+        self.count.update(cx, |c| *c += 1);
     }
 }
 ```
+
+The primitive is `Copy` because it contains only a `Signal` handle. No `Arc`,
+no stored callback, no clone at the call site. If a primitive needs shared
+non-`Copy` state, use `Rc` (the graph is single-threaded); `Arc` is only for
+state that must cross into a background/Send task.
 
 With `view!`:
 
@@ -325,14 +325,11 @@ fn Counter(label: Prop<String>) -> impl View {
     let counter = create_counter(cx, 0);
 
     view! {
-        <div class="counter">
-            <span>{label}</span>
-            <span>{counter.count}</span>
-            <button on_click={
-                let counter = counter.clone();
-                move |cx, _| counter.increment(cx)
-            }>"+"</button>
-        </div>
+        <Row gap=8>
+            <Text>{label}</Text>
+            <Text>{counter.count}</Text>
+            <Button on_click=move |cx, _| counter.increment(cx)>"+"</Button>
+        </Row>
     }
 }
 ```
@@ -343,34 +340,33 @@ Without the macro:
 fn counter(cx: &mut Cx, label: Prop<String>) -> ViewNodeId {
     let counter = create_counter(cx, 0);
 
-    let root = cx.element(ElementKind::Box);
-    cx.set_class(root, "counter");
+    let row = cx.element(ElementKind::Row);
+    cx.set_gap(row, 8.0);
 
     let label_text = cx.text("");
-    cx.bind_text(label_text, {
-        let label = label.clone();
-        move |cx| label.get(cx)
-    });
-    cx.insert(root, label_text, None);
+    cx.bind_text(label_text, move |cx| label.get(cx));
+    cx.insert(row, label_text, None);
 
     let count_text = cx.text("");
     cx.bind_text(count_text, {
         let count = counter.count;
         move |cx| count.get(cx).to_string()
     });
-    cx.insert(root, count_text, None);
+    cx.insert(row, count_text, None);
 
     let button = cx.element(ElementKind::Button);
     cx.set_text(button, "+");
-    cx.on_click(button, {
-        let counter = counter.clone();
-        move |cx, _| counter.increment(cx)
-    });
-    cx.insert(root, button, None);
+    cx.on_click(button, move |cx, _| counter.increment(cx));
+    cx.insert(row, button, None);
 
-    root
+    row
 }
 ```
+
+`Row`, `Text`, `Button` are native view components; `ElementKind::Row` is the
+builder equivalent. There is no DOM here: no `div`, `span`, or HTML `class`. If a
+primitive needs styling, use native style properties (`gap`, padding, colors)
+rather than CSS class names.
 
 For a plain `Signal<i32>`, `get` is correct and never suspends. For a
 non-suspending fallback use `get_or`; for a verdict use `is_pending`:
@@ -445,7 +441,7 @@ struct AppState {
 
 let state = Store::new(AppState::default());
 view! {
-    <span>{state.user().name()}</span>
+    <Text>{state.user().name()}</Text>
     <For each=state.todos() key=|t| t.id children=|t| view! { <Row todo=t /> } />
 }
 ```
@@ -622,7 +618,7 @@ across replacements (a shallow rebuild). If a subtree needs row identity, use
 #[derive(IntoElement)]
 struct Badge { text: String }
 impl RenderOnce for Badge {
-    fn render(self, cx: &mut Cx) -> impl View { view! { <span>{self.text}</span> } }
+    fn render(self, cx: &mut Cx) -> impl View { view! { <Text>{self.text}</Text> } }
 }
 ```
 
@@ -665,28 +661,28 @@ fn App(state: Store<AppState>) -> impl View {
     });
 
     view! {
-        <div class="app">
-            <h1>"Todos"</h1>
-            <input
+        <Column>
+            <Text>"Todos"</Text>
+            <TextInput
                 value=state.draft()
                 on_input=move |cx, text| state.draft().set(cx, text)
                 on_key_down=move |cx, key| if key.is_enter() { add_todo(cx, state) }
             />
-            <button on_click=move |cx, _| add_todo(cx, state)>"Add"</button>
+            <Button on_click=move |cx, _| add_todo(cx, state)>"Add"</Button>
 
-            <div class="filters">
+            <Row gap=8>
                 <FilterButton label="All" selected=filter value=Filter::All />
                 <FilterButton label="Active" selected=filter value=Filter::Active />
                 <FilterButton label="Done" selected=filter value=Filter::Done />
-            </div>
+            </Row>
 
             <Show when=move |cx| !visible.get(cx).is_empty()
-                  fallback=|| view! { <p class="empty">"Nothing here"</p> }>
+                  fallback=|| view! { <Text>"Nothing here"</Text> }>
                 <For each=visible key=|t| t.id children=|t| view! {
                     <TodoRow todo=t />
                 } />
             </Show>
-        </div>
+        </Column>
     }
 }
 
