@@ -992,6 +992,42 @@ pub struct ErrorBoundary {
 - An error that escapes every boundary is a root error: report, freeze the
   graph in a halted state, ignore later writes until `reset_error_halt()`.
 
+**Results vs errors.** `ErrorBoundary` catches an error in the graph, not every
+`Result` value. Keep two channels:
+
+- **Expected/domain errors are values.** A 404, validation failure, or missing
+  record is `Result<T, E>` or a domain enum; handle it where the data is used
+  (`ProfileState::Missing`, a field error, a retry button).
+- **Exceptional errors are node status.** A failed async computation, an
+  invariant violation, or a fallible sync computation that should replace the
+  subtree becomes the node's error state; `ErrorBoundary` catches it.
+
+Auto-unwrapping every `Result` read and hoisting `Err` to the nearest boundary is
+not recommended:
+
+- it turns expected domain errors into full-subtree failures;
+- it makes `Result` a second, implicit error channel;
+- it does not say which error wins when several bindings fail in one frame;
+- recovery is unclear—when does the boundary re-render content?
+
+Instead, expose an explicit hoist:
+
+```rust
+// Exceptional: raise to the nearest ErrorBoundary.
+let user = cx.hoist(user_result)?; // or a try-binding in view!
+
+// Expected: branch as data.
+match user_result {
+    Ok(user) => ...,
+    Err(DomainError::NotFound) => ...,
+    Err(e) => ...,
+}
+```
+
+A `try`-binding or `try_view!` can make the exceptional case concise, but it
+should be opt-in. The default remains: domain errors are values; graph errors go
+to `ErrorBoundary`.
+
 ### 6.3 Boundary placement rules
 
 - A boundary's `on` memo is evaluated outside the boundary; its reads hold like a
