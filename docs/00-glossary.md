@@ -201,7 +201,12 @@ deterministic log. Used for conformance and CI.
 and frame loop.
 
 **Cx** — the per-call context that borrows the runtime and tracks the current
-owner, observer, and frame phase.
+owner, observer, and frame phase. All reactive operations take `&Cx`.
+
+**`create_*` primitives** — Solid/Leptos-style constructor functions
+(`create_signal`, `create_memo`, `create_async_memo`, `create_effect`,
+`create_store`, ...). They are thin wrappers over the type constructors and the
+preferred authoring surface; examples use them for readability.
 
 **Phase** — one of pump, flush, apply, layout, scene, present.
 

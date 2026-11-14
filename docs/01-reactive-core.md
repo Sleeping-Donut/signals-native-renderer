@@ -114,8 +114,8 @@ the sync fast path clean while allowing any derived node to be async:
 Memo::new(cx, |cx, prev| ...)          // sync derived
 Memo::new_async(cx, |cx| ...)          // async derived
 Signal::new(cx, value)                 // plain source
-Signal::new_derived(cx, |cx, prev| ...)// writable derived
-Signal::new_derived_async(cx, |cx| ...)// writable derived, async
+create_derived_signal(cx, |cx, prev| ...)// writable derived
+create_async_signal(cx, |cx| ...)      // writable derived, async
 ```
 
 An **effect** in the graph sense has both halves. A **render effect** has only
@@ -515,23 +515,25 @@ the error boundary / root error hook handles it (Solid's A3 rule).
 ## 12. API surface (v1)
 
 ```rust
-// Sources
-Signal::new(cx, v) -> Signal<T>                 // plain source
-Signal::new_derived(cx, |cx, prev| ...) -> Signal<T>       // writable derived
-Signal::new_derived_async(cx, |cx| ...) -> Signal<T>       // writable derived, async
-Signal::new_unchecked(cx, v) -> Signal<T>
-signal.get(cx) / signal.try_get(cx) / signal.set(cx, v) / signal.update(cx, |v| ...)
+// Primitive constructors (preferred authoring surface)
+create_signal(cx, v) -> Signal<T>                 // plain source
+create_derived_signal(cx, |cx, prev| ...) -> Signal<T>       // writable derived
+create_async_signal(cx, |cx| ...) -> Signal<T>             // writable derived, async
+create_memo(cx, |cx, prev| ...) -> Memo<T>         // sync
+create_async_memo(cx, |cx| ...) -> Memo<T>         // async
+create_effect(cx, compute, apply) -> EffectHandle
+create_render_effect(cx, compute, apply) -> EffectHandle
 
-// Derivations
-Memo::new(cx, |cx, prev| ...) -> Memo<T>         // sync
-Memo::new_async(cx, |cx| ...) -> Memo<T>         // async
-Memo::new_lazy(cx, |cx, prev| ...) -> Memo<T>
+// Underlying type API (for generic/library code)
+Signal::new(cx, v) / Signal::new_unchecked(cx, v)
+Signal::new_derived(cx, |cx, prev| ...) / Signal::new_derived_async(cx, |cx| ...)
+Memo::new(cx, |cx, prev| ...) / Memo::new_async(cx, |cx| ...) / Memo::new_lazy(cx, ...)
+signal.get(cx) / signal.try_get(cx) / signal.set(cx, v) / signal.update(cx, |v| ...)
 memo.get(cx) / memo.try_get(cx) / memo.with(cx, |v| ...)
 
-// Effects
-effect(cx, compute, apply) -> EffectHandle
-render_effect(cx, compute, apply) -> EffectHandle
-effect_once(cx, apply) -> EffectHandle      // no compute value; runs once
+// Effects / cleanup
+effect(cx, compute, apply) / render_effect(cx, compute, apply)
+effect_once(cx, apply)                      // no compute value; runs once
 on_cleanup(cx, f)
 
 // Control
@@ -546,13 +548,13 @@ application code rarely writes it. `Prop::Static` needs no `cx`. Helper
 functions take plain values, so they do not thread `cx` through.
 
 `Signal` and `Memo` are differentiated by write access (writable vs read-only),
-not by sync/async. Async is a compute mode: `Memo::new_async` and
-`Signal::new_derived_async` return the same `Memo<T>`/`Signal<T>` as their sync
+not by sync/async. Async is a compute mode: `create_async_memo` and
+`create_async_signal` return the same `Memo<T>`/`Signal<T>` as their sync
 counterparts. `AsyncMemo<T>` is not a separate type.
 
-`Memo::new_lazy` defers the first computation until first read and disposes when
-unobserved, matching Solid's `lazy` option. This is useful for expensive
-derivations in branches that may never mount.
+`Memo::new_lazy` / a lazy primitive defers the first computation until first read
+and disposes when unobserved, matching Solid's `lazy` option. This is useful for
+expensive derivations in branches that may never mount.
 
 ## 13. Performance notes
 

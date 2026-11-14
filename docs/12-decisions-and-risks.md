@@ -356,8 +356,8 @@ a signal with a compute function, not a read-only memo.
 - `Memo<T>` is read-only derived; its compute may be sync or async.
 - Both use `get`/`try_get`/`isPending`/`latest`. A plain signal never suspends.
 - Async state is cold (`Option<Box<AsyncState>>`); sync nodes do not pay for it.
-- Constructors differ (`Memo::new` / `Memo::new_async`,
-  `Signal::new_derived` / `Signal::new_derived_async`) because Rust has no
+- Constructors differ (`create_memo` / `create_async_memo`,
+  `create_derived_signal` / `create_async_signal`) because Rust has no
   overloading, but they return the same `Memo<T>`/`Signal<T>`. A helper taking
   `Memo<T>` does not care how it was built.
 - Do not add a normalizing `new` trait. Sync/async blanket impls overlap; a
