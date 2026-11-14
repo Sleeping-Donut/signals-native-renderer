@@ -34,16 +34,16 @@ read it; fine-grained updates require splitting views or bindings manually.
 **Weaknesses:** component functions become "build once, bind forever"; writing a
 binding for every property is verbose; structural updates are the hard part.
 
-### Model C — chosen: retained nodes with component-level rebuild escape hatch
+### Model C — chosen: retained nodes with dynamic view slots
 
 - Retained: view nodes and their child structure, built at mount.
 - Dynamic values: bindings (effects) for the properties that actually change.
 - Structure: `Show`, `For`, and keyed lists are explicit control-flow nodes with
   their own bindings.
-- Escape hatch: a component can opt into **rebuild** mode, in which its subtree is
-  disposed and re-mounted when a dependency changes. This is GPUI's model applied
-  to one subtree, used when binding overhead exceeds rebuild cost (e.g. a
-  settings form with many interdependent fields).
+- Escape hatch: a `Dynamic` view slot replaces one child subtree under a stable
+  host when its key changes. `Rebuild` is sugar over it. Use it when binding
+  overhead exceeds replacement cost (e.g. a settings form with many
+  interdependent fields).
 
 Model C gives signal-level granularity by default and keeps Model A's simplicity
 where it is the better tool. It is the only model that satisfies both "one
@@ -193,37 +193,45 @@ Why:
 - It makes structural updates explicit: `Show`/`For` are the only nodes that
   add/remove children.
 
-### 4.1 Rebuild mode
+### 4.1 Dynamic view slots
 
 ```rust
-#[component(rebuild)]
-fn SettingsForm(props: Props) -> impl View {
-    // body re-runs when any tracked read changes
-}
+Dynamic::new(
+    key,
+    move || view! { <SettingsForm state=state /> },
+)
 ```
 
-The macro wraps the body in a render-effect-like computation whose apply
-replaces the component's child subtree. Rebuild is appropriate when:
+A `Dynamic` node is a stable host whose one active child is replaced when the key
+changes. It is the primitive behind "recompute this subtree from state".
+`Rebuild::new(closure)` is sugar for a `Dynamic` keyed on the closure's tracked
+reads. Use it when:
 
 - the structure is highly dynamic (many conditionals);
 - the subtree is cheap to build;
-- binding every property would be more code than rebuilding;
+- binding every property would be more code than replacing the subtree;
 - the component is a leaf with no important local state.
 
-Rebuild uses the same retained tree underneath; it disposes the old subtree and
-mounts a new one under the same parent. Focus/scroll state is lost unless the
-component opts into `KeepAlive` or state is stored in signals outside the
-subtree.
+Solid and Leptos do not need a special rebuild component: `<Show>`, `<Switch>`,
+`<Dynamic>`, and function children already replace subtrees. `Dynamic` is our
+equivalent. It disposes the old child owner and mounts a new one under the same
+host. Focus/scroll is lost unless state is hoisted or `KeepAlive` is used.
 
 ### 4.2 Props
 
-Props are handles, not values:
+Props are uniform `Prop<T>` values, never bare `T` when they might change:
 
 ```rust
+pub enum Prop<T> {
+    Static(T),
+    Reactive(Signal<T>),
+    Derived(Memo<T>),
+}
+
 #[derive(Clone)]
 pub struct CounterProps {
-    pub label: Signal<String>,
-    pub count: Memo<i32>,
+    pub label: Prop<String>,
+    pub count: Prop<i32>,
 }
 
 #[component]
@@ -237,18 +245,24 @@ fn Counter(props: CounterProps) -> impl View {
 }
 ```
 
-Passing a `Signal`/`Memo` keeps the child's bindings connected without
-re-rendering the child. A plain `String` prop is a snapshot and requires a
-rebuild to change; the macro can wrap it in a `Signal` automatically if the
-parent's expression is reactive.
+Reading a `Prop<T>` is uniform: `.get()` / `.with()` returns the static value or
+reads the signal/memo. A `Prop::Static` allocates no graph node and creates no
+edge; `Reactive`/`Derived` subscribe normally.
+
+Props are never bare `T` when they can change. `Prop<T>` removes the trap: a
+component signature cannot accidentally accept a snapshot and silently stop
+updating. The macro maps `<Counter count=count />` to `Prop::Reactive(count)`,
+`<Counter count=0 />` to `Prop::Static(0)`, and `<Counter count=move || ... />`
+to `Prop::Derived(memo)`.
 
 Prop updates:
 
-- If the parent passes a stable signal handle, the child reads it directly; no
-  update path is needed.
+- If the parent passes a stable signal/memo handle, the child reads it directly;
+  no update path is needed.
 - If the parent's expression changes identity (e.g. a new `Memo` per mount), the
-  child must be rebuilt or the prop signal must be updated. Prefer stable
+  child must be replaced or the prop signal must be updated. Prefer stable
   handles.
+- A `Static` prop never updates; that is explicit and zero-cost.
 
 ## 5. Structure: conditionals
 
@@ -420,6 +434,28 @@ backend may:
 - scissor to damage rects and blend (v2);
 - keep a texture atlas and update only damaged tiles.
 
+**What wgpu can and cannot do.** Retained-mode partial work splits into three
+layers:
+
+1. **Scene/paint replay** — pure CPU; wgpu is irrelevant. Clean nodes replay
+   their ranges and dirty nodes re-emit. This works fully.
+2. **GPU draw work** — wgpu supports `RenderPass` with scissor/viewport and
+   `LoadOp::Load`, so you can redraw only damage rects into a **texture you own
+   across frames**. Do not rely on the swapchain image retaining its previous
+   contents; acquire/present may rotate or discard it. The usual pattern is an
+   offscreen retained color target, draw damage rects into it, then blit/present
+   the whole target.
+3. **True partial present** — platform APIs such as Metal
+   `presentWithDamage`, DXGI `Present1` dirty rects, or Wayland surface damage.
+   wgpu does not expose portable damage/present regions. That requires a native
+   backend or a platform extension.
+
+So: retained-mode **scene and command** partial updates work with wgpu. Partial
+**fragment work** works with an offscreen retained target plus scissor. Partial
+**present bandwidth** does not, portably. v1 presents the whole scene; v2 can add
+the offscreen retained target and damage scissoring; v3 can add a native backend
+for true partial present if power/bandwidth measurements justify it.
+
 GPUI presents the whole scene; partial present is a later optimization.
 
 ## 9. Invalidation and `notify`
@@ -430,9 +466,9 @@ two things still need explicit notification:
 1. **External state change** (e.g. a platform theme change) that is not a
    signal. Wrap it in a signal: `theme.set(...)`. The framework does not have a
    side channel.
-2. **A component that rebuilds** based on non-reactive data. Put that data in a
-   signal or call `cx.request_rebuild(component_id)`, which schedules a rebuild
-   for the next apply phase.
+2. **A dynamic view slot** keyed on non-reactive data. Put that data in a
+   signal and let the slot's key change, or call `cx.request_rebuild(host_id)` to
+   schedule a replacement for the next apply phase.
 
 This is a deliberate removal of GPUI's `cx.notify()`: if a value affects the
 view, it should be a signal. `notify` becomes a diagnostic escape hatch, not the
@@ -535,7 +571,7 @@ Compiled shape (simplified):
   random edits (differential test).
 - **Dirty propagation**: a paint-only change does not mark layout; a text change
   with intrinsic width marks both.
-- **Rebuild mode**: subtree replaced under the same parent; parent bindings
+- **Dynamic slot**: subtree replaced under the same host; parent bindings
   survive; old owner disposed.
 - **Identity**: keyed row ID survives reorder; accessibility ID stable.
 - **Allocation**: a paint-only update allocates zero in steady state.
@@ -544,7 +580,7 @@ Compiled shape (simplified):
 
 ## 13. Open questions
 
-1. **Default rebuild granularity.** Is mount-once too surprising for users coming
+1. **Default view-slot granularity.** Is mount-once too surprising for users coming
    from React/Solid? The `view!` macro can make bindings transparent, so the
    answer is mostly documentation and diagnostics.
 2. **Component-local state.** A `struct Counter { count: Signal<i32> }` per mount,

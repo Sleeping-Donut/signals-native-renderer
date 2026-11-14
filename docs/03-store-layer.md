@@ -297,6 +297,32 @@ interning is v2 unless a real app needs it. Static stores avoid the question
 entirely: the macro generates a const field index/path, so there is no runtime
 interning or hash lookup.
 
+**Leptos comparison.** Leptos is already closer to this than Solid's Proxy
+stores:
+
+- `StorePath` is a `Vec<StorePathSegment>`; a segment is a per-store interned
+  `usize` for a field or key.
+- Each `ArcStore` has a `TriggerMap` (`FxHashMap<StorePath, StoreFieldTrigger>`)
+  holding `this` and `children` triggers per path.
+- Keyed fields map a key to a stable segment via `FieldKeys`, so a keyed path is
+  stable across reorder.
+- Writes collect the path's triggers plus ancestors' `children` triggers and
+  notify from the root down (order matters for `Option::unwrap`/`Show`).
+- `Patch`/`reconcile` provide keyed diffing.
+
+So Leptos has runtime paths and a path→trigger map, but:
+
+- segments are field/key indices, not arbitrary runtime values;
+- the full path is a `Vec<usize>` hashed on lookup, not a dense `PathId`;
+- the store is typed (`Store<T>`, `Field<T>`), not a dynamic `Value` tree;
+- there is no ergonomic arbitrary-path API; the macro is the intended surface.
+
+Our `DynamicStore` is the same idea with full-path interning, a dense node array,
+and untyped values for plugins/config. It is an evolution of Leptos' path model,
+not a replacement for the typed store. If we build it, reuse the segment
+interning and trigger/ancestor ordering rules from Leptos rather than inventing
+a second path system.
+
 - Reads/writes go through `DynamicField`, which resolves the path each time.
 - Cost: hash lookup (first) or `PathId` index (after) + type check; no
   compile-time field checking.

@@ -98,12 +98,13 @@ hidden background executor owned by the framework.
 ## 4. Reference inputs and how they are used
 
 All reference repos are read-only under `refs/` (git-ignored). The project itself
-is licensed **GPL-2.0-only** (see `LICENSE`). Solid and Leptos are MIT and
-GPLv2-compatible; GPUI is Apache-2.0, which is not compatible with GPLv2.
-Therefore GPUI is an architectural reference only: do not copy its code into this
-project. If GPUI code ever needs to be incorporated, the project must first be
-relicensed to GPLv3 (or permission obtained). Where an algorithm is ported from
-an MIT source, record the source file and license in the module header.
+is licensed **GPL-2.0-or-later** (see `LICENSE`). Solid and Leptos are MIT and
+GPLv2-compatible. GPUI is Apache-2.0: compatible with GPLv3, not GPLv2. A
+GPL-2.0-or-later distributor may choose GPLv3 and combine Apache-2.0 code, but
+this plan keeps GPUI reference-only until the project explicitly distributes the
+affected code under GPLv3-compatible terms with Apache notices. Where an
+algorithm is ported from an MIT source, record the source file and license in the
+module header.
 
 | Reference | What we take | What we do not take |
 |---|---|---|
@@ -132,7 +133,7 @@ bindings). A section-by-section mapping from the outline is in
 | D3 | **Arena + generational `Copy` handles**; no resurrection. | Fast reads, stable identity, safe disposal, no `Rc` cycles, and stale handles fail deterministically. | `Arc<RwLock<Node>>` (allocation and lock per node); raw indices (ABA). |
 | D4 | **Writes stage; the flush promotes.** Staged writes are invisible to readers until the frame checkpoint. | `F-10` is load-bearing for async holds and for `latest`/`isPending`. Retrofitting it later would touch every read path. | Eager writes with a "dirty" notification. |
 | D5 | **Async is Phase 2, not Phase 6.** | Flight state, staged values, and reader classes determine the node shape and scheduler. Building the renderer first would force a core rewrite. | Outline order (renderer before async). |
-| D6 | **Retained element tree with per-node bindings**, plus an opt-in cached-rebuild view. | Matches the fine-grained graph: one signal write updates one text run, not a whole component subtree. Retains GPUI's whole-view cache as the escape hatch. | GPUI's fully ephemeral element tree (coarse); a virtual DOM (diff tax). |
+| D6 | **Retained element tree with per-node bindings**, plus a `Dynamic` view slot for structural replacement. | Matches the fine-grained graph: one signal write updates one text run, not a whole component subtree. Retains a GPUI-like subtree replacement as the escape hatch, without making it a second renderer model. | GPUI's fully ephemeral element tree (coarse); a virtual DOM (diff tax). |
 | D7 | **Taffy full layout on layout-dirty frames; incremental layout is a later optimization.** | Correctness first; paint-only frames can skip layout entirely, which is the common case. | Promising incremental flex/grid layout in v1. |
 | D8 | **wgpu** for the first-party paint backend. | Cross-platform, testable offscreen, one shader path. | Metal/D3D/Blade per platform in v1. |
 | D9 | **Derive-macro stores** (Leptos-style), not a proxy emulation. | Compile-time paths are fast and Rust-idiomatic; dynamic stores are an explicit opt-in. | A `Deref`-based fake proxy with runtime interception. |
@@ -198,8 +199,8 @@ in-process scene recorder.
 
 ### Phase 4 — Retained native renderer: structure (4–6 weeks)
 
-**Build:** `ViewNode` arena, child lists, keyed lists, conditionals, mount/rebuild
-semantics, binding effects, `view!` macro (first cut), dirty flags, invalidation,
+**Build:** `ViewNode` arena, child lists, keyed lists, conditionals, dynamic view
+slots, binding effects, `view!` macro (first cut), dirty flags, invalidation,
 root/window lifecycle.
 
 **Exit:** a 10k-row keyed list mounts, reorders, and updates only affected rows;
@@ -364,13 +365,13 @@ These were open in Draft 1 and are now resolved; the detailed rationale is in
 [docs/12-decisions-and-risks.md](docs/12-decisions-and-risks.md) Part C and the
 section docs.
 
-1. **Component rebuild semantics.** v1 exposes an explicit `Rebuild` wrapper,
-   not `#[component(rebuild)]`. It replaces the subtree under the same parent and
-   preserves state captured outside the rebuild closure. See
-   [docs/10-macros-and-authoring.md](docs/10-macros-and-authoring.md) §4.1.
-2. **Props representation.** Reactive props are `Signal<T>` or `Memo<T>` handles;
-   static props are plain `T`. The macro wraps literals/plain expressions in
-   constants syntactically. No runtime `Prop<T>` enum in v1. See
+1. **Component rebuild.** No special rebuild primitive. A `Dynamic` view slot
+   replaces a subtree under a stable host; `Rebuild` is sugar over it. Solid and
+   Leptos express the same with `Show`/`Switch`/`Dynamic`/function children. See
+   [docs/10-macros-and-authoring.md](docs/10-macros-and-authoring.md) §7.2.
+2. **Props representation.** All props are `Prop<T>` (`Static(T)`,
+   `Reactive(Signal<T>)`, `Derived(Memo<T>)`). No bare-`T` props for values that
+   may change; static props allocate no node. See
    [docs/10-macros-and-authoring.md](docs/10-macros-and-authoring.md) §3.2.
 3. **Async read type.** `try_get() -> Result<T, ReadError>` is the explicit base;
    `get() -> T` is the colorless mode inside tracked computations, implemented
@@ -387,11 +388,13 @@ section docs.
    [docs/03-store-layer.md](docs/03-store-layer.md) §5.
 6. **Threading.** Background work is allowed. The graph and view tree remain
    UI-thread-affine; results return as continuations. The host supplies a
-   background spawner in addition to the UI-local one. See
-   [docs/04-async-model.md](docs/04-async-model.md) §3.1.
+   background spawner in addition to the UI-local one. Cancellation is
+   cooperative: the framework drops/aborts the flight and ignores stale results;
+   long-running threads must check the flight's cancellation token. See
+   [docs/04-async-model.md](docs/04-async-model.md) §3.1 and §3.5.
 7. **Renderer contract batching.** `begin_frame`/`end_frame` stay optional; the
    native path uses its own frame. No required per-backend batching API.
-8. **License and attribution.** GPL-2.0-only; one `THIRD_PARTY.md` plus module
+8. **License and attribution.** GPL-2.0-or-later; one `THIRD_PARTY.md` plus module
    headers for ported MIT code. GPUI is reference-only because Apache-2.0 is not
    GPLv2-compatible. See `LICENSE` and
    [docs/reference-repos.md](docs/reference-repos.md).

@@ -42,14 +42,15 @@ deviations are recorded in
 
 ## License
 
-This project is licensed under **GPL-2.0-only**. See [`LICENSE`](LICENSE) and
+This project is licensed under **GPL-2.0-or-later**. See [`LICENSE`](LICENSE) and
 [`THIRD_PARTY.md`](THIRD_PARTY.md).
 
 The reference repositories in `refs/` have their own licenses. Solid and Leptos
-are MIT (compatible with GPLv2); GPUI is Apache-2.0, which is **not** compatible
-with GPLv2. GPUI is an architectural reference only — do not copy its code into
-this project. See [`docs/reference-repos.md`](docs/reference-repos.md) for the
-compatibility note.
+are MIT (compatible with GPLv2+); GPUI is Apache-2.0, which is compatible with
+GPLv3 but not GPLv2. Because this project is GPL-2.0-or-later, a distributor may
+choose GPLv3 and combine Apache-2.0 code, but we keep GPUI reference-only until
+the project explicitly distributes under GPLv3-compatible terms and carries the
+Apache notices. See [`docs/reference-repos.md`](docs/reference-repos.md).
 
 ## The one-paragraph summary
 

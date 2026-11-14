@@ -142,14 +142,16 @@ component, conditional, list, or overlay.
 
 **Mount** — the one-time construction of a component's view subtree.
 
-**Rebuild** — an explicit replacement of a mounted subtree, used when binding is
-more expensive than re-rendering.
+**Dynamic view slot** — a stable host node whose one active child subtree is
+replaced when its key changes. `Rebuild` is sugar for a slot keyed on a closure's
+tracked reads. Used when binding is more expensive than replacing the subtree.
 
 **Binding** — an effect that writes one dynamic property of a view node. It
 subscribes to the signals it reads and updates the view/scene when they change.
 
-**Prop** — a value passed from a parent to a child. In our model, props are
-signals or memos passed by handle, not plain values that force a re-render.
+**Prop** — a value passed from a parent to a child, represented as `Prop<T>`
+(`Static(T)`, `Reactive(Signal<T>)`, or `Derived(Memo<T>)`). There are no bare
+`T` props for values that may change. `Static` allocates no graph node.
 
 **Style** — a resolved layout+paint description attached to a view node. The
 public style API is builder-based; resolution is a separate step.

@@ -142,7 +142,7 @@ for a retained list; if omitted, it uses the item's index and emits a dev warnin
 
 ```rust
 #[component]
-fn Counter(initial: Signal<i32>, step: i32) -> impl View {
+fn Counter(initial: Prop<i32>, step: Prop<i32>) -> impl View {
     let count = Signal::new(initial.get_untracked());
     view! { ... }
 }
@@ -152,8 +152,8 @@ Generates:
 
 ```rust
 struct CounterProps {
-    initial: Signal<i32>,
-    step: i32,
+    initial: Prop<i32>,
+    step: Prop<i32>,
 }
 
 fn Counter(props: CounterProps, cx: &mut Cx) -> ViewNodeId { ... }
@@ -165,11 +165,26 @@ also valid.
 
 ### 3.2 Props
 
-Props are values, but reactive props are `Signal<T>`:
+Props are uniform `Prop<T>` values. There is no bare `T` prop if the value may
+change, because a bare `T` is a snapshot with no accessor and therefore no way to
+be reactive:
+
+```rust
+pub enum Prop<T> {
+    Static(T),
+    Reactive(Signal<T>),
+    Derived(Memo<T>),
+}
+
+impl<T: Clone> Prop<T> {
+    pub fn get(&self, cx: &Cx) -> T;
+    pub fn with<R>(&self, cx: &Cx, f: impl FnOnce(&T) -> R) -> R;
+}
+```
 
 ```rust
 #[component]
-fn Label(text: Signal<String>) -> impl View {
+fn Label(text: Prop<String>) -> impl View {
     view! { <span>{text}</span> }
 }
 ```
@@ -178,79 +193,66 @@ Passing:
 
 ```rust
 view! {
-    <Label text=title />              // title: Signal<String>, cloned handle
-    <Label text="Static" />           // literal -> Signal::constant("Static")
-    <Label text=move || format!("{first} {last}") /> // closure -> Memo<String>
+    <Label text=title />              // Signal<String> -> Prop::Reactive
+    <Label text="Static" />           // literal -> Prop::Static("Static".into())
+    <Label text=move || format!("{first} {last}") /> // closure -> Prop::Derived(memo)
 }
 ```
 
 The macro decides syntactically:
 
-- a closure `move || ...` becomes a `Memo<T>`;
-- an expression whose type is already `Signal<T>` or `Memo<T>` is passed
-  through;
-- any other expression is wrapped in `Signal::constant(expr)`.
+- a closure `move || ...` becomes a `Memo<T>` wrapped in `Prop::Derived`;
+- an expression whose type is `Signal<T>` or `Memo<T>` becomes
+  `Prop::Reactive`/`Prop::Derived`;
+- any other expression becomes `Prop::Static`.
 
-We do **not** use a blanket `impl<T> IntoSignal<T> for T`: in Rust it conflicts
-with `impl<T> IntoSignal<T> for Signal<T>` (the compiler cannot rule out
-`T = Signal<U>`). The syntactic rule avoids the coherence problem and gives
-better error messages. For cases the macro cannot classify, use an explicit
-constant wrapper:
+`Prop::Static` allocates no graph node and creates no edge. `Reactive` and
+`Derived` subscribe normally. This is the Rust answer to Solid's prop getter:
+reading `props.text` in Solid is always a lazy accessor; `Prop<T>` makes that
+explicit without forcing a node for static values.
 
-```rust
-pub struct Const<T>(pub T);
-
-pub trait IntoSignal<T> {
-    fn into_signal(self, cx: &Cx) -> Signal<T>;
-}
-
-impl<T> IntoSignal<T> for Const<T> { /* constant signal */ }
-impl<T> IntoSignal<T> for Signal<T> { /* clone handle */ }
-impl<T> IntoSignal<T> for Memo<T> { /* read-through */ }
-```
-
-A constant signal is a real signal node with no setter exposed; it is cheap but
-not free. For static props that never change, the macro can pass the value
-directly if the prop type is not `Signal<T>`. Keep both: `Signal<T>` for
-dynamic, plain `T` for static.
+We do **not** use a blanket `impl<T> IntoProp<T> for T`: in Rust it conflicts
+with `impl<T> IntoProp<T> for Signal<T>` (the compiler cannot rule out
+`T = Signal<U>`). The syntactic rule avoids coherence problems and gives better
+error messages.
 
 #### Props design tradeoffs
 
 | Design | Update granularity | Ergonomics | Cost |
 |---|---|---|---|
-| Plain `T` only | None; child must be rebuilt | Simplest signatures | Unusable for live props |
-| `Signal<T>`/`Memo<T>` only | Fine-grained | Parent must pass a handle or macro wraps | One node per prop unless constant-folded |
-| `Prop<T>`/`MaybeSignal<T>` enum | Fine-grained | One uniform type for call sites | Runtime match per read; larger type surface |
-| `Fn() -> T` (derived signal) | Fine-grained, uncached | Flexible | Recomputed at every read; no memoization |
+| Plain `T` only | None; child must be replaced | Simplest signatures | Unusable for live props; footgun |
+| `Signal<T>` only | Fine-grained | Uniform; macro wraps statics | Every static prop allocates a stored signal/node unless `Signal` has a constant variant |
+| **`Prop<T>` enum (chosen)** | Fine-grained for `Reactive`/`Derived`; none for `Static` | Uniform signatures; macro chooses variant | One match per read; enum size |
+| `Fn() -> T` derived closure | Fine-grained, uncached | Flexible | Recomputed at every read; no memoization |
 | `RwSignal<T>`/`ReadSignal<T>` split | Fine-grained | Clear read/write split | More types; write access may be too broad |
 
 **Leptos comparison.** Leptos uses:
 
 - `Signal<T>` — a type-erased enum of read signal, memo, derived closure, or
-  stored value;
-- `MaybeSignal<T>` — static value or reactive value, the closest analogue to a
-  `Prop<T>` enum;
+  stored value; `impl From<T> for Signal<T>` wraps a static value in
+  `Signal::stored`;
+- `MaybeSignal<T>` — `Static(T)` or a reactive variant, the closest analogue to
+  `Prop<T>`; `impl From<T>` produces `Static` with no signal node;
 - `MaybeProp<T>` — optional prop handling;
 - `#[prop(into)]` — call-site conversion into the prop type;
 - `Callback<In, Out>` and `Children` — events and slots.
 
-Leptos' `MaybeSignal<T>` buys a single prop type at the cost of a runtime match
-and a larger enum. Its `#[prop(into)]` keeps call sites clean. Our v1 choice is
-the monomorphic version: `Signal<T>` for reactive, plain `T` for static, with the
-macro doing the syntactic conversion. If a component genuinely needs "static or
-reactive" in one signature, add `MaybeSignal<T>` later rather than making every
-prop pay for the enum.
+Leptos' `MaybeSignal<T>` is exactly the "static or reactive" enum. Its
+`#[prop(into)]` keeps call sites clean. Our `Prop<T>` is the same shape:
+`Static(T)` is zero-node; `Reactive`/`Derived` carry handles. This avoids both
+the bare-`T` footgun and the per-static-prop node cost of a uniform `Signal<T>`.
 
 ### 3.3 Prop identity
 
 A reactive prop is a handle. If the parent passes a stable `Signal`/`Memo`, the
-child's binding subscribes directly; the child is not rebuilt. If the parent
+child's binding subscribes directly; the child is not replaced. If the parent
 creates a new `Memo` each time it mounts, that is fine (mount happens once). If
 the parent wants to change the prop later, it writes to the signal it passed; it
-does not re-create the child.
+does not re-create the child. A `Static` prop never updates; that is explicit and
+zero-cost.
 
 This is the key ergonomic difference from GPUI: props are not re-supplied every
-frame; they are handles that live as long as the child.
+frame; they are `Prop<T>` values that live as long as the child.
 
 ### 3.4 Children
 
@@ -265,7 +267,7 @@ fn Card(children: Children) -> impl View {
 
 `Children` is a closure that mounts the child subtree when called. It is called
 once during the parent's mount. For a child that can change structurally, pass a
-`ViewFn` and wrap it in a `Show`/`For`, or use a rebuild component.
+`ViewFn` and wrap it in a `Show`/`Dynamic` slot.
 
 ## 4. Control-flow helpers
 
@@ -401,49 +403,65 @@ let initial = untrack(|| count.get());
 
 Explicit snapshot. Use for initial values, one-time setup, and measuring.
 
-### 7.2 `Rebuild`
+### 7.2 Dynamic view slots (and `Rebuild` sugar)
 
 ```rust
-let state = Signal::new(FormState::default()); // created at mount, outside the closure
-
-Rebuild::new(move || {
-    // re-runs when any tracked read changes
-    view! { <ExpensiveForm state=state /> }
-})
+// A stable host whose active child is replaced when `key` changes.
+Dynamic::new(
+    key,
+    move || view! { <ExpensiveForm state=state /> },
+)
 ```
 
-**Purpose.** Mount-once is the default because it preserves identity and makes
-updates fine-grained. Some subtrees are a poor fit for bindings: highly dynamic
-structure, cheap leaf components, or code that is far simpler as a function of
-state. `Rebuild` re-runs a closure and replaces the previous subtree under the
-same parent. It is the GPUI per-view model applied to one subtree.
+`Dynamic` is the primitive: a stable host node owns one active child subtree. When
+the key changes, the old child owner is disposed and a new subtree is mounted
+under the same host. `Rebuild::new(closure)` is sugar for a `Dynamic` whose key is
+the closure's tracked dependencies: it re-evaluates the closure and replaces the
+subtree.
 
-**Chosen semantics (v1):**
+**Why this is not a core component primitive.** Solid and Leptos express the same
+thing with control flow: `<Show>`, `<Switch>`, `<Dynamic>`, `<For>`, and function
+children. Their components run once, like ours; a subtree is replaced by changing
+the branch of a control-flow node, not by re-running the component. We need the
+same `Dynamic`/`ViewFn` slot, but not a special "rebuild component" mechanism.
+`Rebuild` is an ergonomic alias for the common "recompute this view from state"
+case, not a second renderer model.
 
-- The closure re-runs when any tracked read changes.
-- The old subtree's owner, view nodes, and bindings are disposed.
-- The new subtree is mounted under the same parent, preserving the parent and
-  siblings. The component's own node identity is the parent; the subtree nodes
-  are new.
+**Semantics (v1):**
+
+- The host node is stable; its active child subtree is replaced.
+- The old child owner, view nodes, and bindings are disposed.
+- The new child is mounted under the same host, preserving host identity and
+  siblings.
 - State captured outside the closure survives. Local bindings created inside the
-  closure do not; they reset on every rebuild. Hoist state that must survive.
-- The rebuild is structural: it marks layout and paint dirty. Focus/scroll inside
-  the subtree is lost unless the state is hoisted or `KeepAlive` is used.
-- `Rebuild` runs in the apply phase; its first-run bindings initialize
-  synchronously, so layout sees a complete subtree.
+  closure reset on replacement. Hoist state that must survive.
+- Replacement is structural: layout and paint dirty. Focus/scroll inside is lost
+  unless state is hoisted or `KeepAlive` is used.
+- Replacement runs in apply; first-run bindings initialize synchronously, so
+  layout sees a complete subtree.
 
-**Options considered and rejected for v1:**
+**When to use it:**
+
+- generated/plugin UIs whose structure is a function of state;
+- cheap leaf components where binding every property is more code than replacing
+  the leaf;
+- migrating code that is naturally "render this tree from this state".
+
+**When not to use it:** for value-only changes, for keyed lists, or as a default.
+Use bindings for values, `For` for lists, and `Show`/`Switch` for branches.
+
+**Options considered and rejected as core semantics:**
 
 | Semantics | Why not |
 |---|---|
-| `#[component(rebuild)]` attribute | Ambiguous whether `let` bindings are hoisted (state survives) or re-created (state resets). The wrapper makes the boundary explicit. |
-| Replace the component node itself | Loses sibling position/focus and complicates parent references for little gain. |
-| Reconcile keyed children across rebuilds | This is a virtual DOM; it reintroduces the diff tax and duplicate identity rules. |
+| `#[component(rebuild)]` attribute | Ambiguous whether `let` bindings are hoisted (state survives) or re-created (state resets). |
+| Replace the component node itself | Loses sibling position/focus and complicates parent references. |
+| Reconcile keyed children across rebuilds | That is a virtual DOM; it reintroduces the diff tax and duplicate identity rules. |
 | Keep both branches alive | That is `KeepAlive`, a separate feature. |
 
-Compose `Rebuild` with `CachedView`/`Memo` to keep expensive children alive
-across rebuilds (a shallow rebuild). If a subtree needs row identity, use `For`
-inside it; `Rebuild` is not a substitute for keyed lists.
+Compose `Dynamic` with `CachedView`/`Memo` to keep expensive children alive
+across replacements (a shallow rebuild). If a subtree needs row identity, use
+`For` inside it; `Dynamic` is not a substitute for keyed lists.
 
 ### 7.3 `RenderOnce`
 
@@ -550,7 +568,7 @@ What runs when a todo is toggled:
 | `view!` proc macro | concise, compile-time wiring | macro complexity, error messages |
 | Props as signals | fine-grained updates without re-render | prop identity must be stable |
 | Keyed `For` | row state survives reorder | keys required; duplicate-key checks |
-| `Rebuild` escape hatch | simple for dynamic forms | loses subtree state |
+| `Dynamic` view slot | simple for dynamic forms | loses subtree state |
 | Strict-read warnings | catches a common mistake | some false positives; needs `untrack` |
 
 ## 10. Tests
@@ -573,18 +591,20 @@ What runs when a todo is toggled:
    requires a proc macro parser; a builder API is simpler but more verbose. We
    can ship both: `view!` for apps, builders for libraries.
 2. **Reactive attribute detection.** The v1 decision is syntactic: closures are
-   memos, handles pass through, other expressions become constants. The open
-   part is how much type information the macro can use without hurting error
-   messages. Do not add a blanket `IntoSignal` trait; Rust coherence rejects it.
-3. **Props defaults.** `Signal<T>` for reactive props and plain `T` for static
-   props is the v1 decision. A runtime `MaybeSignal<T>` is the fallback if a
-   component genuinely needs both in one signature; it is not the default.
+   memos, handles pass through, other expressions become static (`Prop::Static`
+   or a constant signal). The open part is how much type information the macro
+   can use without hurting error messages. Do not add a blanket `IntoSignal`
+   trait; Rust coherence rejects it.
+3. **Props defaults.** `Prop<T>` is the v1 decision: `Static`, `Reactive`, or
+   `Derived`; no bare `T` for values that may change. The open part is whether
+   `Prop<T>` should also support optional/`Option` convenience or a separate
+   `MaybeProp<T>`.
 4. **`For` key ergonomics.** Requiring a key is correct but annoying. Can the
    macro infer `id` when the item implements a `Keyed` trait? Yes, with an
    explicit override.
-5. **Component state.** A per-mount `struct` vs closure captures. `Rebuild`
-   requires state to be captured outside its closure; the macro can choose
-   closure captures for simple components and a state struct for `Rebuild` and
-   for exposing methods.
+5. **Component state.** A per-mount `struct` vs closure captures. `Dynamic`
+   requires state to be captured outside its replacement closure; the macro can
+   choose closure captures for simple components and a state struct for `Dynamic`
+   and for exposing methods.
 6. **Error messages.** Proc macros are notoriously bad at spans. Budget time for
    `syn::Error` spans and `trybuild` tests.

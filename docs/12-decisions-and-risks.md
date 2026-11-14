@@ -221,7 +221,9 @@ always available for tests.
 
 - One shader path, WebGPU-ready, tests on any machine.
 - Possible driver quirks and a heavier dependency; device loss must be handled.
-- v1 presents the whole scene; partial damage is a later backend capability.
+- Retained scene/command partial updates work. GPU damage scissoring works if we
+  render into an offscreen texture we own across frames. True partial *present*
+  (dirty rects) is not portable through wgpu; it needs a native backend.
 - A platform-specific fast path is justified only if profiling shows wgpu
   overhead above ~10–15% of frame time or a required platform feature is missing.
 
@@ -318,21 +320,23 @@ cycles).
 
 ---
 
-### ADR-013: GPL-2.0-only, with GPUI kept reference-only
+### ADR-013: GPL-2.0-or-later, with GPUI kept reference-only
 
 **Status:** Accepted.
 
 **Context.** The project is being published as free software. The references have
 different licenses: Solid MIT, Leptos MIT, GPUI Apache-2.0.
 
-**Decision.** License the project GPL-2.0-only. Treat GPUI as an architectural
-reference only; do not copy its code. Ported MIT code keeps its notice.
+**Decision.** License the project GPL-2.0-or-later. Keep GPUI as an architectural
+reference for v1; do not copy its code yet. Ported MIT code keeps its notice.
 
 **Consequences.** The project can use Solid/Leptos code and ideas with
-attribution. It cannot incorporate Apache-2.0 GPUI code. If that changes, the
-project must move to GPLv3 (or GPLv2-or-later, letting recipients choose GPLv3)
-or obtain permission. The scene/paint/input designs in this plan are
-independent descriptions and can be implemented from scratch.
+attribution. GPUI is Apache-2.0: compatible with GPLv3, not GPLv2-only. Because
+the project is GPL-2.0-or-later, a distributor may choose GPLv3 and combine
+Apache-2.0 code, but the combined distribution must carry the Apache notices and
+must not be made under GPLv2-only. Until we explicitly take that step, GPUI stays
+reference-only. The scene/paint/input designs in this plan are independent
+descriptions and can be implemented from scratch.
 
 ---
 
@@ -419,60 +423,58 @@ signs and the decision that would change.
 These were open in Draft 1. Most are now resolved; the remaining engineering
 questions are flagged.
 
-### Q1. Component rebuild syntax (resolved for v1)
+### Q1. Component rebuild (resolved for v1)
 
-**Decision:** v1 exposes an explicit `Rebuild` wrapper, not
-`#[component(rebuild)]`. The wrapper takes a closure; the closure re-runs when
-its tracked reads change; its result replaces the previous subtree under the same
-parent. State captured outside the closure survives; locals created inside it do
-not. Old owners and bindings are disposed; the new subtree is initialized before
-layout; focus/scroll inside is lost unless `KeepAlive` is used.
+**Decision:** no special rebuild primitive. The primitive is a `Dynamic` view
+slot: a stable host node whose one active child is replaced when its key changes.
+`Rebuild::new(closure)` is sugar over `Dynamic` keyed on the closure's tracked
+reads, not a second renderer model.
 
-**Why not an attribute:** an attribute would have to decide whether `let`
-bindings in the body are re-created (state resets) or hoisted (state survives).
-Both are defensible, and guessing wrong is a surprising bug. The wrapper makes
-the state boundary explicit. Once the semantics are proven, the macro can expand
-to the wrapper.
+Why: Solid and Leptos express the same behavior with `<Show>`, `<Switch>`,
+`<Dynamic>`, `<For>`, and function children. Their components run once, like
+ours; a subtree is replaced by changing the branch of a control-flow node, not by
+re-running the component. We need the same dynamic slot, but not a special
+"rebuild component" mechanism.
 
-**Why rebuild at all:** mount-once is the default because it preserves identity
-and makes updates cheap. Rebuild is the escape hatch for highly dynamic
-structure, cheap leaves, and code that is simpler as a function of state than as
-a set of bindings. It is the GPUI model applied to one subtree.
+Semantics:
 
-Options considered:
+- old child owner, view nodes, and bindings are disposed;
+- new child mounts under the same stable host; host/sibling identity survives;
+- state captured outside the closure survives; locals inside reset;
+- replacement is structural (layout + paint dirty);
+- focus/scroll is lost unless state is hoisted or `KeepAlive` is used.
 
-| Semantics | Effect | Verdict |
-|---|---|---|
-| Replace subtree under same parent | Parent/sibling identity preserved; subtree state lost | **Chosen** |
-| Replace the component node itself | Simpler, but loses position/focus and breaks sibling assumptions | Rejected |
-| Reconcile keyed children across rebuilds | Preserves child identity | That is a virtual DOM; rejected |
-| Rebuild with cached/memoized children | Shallow rebuild, expensive children retained | Supported by composing `Rebuild` with `CachedView`/`Memo` |
-| Attribute that re-runs the body | Ambiguous state lifetime | Deferred until semantics settle |
+When useful: generated/plugin UIs, cheap leaves, and code naturally written as
+"render this tree from this state". Not for value changes, keyed lists, or as a
+default.
 
 ### Q2. Props representation (resolved for v1)
 
-**Decision:** reactive props are `Signal<T>` or `Memo<T>` handles; static props
-are plain `T`. The `view!` macro decides syntactically: closures become memos,
-handle expressions pass through, other expressions are wrapped in
-`Signal::constant`. No runtime `Prop<T>` enum in v1.
+**Decision:** all props are `Prop<T>`:
 
-**Leptos comparison:**
+```rust
+pub enum Prop<T> {
+    Static(T),
+    Reactive(Signal<T>),
+    Derived(Memo<T>),
+}
+```
 
-- Leptos uses `Signal<T>` (a type-erased enum of read signal, memo, derived
-  closure, or stored value), `MaybeSignal<T>` (static value or reactive value),
-  `MaybeProp<T>` for optional props, `#[prop(into)]` for conversions, and
-  `Callback<In, Out>`/`Children` for events and slots.
-- `MaybeSignal<T>` is the closest analogue to a `Prop<T>` enum. It buys one
-  uniform prop type at the cost of a runtime match on every read and a larger
-  type surface.
-- Our `Signal<T>`/`Memo<T>` props are monomorphic and avoid the match; the macro
-  supplies ergonomics. The cost is that static and reactive props are different
-  types, so component signatures must choose. That is usually obvious at the
-  call site.
+There is no bare `T` prop if the value may change. A bare `T` is a snapshot with
+no accessor; it cannot be reactive. `Prop::Static` allocates no node and creates
+no edge; `Reactive`/`Derived` subscribe normally. The `view!` macro maps
+closures to `Derived`, handles to `Reactive`, and other expressions to `Static`.
 
-**Tradeoff:** if a component must accept either a static or reactive value
-without two constructors, add a `MaybeSignal<T>` later. Do not make every prop a
-runtime enum in v1; the hot path and the type errors are better monomorphic.
+**Leptos comparison:** Leptos has `Signal<T>` (type-erased enum of read signal,
+memo, derived closure, or stored value; `From<T>` uses `stored`),
+`MaybeSignal<T>` (`Static(T)` or reactive; no node for static), `MaybeProp<T>`,
+`#[prop(into)]`, `Callback`, and `Children`. `MaybeSignal<T>` is exactly the
+`Prop<T>` shape. Our choice avoids both the bare-`T` footgun and the per-static
+node cost of making everything `Signal<T>`.
+
+**Cost:** one match per prop read and a slightly larger enum. That is acceptable;
+prop reads are not the hottest loop, and the alternative is a silent snapshot bug
+or a node per static prop.
 
 ### Q3. Async read style (resolved for v1)
 
@@ -491,7 +493,8 @@ runtime enum in v1; the hot path and the type errors are better monomorphic.
 
 This is the Rust translation of Solid throwing `NotReadyError`: the throw is a
 graph control token, not an application error, and the explicit API remains
-available. See [04-async-model.md](04-async-model.md) §3.4.
+available. Implementation paths (private panic payload, explicit `?`, and the
+rejected alternatives) are in [04-async-model.md](04-async-model.md) §3.6.
 
 ### Q4. Boundary content lifetime and `on` (resolved for v1)
 
@@ -536,6 +539,12 @@ table that must be bounded/evicted, and a requirement that keys are
 pointer chasing), or string paths (easy, slow). Static stores avoid the question
 entirely: the macro generates a const field index/path.
 
+Leptos already uses a runtime path map (`StorePath` of interned `usize` segments
+into a `TriggerMap`), but hashes the full `Vec` per lookup and is typed. Our
+dynamic store adds full-path interning, a dense `PathId` vector, and untyped
+values for plugins/config. It is an evolution of Leptos' model, not a different
+one; reuse its segment interning and ancestor-trigger ordering.
+
 ### Q6. Threading of background computation (resolved for v1)
 
 **Decision:** background work is allowed. The user is not misunderstanding: you
@@ -551,6 +560,12 @@ provides no background spawner, user code may use its own executor and send the
 result back through a `UiHandle`/channel. The UI-local future must not block on
 CPU or blocking I/O directly, or it will stall the frame; await a background task
 instead.
+
+Cancellation is cooperative. When the memo re-runs or is disposed, the old
+future is dropped/aborted and its generation is superseded; a late result is
+discarded. A raw thread cannot be killed, so long-running work must check the
+flight's `CancellationToken` and stop early. The framework guarantees the stale
+result is ignored; it cannot guarantee the thread stops without cooperation.
 
 ### Q7. Batching (resolved for v1)
 
@@ -572,14 +587,15 @@ the contract at all; it has its own frame.
 
 ### Q8. License notices (resolved)
 
-**Decision:** the project is **GPL-2.0-only** (see `LICENSE`). Use one
-`THIRD_PARTY.md`/`NOTICE` for reference attributions and a module header for any
-ported MIT code.
+**Decision:** the project is **GPL-2.0-or-later** (see `LICENSE`). Use one
+`THIRD_PARTY.md` for reference attributions and a module header for any ported MIT
+code.
 
-**Important compatibility note:** GPUI is Apache-2.0, which is incompatible with
-GPLv2. GPUI is a reference for architecture only; do not copy its code. If GPUI
-code must be incorporated later, relicense to GPLv3 first (or obtain permission).
-Solid and Leptos are MIT and compatible; keep their notices when porting code.
+**Compatibility note:** GPUI is Apache-2.0, compatible with GPLv3 but not
+GPLv2-only. Keep it reference-only for v1. If GPUI code is incorporated, the
+combined distribution must be under GPLv3 terms (allowed by the “or later” grant)
+and carry the Apache notices. Solid and Leptos are MIT and compatible; keep
+their notices when porting code.
 
 ### Q9. Text default width (Phase 5)
 

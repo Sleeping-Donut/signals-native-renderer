@@ -49,27 +49,28 @@ The docs primarily cite:
 
 ## Licenses and compatibility
 
-| Repo | License | Compatible with GPL-2.0-only? |
+| Repo | License | Compatibility note |
 |---|---|---|
-| This project | GPL-2.0-only | — |
-| Solid | MIT | Yes |
-| Leptos | MIT | Yes |
-| GPUI | Apache-2.0 | **No** |
+| This project | GPL-2.0-or-later | Recipients may choose GPLv2 or GPLv3-or-later |
+| Solid | MIT | Compatible with GPLv2-or-later |
+| Leptos | MIT | Compatible with GPLv2-or-later |
+| GPUI | Apache-2.0 | Compatible with GPLv3, **not** GPLv2-only |
 
-MIT code may be incorporated into a GPLv2 work with attribution. Apache-2.0 is
-compatible with GPLv3, not GPLv2. So:
+MIT code may be incorporated into a GPLv2-or-later work with attribution.
+Apache-2.0 is compatible with GPLv3, not GPLv2-only. So:
 
 - Use Solid and Leptos as both references and, where useful, as sources for
   ported algorithms; keep the MIT notice.
-- Use GPUI as an **architectural reference only**. Reimplement its ideas
-  independently; do not copy code, comments, or other expressive content.
-- If you later need to copy GPUI code, relicense the project to GPL-3.0-or-later
-  (or GPL-2.0-or-later, which lets recipients choose GPLv3) or obtain permission
-  from the copyright holder first.
+- Keep GPUI reference-only for now. Reimplement its ideas independently; do not
+  copy code, comments, or other expressive content unless you are prepared to
+  distribute the combined work under GPLv3 with the Apache notices.
+- If you copy GPUI code, the distribution must be under GPLv3 terms (the
+  GPL-2.0-or-later grant allows that choice) and carry the Apache-2.0 notices.
+  Do not distribute the combined work under GPLv2-only.
 
 The implementation should still be independent. Where an algorithm is ported,
 add a module header naming the source file, commit, and license, and keep a
-top-level `NOTICE`/`THIRD_PARTY.md` (see ADR Q8 in
+top-level `THIRD_PARTY.md` (see ADR Q8 in
 [12-decisions-and-risks.md](12-decisions-and-risks.md)).
 
 ## Why these three

@@ -229,6 +229,147 @@ changed.
 A `Resource<T>` convenience wraps `AsyncMemo<T>` with a `set_reload` trigger and
 a `refresh()` method.
 
+### 3.5 Cancellation and background threads
+
+A flight is cancelled by dropping its future (and, where supported, aborting the
+task). That is **cooperative** for background work:
+
+- dropping an async future stops it at the next `await`; it does not kill a
+  thread that is running blocking/CPU code;
+- `BackgroundSpawner::spawn` returns a `TaskHandle`; `abort`/`cancel` is
+  cooperative and executor-specific;
+- a raw `std::thread` cannot be safely killed. The work must check a
+  `CancellationToken`/`AtomicBool` or stop on a channel message.
+
+The compute closure receives a `FlightCtx`:
+
+```rust
+pub struct FlightCtx {
+    cancel: CancellationToken,
+}
+
+impl FlightCtx {
+    pub fn is_cancelled(&self) -> bool;
+    pub fn token(&self) -> CancellationToken;
+}
+```
+
+Typical pattern:
+
+```rust
+AsyncMemo::new(cx, |cx| {
+    let ctx = cx.flight_ctx();
+    let bg = cx.background_spawner();       // Clone + 'static handle
+    async move {
+        let token = ctx.token();
+        let task = bg.spawn(async move {
+            // long CPU / blocking work
+            for chunk in work {
+                if token.is_cancelled() { return Err(Cancelled); }
+                process(chunk);
+            }
+            Ok(value)
+        });
+        task.await?
+    }
+})
+```
+
+When a dependency changes while the flight is running:
+
+1. the memo re-runs and bumps the flight generation;
+2. the old future is dropped/aborted and its token is cancelled;
+3. the old background work should observe the token and stop early;
+4. if it finishes anyway, the landing is discarded because its generation is
+   stale.
+
+The framework guarantees (4) regardless of cooperation; (3) is the user's
+responsibility. This is why blocking work belongs in `spawn_background`, not
+`spawn_local`: a UI-local future that blocks cannot be cancelled until it yields.
+
+### 3.6 Implementing the colorless suspension
+
+`get() -> T` needs a way to stop a synchronous computation without changing its
+signature. These are the implementation paths worth prototyping.
+
+#### Path A — private panic payload (recommended default)
+
+```rust
+struct NotReady(());
+#[cold]
+fn suspend() -> ! {
+    std::panic::resume_unwind(Box::new(NotReady(())));
+}
+```
+
+- Each computation runs under `catch_unwind(AssertUnwindSafe(|| compute()))`.
+- If the payload is `NotReady`, the scheduler marks the node pending, registers
+  the reader/flight, and parks or shows a boundary fallback.
+- If the payload is anything else, rethrow it (user panic).
+- A panic hook checks `PanicHookInfo::payload().is::<NotReady>()` and suppresses
+  the default report, so a normal first load does not print a panic.
+- On unwind, Rust runs destructors, so RAII guards clean up. The scheduler must
+  still dispose the partial owner tree created by the failed pass.
+- `Cx` sets `suspended = true` before unwinding. If a computation returns normally
+  while `suspended` is set, someone swallowed the token; emit
+  `CAUGHT_REACTIVE_READ` and treat the value as pending. That makes the failure
+  loud instead of silently publishing a partial value.
+- Catch at each computation, not only at the render effect, so a memo can be
+  marked pending and its reader can re-suspend cleanly.
+- `panic = "abort"` cannot use this path; `try_get()` is required.
+- Unwinding across `extern "C"` is undefined/aborts. User computations must not
+  cross FFI before a suspension; document this.
+
+Costs and risks: a landing pad per computation (measure; likely small), panic
+machinery on the suspension path (microseconds, only on first load/hold), a panic
+hook that must cooperate, and the fact that a user `catch_unwind` can intercept
+the token. The `suspended` flag turns interception into a diagnostic. This is the
+closest to Solid's throw model and the only path that is truly colorless.
+
+#### Path B — explicit `Result`/`?` everywhere
+
+`try_get()` returns `Result<T, ReadError>`; every helper that reads a pending
+value returns `Result` and uses `?`. The `view!` macro can wrap dynamic
+expressions in a generated `Result` context, but a plain Rust helper still has to
+be written in the colored style.
+
+- Safe, portable, works with `panic = "abort"`, no panic hooks.
+- Not colorless. It is the right fallback and the right API for library code.
+- We would ship it regardless, as the base API.
+
+#### Path C — custom `setjmp`/`longjmp`
+
+Rejected. It is platform-specific, unsafe, skips Rust destructors, and interacts
+badly with async and `Drop`. Do not use.
+
+#### Path D — sentinel value + pending flag
+
+`get()` returns `T::default()` (or `MaybeUninit`) and sets `Cx.suspended`. The
+caller may use the bogus value before the scheduler notices; side effects,
+indexing, and logic run on garbage. Rejected as unsound or requiring a sandbox
+for every computation.
+
+#### Path E — CPS / `with` closures
+
+`signal.with(|v| ...)` avoids suspension for the closure body, but you cannot
+early-return from the enclosing function, and async/hold logic still has to stop.
+Useful for library APIs that want to avoid clones, not a general colorless read.
+
+#### Path F — macro-only `?`
+
+The `view!`/`#[component]` macros rewrite `signal.get()` into `?` inside a
+generated `Result` function. This helps bindings but not arbitrary helper
+functions; a helper that calls `get()` still needs a suspension mechanism. It is
+a complement to Path A/B, not a replacement.
+
+#### Recommendation
+
+Implement Path B first (`try_get`, explicit, tested everywhere). Add Path A behind
+a `colorless` feature and make `get()` available only there. Prototype both on the
+same navigation/hold tests, measure the `catch_unwind` overhead, and keep the
+`suspended` flag diagnostic. If the panic hook or unwinding proves unacceptable on
+a target, that target uses `try_get` and `?`; no semantics change, only ergonomics.
+
 ## 4. Reader classes
 
 Every compute pass has a class, set by what created it:
