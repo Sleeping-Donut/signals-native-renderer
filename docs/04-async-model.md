@@ -185,6 +185,29 @@ signal whose compute happens to be async**, and it returns the same
 a read-only async derivation, use `Memo::new_async` instead; there is no write
 half.
 
+**Async lifecycle.** The constructor stores the compute closure and returns
+immediately with the handles; it does not block or `.await`.
+
+1. The derive run calls the closure under the node's owner/observer to get a
+   future. The synchronous prefix records tracked reads.
+2. The runtime wraps the future in `ScopedFuture` (owner/observer restored on
+   each poll) and hands it to the host's UI-local `Spawner`.
+3. The future is polled by the local executor. A read of the signal before the
+   result is ready suspends to a `LoadingBoundary` or holds the mounting change.
+4. On completion, the result is posted as a continuation. At the next frame's
+   pump, it becomes a staged value; the transaction/boundary decides when it
+   reveals.
+5. If a dependency changes first, the old flight's generation is bumped, its
+   cancellation token is signalled, and a new run starts. The old completion is
+   discarded.
+6. An `Err` result is an error answer: `ErrorBoundary` catches it. Pending is
+   not an error.
+
+The compute closure should read reactive dependencies synchronously before
+returning the future, or carry an owned context handle; a `&Cx` cannot be held
+across an `await` in a `'static` future. The example below reads nothing after
+the await, so it is fine.
+
 **Rejected: one `SignalFactory<T>` trait for all constructors.** A trait with
 impls for `T`, `FnOnce() -> T`, and `FnOnce() -> Future<Output = T>` cannot be
 written as stated:
@@ -221,6 +244,23 @@ signal!(cx, async |cx| ...);             // create_async_derived_signal
 memo!(cx, |cx, prev| ...);               // create_memo
 memo!(cx, async |cx| ...);               // create_async_memo
 ```
+
+The async closure is the **public** syntax. The macro lowers it to the
+constructor shape:
+
+```rust
+signal!(cx, async |cx| { ... })
+// expands to
+create_async_derived_signal(cx, move |cx| async move { ... })
+```
+
+Why lower it? The constructor stores `FnMut(&Cx) -> LocalBoxFuture<'static,
+Result<T, Error>>`; `async |...|` implements `AsyncFnMut`, not that bound
+directly. The `move`/`async move` pair makes captures owned and `'static`, which
+is required to store the compute. If the constructor instead took an
+`AsyncFnMut` bound, the async closure could be passed directly, but storing and
+calling it repeatedly (associated future, object safety, HRTB) is harder. The
+lowering is an implementation detail; users write `async |cx| ...`.
 
 A `macro_rules!` front-end is enough for the common forms; a proc macro is more
 robust for typed/pattern closure arguments and async-closure syntax. The macro is
