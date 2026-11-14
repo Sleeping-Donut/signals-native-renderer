@@ -261,6 +261,22 @@ Keep `Signal::new` / `derived` / `derived_async` and `Memo::new` /
 (`Compute::sync(f)` / `Compute::async_(f)`) as a convenience layer, not as the
 primary API.
 
+**Where `.await` appears.** Split constructors do not remove `.await` by
+themselves; the sync read API does. `.await` is confined to async producers and
+explicit waits:
+
+- inside an async memo/signal compute, for the actual I/O or work
+  (`fetch_user(id).await`, `sleep(...).await`, joining tasks);
+- inside actions and background tasks;
+- in imperative code that explicitly waits (`until(...).await`,
+  `resolve(...).await`, awaiting a task handle).
+
+It does **not** appear in view/binding/render code or in ordinary signal/memo
+reads. `get(cx)` is synchronous; it may suspend the current computation through
+the graph, but it is not an `async fn`. `try_get(cx)` is synchronous and returns
+`ReadError`. When dependencies change, the async compute runs again and its
+internal `.await`s run again; consumers still read synchronously.
+
 The choices, and why the hybrid wins:
 
 | Style | Colorless? | Composes with `?`? | Distinguishes pending/error/absent? | Main cost |
