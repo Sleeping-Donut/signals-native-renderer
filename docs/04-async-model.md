@@ -5,6 +5,13 @@
 boundaries, `isPending`, and the v1 async subset of the Solid 2.0 rules.
 `latest`, actions, `affects`, and full `on` are v2.
 
+**Implementation status (2026-11-19).** The Phase 2 core is implemented in
+[`graph.rs`](../crates/reactive-core/src/graph.rs): async memos and writable
+derived signals, flight generations, cancellation by future drop, `is_pending`,
+`LoadingBoundary`, `ErrorBoundary`, and whole-content holds. `Runtime::pump` is
+the current executor boundary; a host `Spawner` wrapper and the full transaction
+model remain integration work for the host frame.
+
 ---
 
 ## 1. Scope

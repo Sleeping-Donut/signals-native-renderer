@@ -201,6 +201,15 @@ deterministic virtual clock. Actions, `latest`, `affects`, and full `on` are v2.
 - Held async never shows a partial frame: a snapshot assertion on every frame.
 - Stale flight completions are dropped; cancellation runs teardown exactly once.
 
+**Status (2026-11-19): core implemented.** Async memos and writable derived
+signals, flight generations, cancellation, `is_pending`, `LoadingBoundary`
+(first load, disarmed hold, key remount), `ErrorBoundary`, and the navigation/
+no-partial-frame/stale-flight tests are in place in
+[`crates/reactive-core/src/graph.rs`](crates/reactive-core/src/graph.rs) and
+[`crates/reactive-core/tests/async_graph.rs`](crates/reactive-core/tests/async_graph.rs).
+The current executor boundary is `Runtime::pump`; host `Spawner` integration and
+the full transaction/reader-class model remain follow-up work for the host frame.
+
 ### Phase 3 — Renderer contract and null renderer (2 weeks)
 
 **Build:** `renderer-api`, capability sub-traits, `renderer-null`, operation

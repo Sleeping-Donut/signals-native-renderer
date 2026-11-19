@@ -1,28 +1,57 @@
-//! Phase 1 reactive graph: signals, memos, effects, owners, and the flush loop.
+//! Phase 2 reactive core: the sync graph plus async compute, flights, holds,
+//! and loading boundaries.
 //!
 //! The public surface is split handles (`ReadSignal`/`WriteSignal`), read-only
-//! `Memo`, cached `Derived`, and effect handles. The graph is single-threaded
-//! and arena-backed; every operation takes a borrowed [`Cx`].
+//! `Memo`, cached `Derived`, loading boundaries, and effect handles. The graph
+//! is single-threaded and arena-backed; every operation takes a borrowed [`Cx`].
 //!
 //! The scheduler follows the design docs: writes stage until [`Runtime::flush`],
 //! values are equality-checked at promotion, invalidations propagate `Check`
-//! marks, and a height-ordered heap runs compute passes before applies.
+//! marks, and a height-ordered heap runs compute passes before applies. Async
+//! futures are polled by [`Runtime::pump`] and committed at the next flush; a
+//! `LoadingBoundary` keeps its old value until its content can be computed
+//! whole.
 
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
+use std::error::Error;
 use std::fmt;
+use std::future::Future;
 use std::marker::PhantomData;
+use std::panic::{catch_unwind, panic_any, resume_unwind, AssertUnwindSafe};
+use std::pin::Pin;
 use std::rc::Rc;
+use std::task::{Context, Poll, Waker};
 
 use crate::{Arena, NodeId};
 
+/// A boxed async error.
+pub type AsyncError = Box<dyn Error + Send + Sync>;
+
+type LocalBoxFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
+type AsyncFuture = LocalBoxFuture<Result<Box<dyn Any>, AsyncError>>;
+type AsyncComputeFn = Box<dyn for<'a> FnMut(&Cx<'a>, Option<&dyn Any>) -> AsyncFuture>;
 type NodeRc = Rc<RefCell<Node>>;
 type OwnerRc = Rc<RefCell<Owner>>;
 type ComputeFn = Box<dyn for<'a> FnMut(&Cx<'a>, Option<&dyn Any>) -> Box<dyn Any>>;
 type ApplyFn = Box<dyn for<'a> FnMut(&Cx<'a>, &dyn Any)>;
 type CleanupSlot = Rc<RefCell<Option<Box<dyn FnOnce()>>>>;
+
+struct NotReady;
+
+struct AsyncFailure(String);
+
+impl fmt::Display for AsyncFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+fn is_suspension(payload: &(dyn Any + Send)) -> bool {
+    payload.is::<NotReady>() || payload.is::<AsyncFailure>()
+}
 
 /// Dirty state of a computed node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -134,22 +163,29 @@ impl<T: Clone + 'static> ReadSignal<T> {
 impl<T: 'static> ReadSignal<T> {
     /// A tracked read that borrows the value for the closure's lifetime.
     pub fn with<R>(self, cx: &Cx<'_>, f: impl FnOnce(&T) -> R) -> R {
-        cx.rt.ensure_clean(self.id);
         cx.rt.track(self.id);
+        cx.rt.ensure_clean(self.id);
+        if cx.rt.hold_reads.get() && cx.rt.is_pending_node(self.id) {
+            cx.rt.raise_pending(self.id);
+        }
         let node = cx.rt.node(self.id).expect("signal was disposed");
         let node = node.borrow();
         let value = node.value.borrow();
-        let value = value
-            .as_ref()
-            .and_then(|value| value.downcast_ref::<T>())
-            .expect("signal value type");
+        let value = match value.as_ref().and_then(|value| value.downcast_ref::<T>()) {
+            Some(value) => value,
+            None => {
+                drop(value);
+                drop(node);
+                cx.rt.raise_pending(self.id);
+            }
+        };
         f(value)
     }
 
-    /// Phase 1 is synchronous; a plain or computed value is never pending.
+    /// Whether the node has a new answer in flight or waiting to commit.
     #[must_use]
-    pub fn is_pending(self, _cx: &Cx<'_>) -> bool {
-        false
+    pub fn is_pending(self, cx: &Cx<'_>) -> bool {
+        cx.rt.is_pending_node(self.id)
     }
 }
 
@@ -258,22 +294,29 @@ impl<T: 'static> Memo<T> {
 
     /// A tracked read that borrows the cached value.
     pub fn with<R>(self, cx: &Cx<'_>, f: impl FnOnce(&T) -> R) -> R {
-        cx.rt.ensure_clean(self.id);
         cx.rt.track(self.id);
+        cx.rt.ensure_clean(self.id);
+        if cx.rt.hold_reads.get() && cx.rt.is_pending_node(self.id) {
+            cx.rt.raise_pending(self.id);
+        }
         let node = cx.rt.node(self.id).expect("memo was disposed");
         let node = node.borrow();
         let value = node.value.borrow();
-        let value = value
-            .as_ref()
-            .and_then(|value| value.downcast_ref::<T>())
-            .expect("memo value type");
+        let value = match value.as_ref().and_then(|value| value.downcast_ref::<T>()) {
+            Some(value) => value,
+            None => {
+                drop(value);
+                drop(node);
+                cx.rt.raise_pending(self.id);
+            }
+        };
         f(value)
     }
 
-    /// Phase 1 is synchronous.
+    /// Whether a new answer is in flight or waiting to commit.
     #[must_use]
-    pub fn is_pending(self, _cx: &Cx<'_>) -> bool {
-        false
+    pub fn is_pending(self, cx: &Cx<'_>) -> bool {
+        cx.rt.is_pending_node(self.id)
     }
 }
 
@@ -293,6 +336,136 @@ impl<T> Derived<T> {
     /// Run the derivation. Reads inside it are tracked by the caller.
     pub fn get(&self, cx: &Cx<'_>) -> T {
         (self.compute)(cx)
+    }
+}
+
+/// A loading boundary. It shows its fallback on first load, keeps old content
+/// while a disarmed refetch is pending, and remounts on a key change.
+pub struct LoadingBoundary<T> {
+    id: NodeId,
+    _marker: PhantomData<fn() -> T>,
+}
+
+impl<T> Clone for LoadingBoundary<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Copy for LoadingBoundary<T> {}
+
+impl<T> LoadingBoundary<T> {
+    fn new(id: NodeId) -> Self {
+        Self {
+            id,
+            _marker: PhantomData,
+        }
+    }
+
+    /// The graph node ID, for diagnostics and tests.
+    #[must_use]
+    pub const fn id(self) -> NodeId {
+        self.id
+    }
+}
+
+impl<T: 'static> LoadingBoundary<T> {
+    /// Whether the boundary or its content has been disposed.
+    #[must_use]
+    pub fn is_disposed(self, cx: &Cx<'_>) -> bool {
+        cx.rt.is_disposed(self.id)
+    }
+
+    /// Whether the content has a new answer in flight.
+    #[must_use]
+    pub fn is_pending(self, cx: &Cx<'_>) -> bool {
+        cx.rt.is_pending_node(self.id)
+    }
+
+    /// A tracked read of the boundary value.
+    pub fn with<R>(self, cx: &Cx<'_>, f: impl FnOnce(&T) -> R) -> R {
+        cx.rt.track(self.id);
+        cx.rt.ensure_clean(self.id);
+        let node = cx.rt.node(self.id).expect("boundary was disposed");
+        let node = node.borrow();
+        let value = node.value.borrow();
+        let value = match value.as_ref().and_then(|value| value.downcast_ref::<T>()) {
+            Some(value) => value,
+            None => {
+                drop(value);
+                drop(node);
+                cx.rt.raise_pending(self.id);
+            }
+        };
+        f(value)
+    }
+}
+
+impl<T: Clone + 'static> LoadingBoundary<T> {
+    /// A tracked read plus clone.
+    pub fn get(self, cx: &Cx<'_>) -> T {
+        self.with(cx, T::clone)
+    }
+}
+
+/// An error boundary. It runs a fallible content closure and renders the
+/// fallback with the error value when it returns `Err`.
+pub struct ErrorBoundary<T> {
+    id: NodeId,
+    _marker: PhantomData<fn() -> T>,
+}
+
+impl<T> Clone for ErrorBoundary<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Copy for ErrorBoundary<T> {}
+
+impl<T> ErrorBoundary<T> {
+    fn new(id: NodeId) -> Self {
+        Self {
+            id,
+            _marker: PhantomData,
+        }
+    }
+
+    /// The graph node ID, for diagnostics and tests.
+    #[must_use]
+    pub const fn id(self) -> NodeId {
+        self.id
+    }
+}
+
+impl<T: 'static> ErrorBoundary<T> {
+    /// Whether the boundary or its content has been disposed.
+    #[must_use]
+    pub fn is_disposed(self, cx: &Cx<'_>) -> bool {
+        cx.rt.is_disposed(self.id)
+    }
+
+    /// A tracked read of the fallback or recovered content.
+    pub fn with<R>(self, cx: &Cx<'_>, f: impl FnOnce(&T) -> R) -> R {
+        cx.rt.track(self.id);
+        cx.rt.ensure_clean(self.id);
+        let node = cx.rt.node(self.id).expect("error boundary was disposed");
+        let node = node.borrow();
+        let value = node.value.borrow();
+        let value = match value.as_ref().and_then(|value| value.downcast_ref::<T>()) {
+            Some(value) => value,
+            None => {
+                drop(value);
+                drop(node);
+                cx.rt.raise_pending(self.id);
+            }
+        };
+        f(value)
+    }
+}
+
+impl<T: Clone + 'static> ErrorBoundary<T> {
+    /// A tracked read plus clone.
+    pub fn get(self, cx: &Cx<'_>) -> T {
+        self.with(cx, T::clone)
     }
 }
 
@@ -401,6 +574,11 @@ impl<'a> Cx<'a> {
         self.rt.flush()
     }
 
+    /// Poll in-flight async futures once. Ready results commit at the next flush.
+    pub fn pump(self) {
+        self.rt.pump();
+    }
+
     /// Run a closure, then flush.
     pub fn flush_with<R>(self, f: impl FnOnce() -> R) -> Result<R, FlushError> {
         let value = f();
@@ -423,7 +601,9 @@ pub struct Runtime {
     staged: RefCell<Vec<NodeId>>,
     render_applies: RefCell<Vec<NodeId>>,
     user_applies: RefCell<Vec<NodeId>>,
+    async_ready: RefCell<Vec<NodeId>>,
     in_flush: Cell<bool>,
+    hold_reads: Cell<bool>,
     dirty_visits: Cell<u64>,
 }
 
@@ -462,7 +642,9 @@ impl Runtime {
             staged: RefCell::new(Vec::new()),
             render_applies: RefCell::new(Vec::new()),
             user_applies: RefCell::new(Vec::new()),
+            async_ready: RefCell::new(Vec::new()),
             in_flush: Cell::new(false),
+            hold_reads: Cell::new(false),
             dirty_visits: Cell::new(0),
         }
     }
@@ -506,6 +688,40 @@ impl Runtime {
     fn is_disposed(&self, id: NodeId) -> bool {
         self.node(id)
             .is_none_or(|node| node.borrow().disposed.get())
+    }
+
+    fn raise_pending(&self, id: NodeId) -> ! {
+        let error = self
+            .node(id)
+            .and_then(|node| node.borrow().async_error.borrow().clone());
+        match error {
+            Some(error) => panic_any(AsyncFailure(error)),
+            None => panic_any(NotReady),
+        }
+    }
+
+    fn is_pending_node(&self, start: NodeId) -> bool {
+        let mut stack = vec![start];
+        let mut seen = Vec::new();
+        while let Some(id) = stack.pop() {
+            if seen.contains(&id) {
+                continue;
+            }
+            seen.push(id);
+            let Some(node) = self.node(id) else {
+                continue;
+            };
+            let node = node.borrow();
+            let has_value = node.value.borrow().is_some();
+            if node.in_flight.get() && has_value {
+                return true;
+            }
+            if node.async_result.borrow().is_some() && has_value {
+                return true;
+            }
+            stack.extend(node.deps.borrow().iter().copied());
+        }
+        false
     }
 
     fn alloc_owner(&self, parent: Option<OwnerId>) -> OwnerId {
@@ -702,7 +918,15 @@ impl Runtime {
         }
         let state = node.borrow().state.get();
         match state {
-            DirtyState::Clean => {}
+            DirtyState::Clean => {
+                if !node.borrow().computed.get()
+                    && node.borrow().value.borrow().is_none()
+                    && !node.borrow().in_flight.get()
+                    && node.borrow().async_error.borrow().is_none()
+                {
+                    self.recompute(id);
+                }
+            }
             DirtyState::Dirty => self.recompute(id),
             DirtyState::Check => {
                 if !node.borrow().computed.get() {
@@ -737,6 +961,22 @@ impl Runtime {
         let Some(node) = self.node(id) else {
             return;
         };
+        let kind = node.borrow().kind;
+        if kind.is_async() {
+            self.recompute_async(id);
+        } else if matches!(kind, NodeKind::Boundary) {
+            self.recompute_boundary(id);
+        } else if matches!(kind, NodeKind::ErrorBoundary) {
+            self.recompute_error_boundary(id);
+        } else {
+            self.recompute_sync(id);
+        }
+    }
+
+    fn recompute_sync(&self, id: NodeId) {
+        let Some(node) = self.node(id) else {
+            return;
+        };
         {
             let node = node.borrow();
             if node.disposed.get() || node.computing.get() {
@@ -763,11 +1003,32 @@ impl Runtime {
 
         let previous_observer = self.observer.replace(Some(id));
         let previous_tracking = self.tracking.replace(true);
-        let new = compute(&self.cx(), old.as_ref().map(|value| &**value as &dyn Any));
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            compute(&self.cx(), old.as_ref().map(|value| &**value as &dyn Any))
+        }));
         self.observer.set(previous_observer);
         self.tracking.set(previous_tracking);
 
         node.borrow_mut().compute.borrow_mut().replace(compute);
+
+        let new = match result {
+            Ok(new) => new,
+            Err(payload) => {
+                node.borrow_mut().computing.set(false);
+                if is_suspension(&*payload) {
+                    let node = node.borrow_mut();
+                    node.state.set(DirtyState::Clean);
+                    node.computed.set(old.is_some());
+                    if let Some(old) = old {
+                        node.value.borrow_mut().replace(old);
+                    }
+                    node.last_compute_at.set(self.revision.get());
+                } else {
+                    resume_unwind(payload);
+                }
+                return;
+            }
+        };
 
         let kind = node.borrow().kind;
         if kind.is_effect() {
@@ -802,6 +1063,242 @@ impl Runtime {
         if changed {
             self.mark_subs(id);
         }
+    }
+
+    fn recompute_async(&self, id: NodeId) {
+        let Some(node) = self.node(id) else {
+            return;
+        };
+        {
+            let node = node.borrow();
+            if node.disposed.get() || node.computing.get() {
+                return;
+            }
+        }
+
+        node.borrow_mut().computing.set(true);
+        node.borrow_mut().async_error.borrow_mut().take();
+
+        // Supersede any existing flight. Dropping the future is the
+        // cancellation path; a future's Drop guard runs exactly once.
+        if node.borrow().in_flight.get() {
+            node.borrow_mut().future.borrow_mut().take();
+            node.borrow_mut().in_flight.set(false);
+            let flight = node.borrow().flight.get();
+            node.borrow_mut().flight.set(flight + 1);
+        }
+
+        self.unlink_all_deps(id);
+        let (mut compute, old) = {
+            let node = node.borrow();
+            let compute = node
+                .async_compute
+                .borrow_mut()
+                .take()
+                .expect("async node has a compute closure");
+            let old = node.value.borrow_mut().take();
+            (compute, old)
+        };
+
+        let previous_observer = self.observer.replace(Some(id));
+        let previous_tracking = self.tracking.replace(true);
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            compute(&self.cx(), old.as_ref().map(|value| &**value as &dyn Any))
+        }));
+        self.observer.set(previous_observer);
+        self.tracking.set(previous_tracking);
+
+        node.borrow_mut()
+            .async_compute
+            .borrow_mut()
+            .replace(compute);
+
+        match result {
+            Ok(future) => {
+                let flight = node.borrow().flight.get() + 1;
+                let node = node.borrow();
+                node.flight.set(flight);
+                node.future_flight.set(flight);
+                node.future.borrow_mut().replace(future);
+                node.in_flight.set(true);
+                node.computed.set(old.is_some());
+                node.state.set(DirtyState::Clean);
+                node.last_compute_at.set(self.revision.get());
+                node.computing.set(false);
+                if let Some(old) = old {
+                    node.value.borrow_mut().replace(old);
+                }
+            }
+            Err(payload) => {
+                node.borrow_mut().computing.set(false);
+                if is_suspension(&*payload) {
+                    let node = node.borrow();
+                    node.state.set(DirtyState::Clean);
+                    node.computed.set(old.is_some());
+                    node.in_flight.set(false);
+                    node.last_compute_at.set(self.revision.get());
+                    if let Some(old) = old {
+                        node.value.borrow_mut().replace(old);
+                    }
+                } else {
+                    resume_unwind(payload);
+                }
+            }
+        }
+    }
+
+    fn recompute_boundary(&self, id: NodeId) {
+        let Some(node) = self.node(id) else {
+            return;
+        };
+        {
+            let node = node.borrow();
+            if node.disposed.get() || node.computing.get() {
+                return;
+            }
+        }
+
+        node.borrow_mut().computing.set(true);
+        self.unlink_all_deps(id);
+
+        let fns = node
+            .borrow_mut()
+            .boundary
+            .borrow_mut()
+            .take()
+            .expect("boundary node has functions");
+        let old = node.borrow_mut().value.borrow_mut().take();
+
+        let previous_observer = self.observer.replace(Some(id));
+        let previous_tracking = self.tracking.replace(true);
+        let previous_hold = self.hold_reads.replace(true);
+
+        let key_now = fns.key.map(|key| key.get(&self.cx()));
+        let key_changed = key_now != *fns.current_key.borrow();
+        if key_changed {
+            *fns.current_key.borrow_mut() = key_now;
+            fns.armed.set(true);
+            fns.has_content.set(false);
+        }
+
+        let mut fallback_value = None;
+        if fns.armed.get() || !fns.has_content.get() || old.is_none() {
+            fallback_value = Some(catch_unwind(AssertUnwindSafe(|| {
+                (fns.fallback)(&self.cx())
+            })));
+        }
+
+        let content_result = catch_unwind(AssertUnwindSafe(|| (fns.content)(&self.cx())));
+
+        self.hold_reads.set(previous_hold);
+        self.observer.set(previous_observer);
+        self.tracking.set(previous_tracking);
+
+        let mut value = old;
+        let mut changed = false;
+
+        match content_result {
+            Ok(content) => {
+                value = Some(content);
+                fns.has_content.set(true);
+                fns.armed.set(false);
+                changed = true;
+            }
+            Err(payload) => {
+                if is_suspension(&*payload) {
+                    if !fns.has_content.get() {
+                        match fallback_value {
+                            Some(Ok(fallback)) => {
+                                value = Some(fallback);
+                                changed = true;
+                            }
+                            Some(Err(payload)) if !is_suspension(&*payload) => {
+                                resume_unwind(payload);
+                            }
+                            _ => {}
+                        }
+                    }
+                } else {
+                    resume_unwind(payload);
+                }
+            }
+        }
+
+        node.borrow_mut().boundary.borrow_mut().replace(fns);
+        let node = node.borrow();
+        node.computing.set(false);
+        node.computed.set(true);
+        node.state.set(DirtyState::Clean);
+        node.last_compute_at.set(self.revision.get());
+        if let Some(value) = value {
+            node.value.borrow_mut().replace(value);
+        }
+        if changed {
+            node.last_changed.set(self.revision.get());
+        }
+        drop(node);
+        if changed {
+            self.mark_subs(id);
+        }
+    }
+
+    fn recompute_error_boundary(&self, id: NodeId) {
+        let Some(node) = self.node(id) else {
+            return;
+        };
+        {
+            let node = node.borrow();
+            if node.disposed.get() || node.computing.get() {
+                return;
+            }
+        }
+
+        node.borrow_mut().computing.set(true);
+        self.unlink_all_deps(id);
+
+        let fns = node
+            .borrow_mut()
+            .error_boundary
+            .borrow_mut()
+            .take()
+            .expect("error boundary node has functions");
+        let old = node.borrow_mut().value.borrow_mut().take();
+
+        let previous_observer = self.observer.replace(Some(id));
+        let previous_tracking = self.tracking.replace(true);
+        let content_result = catch_unwind(AssertUnwindSafe(|| (fns.content)(&self.cx())));
+
+        let value = match content_result {
+            Ok(Ok(content)) => Some(content),
+            Ok(Err(error)) => Some((fns.fallback)(&self.cx(), &*error)),
+            Err(payload) => {
+                if is_suspension(&*payload) {
+                    old
+                } else {
+                    self.observer.set(previous_observer);
+                    self.tracking.set(previous_tracking);
+                    node.borrow_mut().error_boundary.borrow_mut().replace(fns);
+                    node.borrow_mut().computing.set(false);
+                    resume_unwind(payload);
+                }
+            }
+        };
+
+        self.observer.set(previous_observer);
+        self.tracking.set(previous_tracking);
+
+        node.borrow_mut().error_boundary.borrow_mut().replace(fns);
+        let node = node.borrow();
+        node.computing.set(false);
+        node.computed.set(true);
+        node.state.set(DirtyState::Clean);
+        node.last_compute_at.set(self.revision.get());
+        if let Some(value) = value {
+            node.value.borrow_mut().replace(value);
+        }
+        node.last_changed.set(self.revision.get());
+        drop(node);
+        self.mark_subs(id);
     }
 
     fn enqueue_apply(&self, id: NodeId) {
@@ -998,16 +1495,119 @@ impl Runtime {
     }
 
     /// Flush staged writes, run computes, then applies, until stable.
+    /// Poll every in-flight async future once.
+    ///
+    /// A ready result is held until the next [`flush`](Self::flush), where it
+    /// becomes a committed answer. This is the host frame's "pump" step.
+    pub fn pump(&self) {
+        let ids: Vec<NodeId> = self
+            .nodes
+            .borrow()
+            .iter()
+            .map(|(handle, _)| handle.id())
+            .collect();
+
+        for id in ids {
+            let Some(node) = self.node(id) else {
+                continue;
+            };
+            if !node.borrow().in_flight.get() {
+                continue;
+            }
+            let Some(mut future) = node.borrow_mut().future.borrow_mut().take() else {
+                node.borrow_mut().in_flight.set(false);
+                continue;
+            };
+            let flight = node.borrow().future_flight.get();
+            let waker = Waker::noop();
+            let mut context = Context::from_waker(waker);
+            match future.as_mut().poll(&mut context) {
+                Poll::Pending => {
+                    node.borrow_mut().future.borrow_mut().replace(future);
+                }
+                Poll::Ready(result) => {
+                    if node.borrow().future_flight.get() != flight || node.borrow().disposed.get() {
+                        continue;
+                    }
+                    node.borrow_mut().in_flight.set(false);
+                    node.borrow_mut().async_result.borrow_mut().replace(result);
+                    self.async_ready.borrow_mut().push(id);
+                }
+            }
+        }
+    }
+
+    fn commit_async(&self) {
+        let ready = std::mem::take(&mut *self.async_ready.borrow_mut());
+        if ready.is_empty() {
+            return;
+        }
+        let revision = self.revision.get() + 1;
+        self.revision.set(revision);
+
+        for id in ready {
+            let Some(node) = self.node(id) else {
+                continue;
+            };
+            if node.borrow().disposed.get() {
+                continue;
+            }
+            let result = node.borrow_mut().async_result.borrow_mut().take();
+            let Some(result) = result else {
+                continue;
+            };
+
+            match result {
+                Ok(value) => {
+                    let changed = {
+                        let node = node.borrow();
+                        let value = node.value.borrow();
+                        match value.as_ref() {
+                            None => true,
+                            Some(old) => !node.equals.eq(&**old, &*value),
+                        }
+                    };
+                    let node_ref = node.borrow();
+                    node_ref.value.borrow_mut().replace(value);
+                    node_ref.async_error.borrow_mut().take();
+                    node_ref.computed.set(true);
+                    node_ref.state.set(DirtyState::Clean);
+                    if changed {
+                        node_ref.last_changed.set(revision);
+                    }
+                    drop(node_ref);
+                    if changed {
+                        self.mark_subs(id);
+                    }
+                }
+                Err(error) => {
+                    let node_ref = node.borrow();
+                    node_ref.async_error.borrow_mut().replace(error.to_string());
+                    node_ref.value.borrow_mut().take();
+                    node_ref.computed.set(false);
+                    node_ref.state.set(DirtyState::Clean);
+                    node_ref.last_changed.set(revision);
+                    drop(node_ref);
+                    self.mark_subs(id);
+                }
+            }
+        }
+    }
+
+    /// Flush staged writes, commit ready async results, run computes, then
+    /// applies, until stable.
     pub fn flush(&self) -> Result<(), FlushError> {
         if self.in_flush.replace(true) {
             return Err(FlushError::Reentrant);
         }
         let mut rounds = 0;
         loop {
+            self.commit_async();
             let has_work = !self.staged.borrow().is_empty()
                 || !self.heap.borrow().is_empty()
                 || !self.render_applies.borrow().is_empty()
-                || !self.user_applies.borrow().is_empty();
+                || !self.user_applies.borrow().is_empty()
+                || !self.async_ready.borrow().is_empty();
             if !has_work {
                 break;
             }
@@ -1147,6 +1747,121 @@ fn create_memo_impl<T: 'static>(
     Memo::new(id)
 }
 
+/// Create an async cached memo.
+pub fn create_async_memo<T, F>(cx: &Cx<'_>, mut compute: F) -> Memo<T>
+where
+    T: PartialEq + 'static,
+    F: FnMut(&Cx<'_>, Option<&T>) -> Pin<Box<dyn Future<Output = Result<T, AsyncError>>>> + 'static,
+{
+    let async_compute: AsyncComputeFn = Box::new(move |cx, previous| {
+        let previous = previous.and_then(|value| value.downcast_ref::<T>());
+        let future = compute(cx, previous);
+        Box::pin(async move { future.await.map(|value| Box::new(value) as Box<dyn Any>) })
+    });
+    let id = cx
+        .rt
+        .alloc_node(NodeKind::AsyncMemo, None, None, Equals::Value(any_eq::<T>));
+    let node = cx.rt.node(id).expect("new async memo");
+    node.borrow_mut()
+        .async_compute
+        .borrow_mut()
+        .replace(async_compute);
+    node.borrow_mut().state.set(DirtyState::Dirty);
+    Memo::new(id)
+}
+
+/// Create an async writable derived signal.
+pub fn create_async_derived_signal<T, F>(
+    cx: &Cx<'_>,
+    mut compute: F,
+) -> (ReadSignal<T>, WriteSignal<T>)
+where
+    T: PartialEq + 'static,
+    F: FnMut(&Cx<'_>, Option<&T>) -> Pin<Box<dyn Future<Output = Result<T, AsyncError>>>> + 'static,
+{
+    let async_compute: AsyncComputeFn = Box::new(move |cx, previous| {
+        let previous = previous.and_then(|value| value.downcast_ref::<T>());
+        let future = compute(cx, previous);
+        Box::pin(async move { future.await.map(|value| Box::new(value) as Box<dyn Any>) })
+    });
+    let id = cx.rt.alloc_node(
+        NodeKind::AsyncDerivedSignal,
+        None,
+        None,
+        Equals::Value(any_eq::<T>),
+    );
+    let node = cx.rt.node(id).expect("new async derived signal");
+    node.borrow_mut()
+        .async_compute
+        .borrow_mut()
+        .replace(async_compute);
+    node.borrow_mut().state.set(DirtyState::Dirty);
+    (ReadSignal::new(id), WriteSignal::new(id))
+}
+
+/// Create a loading boundary.
+///
+/// `key` is an optional `u64` signal; a key change remounts the boundary and
+/// shows the fallback for the new load. Content is evaluated as one unit: if any
+/// read inside it is pending, the boundary keeps its old content (disarmed) or
+/// its fallback (first load/key remount).
+pub fn loading_boundary<T>(
+    cx: &Cx<'_>,
+    key: Option<ReadSignal<u64>>,
+    content: impl Fn(&Cx<'_>) -> T + 'static,
+    fallback: impl Fn(&Cx<'_>) -> T + 'static,
+) -> LoadingBoundary<T>
+where
+    T: 'static,
+{
+    let boundary = BoundaryFns {
+        content: Box::new(move |cx| Box::new(content(cx))),
+        fallback: Box::new(move |cx| Box::new(fallback(cx))),
+        key,
+        armed: Cell::new(true),
+        current_key: RefCell::new(None),
+        has_content: Cell::new(false),
+    };
+    let id = cx
+        .rt
+        .alloc_node(NodeKind::Boundary, None, None, Equals::Always);
+    let node = cx.rt.node(id).expect("new boundary");
+    node.borrow_mut().boundary.borrow_mut().replace(boundary);
+    node.borrow_mut().state.set(DirtyState::Dirty);
+    LoadingBoundary::new(id)
+}
+
+/// Create an error boundary.
+pub fn error_boundary<T, E>(
+    cx: &Cx<'_>,
+    content: impl Fn(&Cx<'_>) -> Result<T, E> + 'static,
+    fallback: impl Fn(&Cx<'_>, &E) -> T + 'static,
+) -> ErrorBoundary<T>
+where
+    T: 'static,
+    E: 'static,
+{
+    let content = Box::new(move |cx: &Cx<'_>| {
+        content(cx)
+            .map(|value| Box::new(value) as Box<dyn Any>)
+            .map_err(|error| Box::new(error) as Box<dyn Any>)
+    });
+    let fallback = Box::new(move |cx: &Cx<'_>, error: &dyn Any| {
+        let error = error.downcast_ref::<E>().expect("error boundary type");
+        Box::new(fallback(cx, error)) as Box<dyn Any>
+    });
+    let id = cx
+        .rt
+        .alloc_node(NodeKind::ErrorBoundary, None, None, Equals::Always);
+    let node = cx.rt.node(id).expect("new error boundary");
+    node.borrow_mut()
+        .error_boundary
+        .borrow_mut()
+        .replace(ErrorBoundaryFns { content, fallback });
+    node.borrow_mut().state.set(DirtyState::Dirty);
+    ErrorBoundary::new(id)
+}
+
 /// Create an uncached read-only derivation.
 pub fn create_derived<T: 'static>(
     _cx: &Cx<'_>,
@@ -1243,6 +1958,10 @@ enum NodeKind {
     Signal,
     DerivedSignal,
     Memo,
+    AsyncMemo,
+    AsyncDerivedSignal,
+    Boundary,
+    ErrorBoundary,
     Effect { render: bool },
 }
 
@@ -1257,6 +1976,10 @@ impl NodeKind {
 
     fn is_render_effect(self) -> bool {
         matches!(self, Self::Effect { render: true })
+    }
+
+    fn is_async(self) -> bool {
+        matches!(self, Self::AsyncMemo | Self::AsyncDerivedSignal)
     }
 }
 
@@ -1293,6 +2016,15 @@ struct Node {
     deps: RefCell<Vec<NodeId>>,
     subs: RefCell<Vec<NodeId>>,
     compute: RefCell<Option<ComputeFn>>,
+    async_compute: RefCell<Option<AsyncComputeFn>>,
+    future: RefCell<Option<AsyncFuture>>,
+    flight: Cell<u64>,
+    future_flight: Cell<u64>,
+    in_flight: Cell<bool>,
+    async_result: RefCell<Option<Result<Box<dyn Any>, AsyncError>>>,
+    async_error: RefCell<Option<String>>,
+    boundary: RefCell<Option<BoundaryFns>>,
+    error_boundary: RefCell<Option<ErrorBoundaryFns>>,
     apply: RefCell<Option<ApplyFn>>,
     equals: Equals,
     last_changed: Cell<u64>,
@@ -1326,6 +2058,15 @@ impl Node {
             deps: RefCell::new(Vec::new()),
             subs: RefCell::new(Vec::new()),
             compute: RefCell::new(compute),
+            async_compute: RefCell::new(None),
+            future: RefCell::new(None),
+            flight: Cell::new(0),
+            future_flight: Cell::new(0),
+            in_flight: Cell::new(false),
+            async_result: RefCell::new(None),
+            async_error: RefCell::new(None),
+            boundary: RefCell::new(None),
+            error_boundary: RefCell::new(None),
             apply: RefCell::new(apply),
             equals,
             last_changed: Cell::new(0),
@@ -1334,6 +2075,25 @@ impl Node {
         }
     }
 }
+
+struct BoundaryFns {
+    content: BoundaryFn,
+    fallback: BoundaryFn,
+    key: Option<ReadSignal<u64>>,
+    armed: Cell<bool>,
+    current_key: RefCell<Option<u64>>,
+    has_content: Cell<bool>,
+}
+
+type BoundaryFn = Box<dyn Fn(&Cx<'_>) -> Box<dyn Any>>;
+
+struct ErrorBoundaryFns {
+    content: ErrorContentFn,
+    fallback: ErrorFallbackFn,
+}
+
+type ErrorContentFn = Box<dyn Fn(&Cx<'_>) -> Result<Box<dyn Any>, Box<dyn Any>>>;
+type ErrorFallbackFn = Box<dyn Fn(&Cx<'_>, &dyn Any) -> Box<dyn Any>>;
 
 struct Owner {
     parent: Option<OwnerId>,
