@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use reactive_core::{create_signal, Runtime};
+use renderer_api::FocusCapable;
 use renderer_null::{NullRenderer, Op, SharedNullRenderer};
 use view::{button_text, column, keyed_list, show, text, text_fn, ViewTree};
 
@@ -38,6 +39,7 @@ fn builder_tree_binds_text_and_dispatches_clicks() {
 
     let root = tree.mount(&cx, view);
     tree.frame(&cx, 0);
+    assert!(tree.last_frame_dirty() > 0, "mount invalidates structure");
     let children = tree.children(root);
     let text_node = tree.renderer_id(children[0]).unwrap();
     let button = tree.renderer_id(children[1]).unwrap();
@@ -49,6 +51,7 @@ fn builder_tree_binds_text_and_dispatches_clicks() {
 
     renderer.borrow_mut().clear_ops();
     tree.frame(&cx, 2);
+    assert_eq!(tree.last_frame_dirty(), 0);
     assert!(
         renderer
             .borrow()
@@ -104,7 +107,9 @@ fn keyed_list_reorders_without_remounting_rows() {
         .unwrap()
         .to_vec();
     let focused_row = tree.children(root)[0];
+    let focused_renderer = tree.renderer_id(focused_row).unwrap();
     tree.set_focus(Some(focused_row));
+    assert_eq!(renderer.borrow().focused(), Some(focused_renderer));
 
     renderer.borrow_mut().clear_ops();
     set_order.set(&cx, (0..N).rev().collect());
@@ -145,6 +150,11 @@ fn keyed_list_reorders_without_remounting_rows() {
         .filter(|op| matches!(op, Op::SetText { .. }))
         .count();
     assert_eq!(changed, 1, "only the changed row rebinds");
+    assert_eq!(
+        tree.last_frame_dirty(),
+        0,
+        "a text binding update is not a structural invalidation"
+    );
 
     let row_one = tree.children(root)[N - 2];
     let row_one_text = tree.renderer_id(row_one).unwrap();
@@ -170,14 +180,23 @@ fn show_slot_replaces_the_branch() {
     let root = tree.mount(&cx, view);
     tree.frame(&cx, 0);
     let branch = tree.children(root)[0];
-    let text_node = tree.renderer_id(branch).unwrap();
+    let branch_renderer = tree.renderer_id(branch).unwrap();
+    let text_node = branch_renderer;
     assert_eq!(renderer.borrow().text_of(text_node), Some("yes"));
+    tree.set_focus(Some(branch));
+    assert_eq!(renderer.borrow().focused(), Some(branch_renderer));
 
     set_flag.set(&cx, false);
     tree.frame(&cx, 1);
     let branch = tree.children(root)[0];
     let text_node = tree.renderer_id(branch).unwrap();
     assert_eq!(renderer.borrow().text_of(text_node), Some("no"));
+    assert_eq!(tree.focused(), None, "removing the branch clears focus");
+    assert_eq!(renderer.borrow().focused(), None);
+    assert!(
+        tree.last_frame_dirty() > 0,
+        "branch swap invalidates structure"
+    );
 
     tree.unmount(&cx, root);
     drop(tree);

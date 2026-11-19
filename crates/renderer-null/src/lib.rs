@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use renderer_api::{
-    AttrName, AttrValue, ElementTag, Event, EventKind, FrameInfo, ListenerId, NodeId, Renderer,
-    RendererError, ResolvedStyle,
+    AttrName, AttrValue, ElementTag, Event, EventKind, FocusCapable, FrameInfo, ListenerId, NodeId,
+    Renderer, RendererError, ResolvedStyle,
 };
 
 /// A recorded renderer operation.
@@ -80,6 +80,7 @@ pub struct NullRenderer {
     frames: Vec<FrameInfo>,
     next_node: NodeId,
     next_listener: ListenerId,
+    focused: Option<NodeId>,
     shutdown: bool,
 }
 
@@ -100,6 +101,7 @@ impl NullRenderer {
             frames: Vec::new(),
             next_node: 1,
             next_listener: 1,
+            focused: None,
             shutdown: false,
         }
     }
@@ -169,6 +171,11 @@ impl NullRenderer {
     #[must_use]
     pub fn listener_count(&self) -> usize {
         self.listeners.len()
+    }
+
+    /// Clear recorded frame metadata without dropping its capacity.
+    pub fn clear_frames(&mut self) {
+        self.frames.clear();
     }
 
     /// Stop accepting new work.
@@ -363,6 +370,12 @@ impl Renderer for NullRenderer {
     fn remove(&mut self, parent: NodeId, child: NodeId) -> Result<(), RendererError> {
         self.node(parent)?;
         self.node(child)?;
+        if self
+            .focused
+            .is_some_and(|focus| focus == child || self.is_ancestor(child, focus))
+        {
+            self.focused = None;
+        }
         let parent_node = self
             .nodes
             .get_mut(&parent)
@@ -468,6 +481,24 @@ impl Renderer for NullRenderer {
         self.ops.push(Op::EndFrame);
         Ok(())
     }
+
+    fn focus_capable(&mut self) -> Option<&mut dyn FocusCapable> {
+        Some(self)
+    }
+}
+
+impl FocusCapable for NullRenderer {
+    fn set_focus(&mut self, node: Option<NodeId>) -> Result<(), RendererError> {
+        if let Some(node) = node {
+            self.node(node)?;
+        }
+        self.focused = node;
+        Ok(())
+    }
+
+    fn focused(&self) -> Option<NodeId> {
+        self.focused
+    }
 }
 
 /// A renderer proxy that shares its recording state with the test.
@@ -536,5 +567,19 @@ impl Renderer for SharedNullRenderer {
     }
     fn end_frame(&mut self) -> Result<(), RendererError> {
         self.0.borrow_mut().end_frame()
+    }
+
+    fn focus_capable(&mut self) -> Option<&mut dyn FocusCapable> {
+        Some(self)
+    }
+}
+
+impl FocusCapable for SharedNullRenderer {
+    fn set_focus(&mut self, node: Option<NodeId>) -> Result<(), RendererError> {
+        self.0.borrow_mut().set_focus(node)
+    }
+
+    fn focused(&self) -> Option<NodeId> {
+        self.0.borrow().focused()
     }
 }

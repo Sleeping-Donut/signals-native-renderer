@@ -9,8 +9,10 @@ caches, scene replay, and the first-party render path.
 [`crates/view`](../crates/view/src/lib.rs) with the first `view!` macro in
 [`crates/macros`](../crates/macros/src/lib.rs). It includes retained nodes, child
 lists, keyed lists, `show`/`view_slot`, bindings, mount/unmount/frame lifecycle,
-retained focus identity, and the 10k-row reorder test. Renderer-level focus and
-the allocation-profile measurement are later-phase work.
+retained focus identity, renderer-level `FocusCapable` focus, dirty/invalidation
+tracking, and the 10k-row reorder test. The allocation-profile test shows zero
+allocations for an unchanged frame, 13 for a 10k reorder, and 11 for one text
+update.
 
 ---
 

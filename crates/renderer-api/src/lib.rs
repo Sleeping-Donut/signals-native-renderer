@@ -527,6 +527,20 @@ pub trait Renderer {
     fn end_frame(&mut self) -> Result<(), RendererError> {
         Ok(())
     }
+
+    /// Optional focus capability. A backend that does not support focus returns
+    /// `None`; the view layer keeps its own retained focus identity either way.
+    fn focus_capable(&mut self) -> Option<&mut dyn FocusCapable> {
+        None
+    }
+}
+
+/// Focus capability.
+pub trait FocusCapable: Renderer {
+    /// Set or clear the focused node.
+    fn set_focus(&mut self, node: Option<NodeId>) -> Result<(), RendererError>;
+    /// The focused node.
+    fn focused(&self) -> Option<NodeId>;
 }
 
 /// Text capability.

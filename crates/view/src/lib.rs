@@ -6,7 +6,7 @@
 //! rows, and view slots replace one branch when a key changes. Structure is not
 //! rebuilt per frame.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::rc::Rc;
@@ -27,6 +27,7 @@ struct ViewNode {
     bindings: Vec<EffectHandle>,
     listeners: Vec<ListenerId>,
     owner: Option<OwnerHandle>,
+    dirty: Cell<bool>,
 }
 
 #[derive(Clone)]
@@ -34,6 +35,7 @@ struct ViewTreeInner {
     renderer: Rc<RefCell<Box<dyn Renderer>>>,
     nodes: Rc<RefCell<reactive_core::Arena<ViewNode>>>,
     focused: RefCell<Option<ViewNodeId>>,
+    last_dirty: Cell<usize>,
     runtime: RuntimeHandle,
 }
 
@@ -52,6 +54,7 @@ impl ViewTree {
                 renderer: Rc::new(RefCell::new(renderer)),
                 nodes: Rc::new(RefCell::new(reactive_core::Arena::new())),
                 focused: RefCell::new(None),
+                last_dirty: Cell::new(0),
                 runtime,
             }),
         }
@@ -67,6 +70,11 @@ impl ViewTree {
     /// Phase 6; the view tree preserves this identity across reorders.
     pub fn set_focus(&self, focus: Option<ViewNodeId>) {
         *self.inner.focused.borrow_mut() = focus;
+        let renderer_id = focus.and_then(|id| self.renderer_id(id));
+        let mut renderer = self.inner.renderer.borrow_mut();
+        if let Some(capability) = renderer.focus_capable() {
+            let _ = capability.set_focus(renderer_id);
+        }
     }
 
     /// The retained focus identity.
@@ -106,6 +114,7 @@ impl ViewTree {
                 .expect("begin frame");
         }
         cx.flush().expect("flush");
+        self.clear_dirty();
         self.inner
             .renderer
             .borrow_mut()
@@ -132,6 +141,38 @@ impl ViewTree {
             .get(id)
             .map(|node| node.children.clone())
             .unwrap_or_default()
+    }
+
+    /// Number of structurally dirty nodes.
+    #[must_use]
+    pub fn dirty_views(&self) -> usize {
+        self.inner
+            .nodes
+            .borrow()
+            .iter()
+            .filter(|(_, node)| node.dirty.get())
+            .count()
+    }
+
+    /// Structural dirty nodes observed at the end of the last frame.
+    #[must_use]
+    pub fn last_frame_dirty(&self) -> usize {
+        self.inner.last_dirty.get()
+    }
+
+    fn mark_dirty(&self, id: ViewNodeId) {
+        if let Some(node) = self.inner.nodes.borrow().get(id) {
+            node.dirty.set(true);
+        }
+    }
+
+    fn clear_dirty(&self) {
+        let nodes = self.inner.nodes.borrow();
+        let dirty = nodes.iter().filter(|(_, node)| node.dirty.get()).count();
+        self.inner.last_dirty.set(dirty);
+        for (_, node) in nodes.iter() {
+            node.dirty.set(false);
+        }
     }
 
     fn create_element(&self, tag: &str) -> ViewNodeId {
@@ -175,6 +216,7 @@ impl ViewTree {
                 bindings: Vec::new(),
                 listeners: Vec::new(),
                 owner: None,
+                dirty: Cell::new(false),
             })
             .id()
     }
@@ -235,6 +277,7 @@ impl ViewTree {
                 child_node.parent = Some(parent);
             }
         }
+        self.mark_dirty(parent);
     }
 
     fn add_binding(&self, view: ViewNodeId, binding: EffectHandle) {
@@ -262,7 +305,7 @@ impl ViewTree {
             .borrow()
             .is_some_and(|focus| self.is_descendant(focus, id))
         {
-            *self.inner.focused.borrow_mut() = None;
+            self.set_focus(None);
         }
         let Some(node_data) = ({
             let nodes = self.inner.nodes.borrow();
@@ -273,6 +316,9 @@ impl ViewTree {
             return;
         };
         let (children, renderer_id, parent) = node_data;
+        if let Some(parent) = parent {
+            self.mark_dirty(parent);
+        }
 
         for child in children {
             self.remove_view(cx, child);

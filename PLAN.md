@@ -242,15 +242,17 @@ root/window lifecycle.
 structural changes preserve sibling state and focus; no per-frame tree rebuild in
 the allocation profile.
 
-**Status (2026-11-19): structure implemented.** [`view`](crates/view/src/lib.rs)
-has the retained `ViewTree`, child lists, keyed lists, `show`/`view_slot`,
-text/button binding effects, mount/unmount/frame lifecycle, retained focus
-identity, and a first `view!` macro in
-[`macros`](crates/macros/src/lib.rs). Tests cover a two-counter builder tree, a
-10k-row reorder with unchanged text bindings and preserved row state/focus, a
-branch slot, and the macro ([retained_tree.rs](crates/view/tests/retained_tree.rs),
-[view_macro.rs](crates/view/tests/view_macro.rs)). Renderer-level focus and the
-allocation-profile measurement move with Phase 6 and Phase 8.
+**Status (2026-11-19): implemented.** [`view`](crates/view/src/lib.rs) has the
+retained `ViewTree`, child lists, keyed lists, `show`/`view_slot`, dirty/
+invalidation tracking, text/button binding effects, mount/unmount/frame
+lifecycle, retained focus identity, and a first `view!` macro in
+[`macros`](crates/macros/src/lib.rs). Renderer-level focus is delivered through
+the `FocusCapable` capability and survives reorder. Tests cover a two-counter
+builder tree, a 10k-row reorder with unchanged text bindings and preserved row
+state/focus, a branch slot, the macro, and an allocation profile
+([retained_tree.rs](crates/view/tests/retained_tree.rs),
+[view_macro.rs](crates/view/tests/view_macro.rs),
+[allocation_profile.rs](crates/view/tests/allocation_profile.rs)).
 
 ### Phase 5 — Layout, paint, platform (4–6 weeks)
 
