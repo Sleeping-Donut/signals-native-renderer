@@ -1,3 +1,9 @@
+> [!WARNING]
+> **This is slop.** This repository is an AI-assisted proof of concept and design
+> scratchpad, not production software. The code, APIs, and documentation are
+> incomplete, experimental, and likely to change or be abandoned. Do not rely on
+> any of it.
+
 # signals-native-renderer
 
 Design and planning documents for a signal-driven, retained-mode native UI
