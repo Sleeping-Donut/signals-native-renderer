@@ -747,6 +747,9 @@ or a measurement.
   `create_async_memo`, `create_lazy_memo`, `create_derived`. Single-type
   constructors keep `Type::new` (`Store::new`, `ViewSlot::new`). Macros
   (`signal!`, `memo!`) sit on top.
+- `create_lazy_memo` is Solid's `{ lazy: true }` memo: deferred first compute
+  plus autodisposal when unobserved. It is explicit and not part of `memo!`;
+  lazy is a lifecycle choice.
 
 ### Leaning, needs confirmation (recommendation exists)
 
@@ -755,7 +758,6 @@ or a measurement.
 | Core equality | Require `T: PartialEq` by default? | Yes; `create_signal_unchecked`/custom comparator escape |
 | Signal update | Should `update` compare or always notify? | Always notify; `set` compares; `update_with` if needed |
 | Memo reads | Guards or clones? | Both: guards internally, `Clone` convenience for app code |
-| Memo lifetime | Eager vs lazy default; autodisposal | Eager default; `create_lazy_memo` = lazy + autodispose (Solid); defer if autodisposal is not in v1 |
 | Props variants | Keep `Reactive`/`Derived` or one read handle? | Collapse; both implement `Read<T>` |
 | Effects | Public `EffectHandle` or owner-only? | Both: handles for bindings, owner-scoped for app effects |
 | Ownership | Public `OwnerId`? | No; opaque `Scope`, IDs for diagnostics |

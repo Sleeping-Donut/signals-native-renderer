@@ -316,7 +316,8 @@ is harder. The lowering is an implementation detail; users write
 
 A `macro_rules!` front-end is enough for the common forms; a proc macro is more
 robust for typed/pattern closure arguments and async-closure syntax. The macro is
-optional sugar, not the runtime mechanism.
+optional sugar, not the runtime mechanism. `create_lazy_memo` is intentionally
+not part of `memo!`; lazy is an explicit lifecycle choice, so use the constructor.
 
 ```rust
 pub struct Memo<T> { /* NodeId */ }

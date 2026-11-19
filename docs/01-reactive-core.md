@@ -660,11 +660,13 @@ constructor rather than a boolean.
 Leptos differs here. `Memo::new` is lazy by default: it does not run until first
 read, and it does not re-run on a source change until read again; but it is
 arena-owned and disposed with its owner, not with subscriber loss. Since Solid is
-the north star, our default is eager and owner-lifetime; lazy is explicit. If v1
-does not implement subscriber-based autodisposal, **defer `create_lazy_memo`**
-rather than ship only the deferral under a name that promises both. Lazy async
-(no flight until first read) would need `create_lazy_async_memo` or a memo
-options value; decide with the async memo work.
+the north star, our default is eager and owner-lifetime; lazy is explicit.
+
+`create_lazy_memo` is deliberately **not** part of the `memo!` macro. Lazy is a
+lifecycle choice, not a compute-mode variant, and the common authoring path stays
+eager. Use the constructor when you mean Solid's lazy memo. Async lazy (no flight
+until first read) would need `create_lazy_async_memo` or a memo options value;
+that is deferred with the async memo work.
 
 ## 13. Performance notes
 
