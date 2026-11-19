@@ -64,9 +64,17 @@ impl ViewTree {
     /// Create a tree over a renderer and runtime.
     #[must_use]
     pub fn new(renderer: Box<dyn Renderer>, runtime: RuntimeHandle) -> Self {
-        let text = Rc::new(RefCell::new(TextSystem::new(Box::new(
-            MonospaceShaper::default(),
-        ))));
+        Self::new_with_shaper(renderer, runtime, Box::new(MonospaceShaper::default()))
+    }
+
+    /// Create a tree with a platform shaping backend.
+    #[must_use]
+    pub fn new_with_shaper(
+        renderer: Box<dyn Renderer>,
+        runtime: RuntimeHandle,
+        shaper: Box<dyn text::Shaper>,
+    ) -> Self {
+        let text = Rc::new(RefCell::new(TextSystem::new(shaper)));
         Self {
             inner: Rc::new(ViewTreeInner {
                 renderer: Rc::new(RefCell::new(renderer)),

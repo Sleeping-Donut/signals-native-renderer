@@ -138,6 +138,34 @@ fn measure_request_goes_through_the_same_cache() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "the system font database is not available under Miri")]
+fn cosmic_text_shapes_and_rasterizes_platform_glyphs() {
+    let mut text = TextSystem::new(Box::new(text::CosmicShaper::new()));
+    let layout = text.layout("Hello", mk_style(32.0, 40.0), None);
+    assert_eq!(layout.lines.len(), 1);
+    assert!(layout.lines[0].glyphs.len() >= 5);
+    assert!(layout.width > 0.0);
+    let has_raster = layout
+        .lines
+        .iter()
+        .flat_map(|line| &line.glyphs)
+        .any(|glyph| glyph.image.as_ref().is_some_and(|image| image.width > 0));
+    if !has_raster {
+        eprintln!("skipping raster assertion: no system font mask");
+        return;
+    }
+    assert!(layout
+        .lines
+        .iter()
+        .flat_map(|line| &line.glyphs)
+        .any(|glyph| glyph.glyph_id > 0 && glyph.font_id != 0));
+    let second = text.layout("Hello", mk_style(32.0, 40.0), None);
+    assert!(Arc::ptr_eq(&layout, &second));
+    assert_eq!(text.stats().hits, 1);
+    assert_eq!(text.shaper_name(), "cosmic-text");
+}
+
+#[test]
 fn byte_budget_evicts_least_recently_used_layouts() {
     let mut text = TextSystem::with_budget(Box::new(MonospaceShaper::default()), 1);
     let style = mk_style(16.0, 20.0);

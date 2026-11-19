@@ -23,8 +23,10 @@ dirty-path rebuild, damage rectangles, and a full-rebuild differential test.
 [`crates/renderer-native`](../crates/renderer-native/src/lib.rs): a
 `PaintBackend`/`WindowDriver` contract, a recording headless backend, a wgpu
 offscreen/surface renderer with pixel readback, and a winit window loop behind
-the `window` feature. Text is currently painted as glyph placeholder quads; a
-glyph atlas and platform shaping backend remain.
+the `window` feature. Platform text uses cosmic-text shaping and a shelf-packed
+alpha glyph atlas sampled by the wgpu pipeline; the deterministic monospace
+shaper keeps a placeholder fallback for headless tests. A visible-window smoke
+run exercises the Metal surface path and real glyphs.
 
 ---
 

@@ -12,11 +12,14 @@ tracking, pixel snapping at the device scale, and per-node geometry changes.
 [`view`](../crates/view/src/lib.rs) mounts layout nodes and runs the pass after
 bindings flush. Text shaping and caching are in
 [`crates/text`](../crates/text/src/lib.rs): a pluggable `Shaper` trait, a
-deterministic monospace backend, line wrapping, glyph positions, width
+deterministic monospace backend, a real `CosmicShaper` (Harfrust shaping, system
+font fallback, swash glyph masks), line wrapping, glyph positions, width
 quantization, cache statistics, and an LRU byte budget. `view` feeds the cache
-into layout. The scene builder and paint cache are in
-[`crates/scene`](../crates/scene/src/lib.rs). A real platform shaping backend,
-the wgpu backend, and the window loop are not implemented yet.
+into layout and can be constructed with a platform shaper via
+`ViewTree::new_with_shaper`. The scene builder and paint cache are in
+[`crates/scene`](../crates/scene/src/lib.rs). The native wgpu backend samples a
+shelf-packed alpha glyph atlas for real shaped text. The window loop and
+surface backend are in [`crates/renderer-native`](../crates/renderer-native/src/lib.rs).
 
 ---
 

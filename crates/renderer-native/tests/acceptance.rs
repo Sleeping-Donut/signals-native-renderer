@@ -255,6 +255,77 @@ fn clean_headless_frames_fit_a_60hz_budget() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "wgpu and system fonts are not available under Miri")]
+fn wgpu_glyph_atlas_renders_platform_text() {
+    let mut text = text::TextSystem::new(Box::new(text::CosmicShaper::new()));
+    let style = TextStyle {
+        color: Color::new(0.95, 0.95, 0.95, 1.0),
+        font_size: 32.0,
+        line_height: 40.0,
+        weight: 400,
+    };
+    let layout = text.layout("A", style, None);
+    if !layout
+        .lines
+        .iter()
+        .flat_map(|line| &line.glyphs)
+        .any(|glyph| glyph.image.is_some())
+    {
+        eprintln!("skipping glyph atlas test: no system font mask");
+        return;
+    }
+    let mut backend = match WgpuBackend::new_headless(96, 96, 1.0) {
+        Ok(backend) => backend,
+        Err(BackendError::NoAdapter) => {
+            eprintln!("skipping glyph atlas test: no adapter");
+            return;
+        }
+        Err(error) => panic!("wgpu init failed: {error}"),
+    };
+    let mut scene = Scene::new();
+    scene.push(Primitive::Text {
+        node: 1,
+        rect: Rect::new(8.0, 8.0, 80.0, 48.0),
+        layout,
+        color: style.color,
+    });
+    backend.render(&scene, &[]).expect("glyph render");
+    backend.present().expect("present");
+    assert!(
+        backend.atlas_len() > 0,
+        "real glyphs must populate the atlas"
+    );
+    let (_, _, pixels) = backend.read_image().expect("readback");
+    let bright = pixels
+        .chunks_exact(4)
+        .filter(|pixel| pixel[0] > 150)
+        .count();
+    assert!(bright > 5, "expected glyph pixels, got {bright}");
+    eprintln!(
+        "glyph atlas: {} glyphs, {} bright pixels at 1x",
+        backend.atlas_len(),
+        bright
+    );
+    assert!(backend.atlas_stats().misses > 0);
+
+    for (width, height, scale) in [(144, 96, 1.5_f32), (192, 128, 2.0)] {
+        backend.resize(width, height, scale);
+        backend.render(&scene, &[]).expect("glyph render");
+        backend.present().expect("present");
+        let (_, _, pixels) = backend.read_image().expect("readback");
+        let bright = pixels
+            .chunks_exact(4)
+            .filter(|pixel| pixel[0] > 150)
+            .count();
+        assert!(
+            bright > 5,
+            "expected glyph pixels at {scale}x, got {bright}"
+        );
+        eprintln!("glyph atlas: {bright} bright pixels at {scale}x");
+    }
+}
+
+#[test]
 #[cfg_attr(miri, ignore = "wgpu uses platform graphics drivers")]
 fn wgpu_backend_drives_resizes_through_the_window_loop() {
     let backend = match WgpuBackend::new_headless(300, 200, 1.0) {

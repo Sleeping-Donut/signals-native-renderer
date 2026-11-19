@@ -389,14 +389,19 @@ drives the same `WindowDriver` used by winit:
 4. `wgpu_headless_backend_draws_a_red_rect` — reads back a real wgpu pixel from
    an offscreen target (Metal on the development machine; skipped when no
    adapter exists).
+4a. `wgpu_glyph_atlas_renders_platform_text` — shapes with `CosmicShaper`, packs
+   the resulting glyph masks into the atlas, samples them in wgpu, and verifies
+   bright glyph pixels at 1×/1.5×/2×.
 5. `wgpu_backend_drives_resizes_through_the_window_loop` — the wgpu backend
    renders through the driver at 1×/1.5×/2× and readback confirms the expected
    background color.
 6. `clean_headless_frames_fit_a_60hz_budget` — a CPU frame-budget check, not a
    substitute for the target-hardware 60 fps run.
 
-A real displayed-window smoke run and target-hardware fps measurement still need
-a graphical session.
+`window_smoke` opens the Metal surface path, renders real glyphs (12 atlas
+entries), resizes 800×600 → 600×450 → 800×600 at the development display's 2×
+scale, and exits cleanly. A non-2× displayed-window run and target-hardware fps
+measurement still need the target hardware.
 
 ## 4. Porting notes
 

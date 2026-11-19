@@ -9,6 +9,7 @@ use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::sync::Arc;
 
+use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, Wrap};
 use renderer_api::{TextMeasureRequest, TextMetrics, TextStyle};
 
 /// A shaped glyph.
@@ -20,8 +21,45 @@ pub struct Glyph {
     pub cluster: usize,
     /// Horizontal offset from the line's start.
     pub x: f32,
+    /// Vertical offset from the line's baseline.
+    pub y: f32,
     /// Advance width.
     pub advance: f32,
+    /// Shaped glyph id. Zero for the reference shaper.
+    pub glyph_id: u32,
+    /// Font identity for atlas keys.
+    pub font_id: u64,
+    /// Rasterized alpha mask, when a platform shaper produced one.
+    pub image: Option<GlyphImage>,
+}
+
+/// A rasterized glyph mask in device pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlyphImage {
+    /// Font identity.
+    pub font_id: u64,
+    /// Glyph id.
+    pub glyph_id: u32,
+    /// Font size used for rasterization.
+    pub font_size: f32,
+    /// Device scale used for rasterization.
+    pub raster_scale: f32,
+    /// Left placement relative to the glyph origin.
+    pub left: i32,
+    /// Top placement relative to the glyph origin.
+    pub top: i32,
+    /// Mask width.
+    pub width: u32,
+    /// Mask height.
+    pub height: u32,
+    /// 8-bit alpha mask.
+    pub data: Arc<[u8]>,
+}
+
+impl GlyphImage {
+    fn byte_size(&self) -> usize {
+        std::mem::size_of::<Self>() + self.data.len()
+    }
 }
 
 /// One shaped line.
@@ -67,7 +105,14 @@ impl ShapedLayout {
                 .map(|line| {
                     std::mem::size_of::<ShapedLine>()
                         + line.text.len()
-                        + line.glyphs.len() * std::mem::size_of::<Glyph>()
+                        + line
+                            .glyphs
+                            .iter()
+                            .map(|glyph| {
+                                std::mem::size_of::<Glyph>()
+                                    + glyph.image.as_ref().map_or(0, GlyphImage::byte_size)
+                            })
+                            .sum::<usize>()
                 })
                 .sum::<usize>()
     }
@@ -136,7 +181,11 @@ impl Shaper for MonospaceShaper {
                     ch,
                     cluster: range.start + offset,
                     x,
+                    y: 0.0,
                     advance: char_width,
+                    glyph_id: ch as u32,
+                    font_id: 0,
+                    image: None,
                 });
             }
             let line_width = glyphs.len() as f32 * char_width;
@@ -230,6 +279,162 @@ fn wrap_paragraph(
     }
 
     out.push(line_start..offset + paragraph.len());
+}
+
+/// A platform shaping backend backed by cosmic-text (Harfrust + font fallback)
+/// and swash glyph rasterization.
+pub struct CosmicShaper {
+    font_system: FontSystem,
+    swash: SwashCache,
+}
+
+impl Default for CosmicShaper {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CosmicShaper {
+    /// Create a shaper with the system font database.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            font_system: FontSystem::new(),
+            swash: SwashCache::new(),
+        }
+    }
+
+    /// The underlying font system.
+    #[must_use]
+    pub fn font_system(&self) -> &FontSystem {
+        &self.font_system
+    }
+}
+
+const RASTER_SCALE: f32 = 2.0;
+
+fn font_key(font_id: cosmic_text::fontdb::ID) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    font_id.hash(&mut hasher);
+    hasher.finish()
+}
+
+impl Shaper for CosmicShaper {
+    fn shape(&mut self, request: ShapeRequest<'_>) -> ShapedLayout {
+        let font_size = request.style.font_size.max(1.0);
+        let line_height = request.style.line_height.max(font_size);
+        let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(font_size, line_height));
+        buffer.set_size(&mut self.font_system, request.max_width, None);
+        buffer.set_wrap(&mut self.font_system, Wrap::WordOrGlyph);
+        let attrs = Attrs::new()
+            .family(Family::SansSerif)
+            .weight(Weight(request.style.weight));
+        buffer.set_text(
+            &mut self.font_system,
+            request.text,
+            &attrs,
+            Shaping::Advanced,
+            None,
+        );
+        buffer.shape_until_scroll(&mut self.font_system, false);
+
+        let mut lines = Vec::new();
+        let mut width = 0.0_f32;
+        let mut height = 0.0_f32;
+        let mut ascent = 0.0_f32;
+        let mut descent = 0.0_f32;
+
+        for run in buffer.layout_runs() {
+            let start = run.glyphs.first().map_or(0, |glyph| glyph.start);
+            let end = run.glyphs.last().map_or(start, |glyph| glyph.end);
+            let line_text = run.text.get(start..end).unwrap_or("");
+            let mut glyphs = Vec::with_capacity(run.glyphs.len());
+            for glyph in run.glyphs {
+                let ch = run.text[glyph.start..glyph.end]
+                    .chars()
+                    .next()
+                    .unwrap_or('\u{fffd}');
+                let physical = glyph.physical((0.0, 0.0), RASTER_SCALE);
+                let image = self
+                    .swash
+                    .get_image(&mut self.font_system, physical.cache_key)
+                    .as_ref()
+                    .and_then(|image| {
+                        if image.placement.width == 0 || image.placement.height == 0 {
+                            return None;
+                        }
+                        let data = match image.content {
+                            cosmic_text::SwashContent::Mask => image.data.clone(),
+                            cosmic_text::SwashContent::SubpixelMask
+                            | cosmic_text::SwashContent::Color => image
+                                .data
+                                .chunks_exact(4)
+                                .map(|pixel| pixel[3].max(pixel[0]))
+                                .collect(),
+                        };
+                        Some(GlyphImage {
+                            font_id: font_key(glyph.font_id),
+                            glyph_id: u32::from(glyph.glyph_id),
+                            font_size: glyph.font_size,
+                            raster_scale: RASTER_SCALE,
+                            left: image.placement.left,
+                            top: image.placement.top,
+                            width: image.placement.width,
+                            height: image.placement.height,
+                            data: Arc::from(data),
+                        })
+                    });
+                glyphs.push(Glyph {
+                    ch,
+                    cluster: glyph.start,
+                    x: glyph.x,
+                    y: glyph.y,
+                    advance: glyph.w,
+                    glyph_id: u32::from(glyph.glyph_id),
+                    font_id: font_key(glyph.font_id),
+                    image,
+                });
+            }
+            width = width.max(run.line_w);
+            height = height.max(run.line_top + run.line_height);
+            ascent = ascent.max(run.line_y - run.line_top);
+            descent = descent.max((run.line_top + run.line_height) - run.line_y);
+            lines.push(ShapedLine {
+                text: line_text.to_string(),
+                byte_range: start..end,
+                glyphs,
+                width: run.line_w,
+                baseline: run.line_y,
+            });
+        }
+
+        if lines.is_empty() {
+            lines.push(ShapedLine {
+                text: String::new(),
+                byte_range: 0..0,
+                glyphs: Vec::new(),
+                width: 0.0,
+                baseline: font_size * 0.8,
+            });
+            height = line_height;
+            ascent = font_size * 0.8;
+            descent = line_height - ascent;
+        }
+
+        ShapedLayout {
+            width,
+            height,
+            line_height,
+            ascent,
+            descent,
+            lines,
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "cosmic-text"
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

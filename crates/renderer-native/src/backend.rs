@@ -84,8 +84,12 @@ pub struct FrameStats {
     pub fill_quads: usize,
     /// Border edge rectangles.
     pub border_quads: usize,
-    /// Glyph placeholder rectangles.
+    /// Glyph rectangles.
     pub glyph_quads: usize,
+    /// Glyph rectangles sourced from the atlas.
+    pub atlas_glyphs: usize,
+    /// Glyph rectangles rendered as placeholders.
+    pub placeholder_glyphs: usize,
     /// Damage rectangles supplied by the scene builder.
     pub damage_rects: usize,
     /// Whether a surface present happened.

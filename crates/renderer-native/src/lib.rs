@@ -6,12 +6,14 @@
 //! wgpu implementation renders scene primitives to an offscreen target or a
 //! window surface; [`HeadlessBackend`] records the same steps for tests.
 
+mod atlas;
 mod backend;
 mod headless;
 mod wgpu;
 #[cfg(feature = "window")]
 mod window;
 
+pub use atlas::{AtlasEntry, AtlasStats, GlyphAtlas, GlyphKey, ATLAS_SIZE};
 pub use backend::{
     BackendError, BackendMetrics, FrameOutput, FrameStats, PaintBackend, WindowApp, WindowDriver,
 };

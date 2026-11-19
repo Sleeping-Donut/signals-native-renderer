@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 renderer-api = { path = "../renderer-api" }
 scene = { path = "../scene" }
+text = { path = "../text" }
 pollster = "0.3"
 wgpu = "0.19.4"
 winit = { version = "0.29.15", optional = true }
@@ -23,6 +24,10 @@ view = { path = "../view" }
 
 [[example]]
 name = "window"
+required-features = ["window"]
+
+[[example]]
+name = "window_smoke"
 required-features = ["window"]
 
 [features]

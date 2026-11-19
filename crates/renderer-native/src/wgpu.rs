@@ -1,33 +1,42 @@
 use scene::{Primitive, Rect, Scene};
+use text::Glyph;
 
+use crate::atlas::{GlyphAtlas, ATLAS_SIZE};
 use crate::{BackendError, BackendMetrics, FrameStats, PaintBackend};
 
 const SHADER: &str = r#"
 struct VsIn {
     @location(0) position: vec2<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) uv: vec2<f32>,
 };
 
 struct VsOut {
     @builtin(position) position: vec4<f32>,
     @location(0) color: vec4<f32>,
+    @location(1) uv: vec2<f32>,
 };
+
+@group(0) @binding(0) var atlas_texture: texture_2d<f32>;
+@group(0) @binding(1) var atlas_sampler: sampler;
 
 @vertex
 fn vs_main(input: VsIn) -> VsOut {
     var output: VsOut;
     output.position = vec4<f32>(input.position, 0.0, 1.0);
     output.color = input.color;
+    output.uv = input.uv;
     return output;
 }
 
 @fragment
 fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
-    return input.color;
+    let mask = textureSample(atlas_texture, atlas_sampler, input.uv).r;
+    return vec4<f32>(input.color.rgb, input.color.a * mask);
 }
 "#;
 
-const VERTEX_BYTES: u64 = 24;
+const VERTEX_BYTES: u64 = 32;
 const INITIAL_VERTEX_BYTES: u64 = 4096;
 
 enum Target {
@@ -54,6 +63,9 @@ pub struct WgpuBackend {
     format: wgpu::TextureFormat,
     metrics: BackendMetrics,
     adapter_info: String,
+    atlas: GlyphAtlas,
+    atlas_texture: wgpu::Texture,
+    atlas_bind_group: wgpu::BindGroup,
 }
 
 impl WgpuBackend {
@@ -65,9 +77,13 @@ impl WgpuBackend {
         let info = adapter.get_info();
         let adapter_info = format!("{:?} {}", info.backend, info.name);
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        let pipeline = create_pipeline(&device, format);
+        let bind_group_layout = create_bind_group_layout(&device);
+        let pipeline = create_pipeline(&device, format, &bind_group_layout);
         let (texture, view) = create_offscreen(&device, width, height, format);
         let vertex_buffer = create_vertex_buffer(&device, INITIAL_VERTEX_BYTES);
+        let atlas = GlyphAtlas::new();
+        let (atlas_texture, atlas_bind_group) =
+            create_atlas(&device, &queue, &bind_group_layout, &atlas);
         Ok(Self {
             device,
             queue,
@@ -78,6 +94,9 @@ impl WgpuBackend {
             format,
             metrics: BackendMetrics::new(width, height, scale),
             adapter_info,
+            atlas,
+            atlas_texture,
+            atlas_bind_group,
         })
     }
 
@@ -123,8 +142,12 @@ impl WgpuBackend {
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
-        let pipeline = create_pipeline(&device, format);
+        let bind_group_layout = create_bind_group_layout(&device);
+        let pipeline = create_pipeline(&device, format, &bind_group_layout);
         let vertex_buffer = create_vertex_buffer(&device, INITIAL_VERTEX_BYTES);
+        let atlas = GlyphAtlas::new();
+        let (atlas_texture, atlas_bind_group) =
+            create_atlas(&device, &queue, &bind_group_layout, &atlas);
         Ok(Self {
             device,
             queue,
@@ -139,6 +162,9 @@ impl WgpuBackend {
             format,
             metrics: BackendMetrics::new(width.max(1), height.max(1), scale),
             adapter_info,
+            atlas,
+            atlas_texture,
+            atlas_bind_group,
         })
     }
 
@@ -166,9 +192,37 @@ impl WgpuBackend {
         &self.adapter_info
     }
 
+    /// Number of glyphs in the atlas.
+    #[must_use]
+    pub fn atlas_len(&self) -> usize {
+        self.atlas.len()
+    }
+
+    /// Atlas cache counters.
+    #[must_use]
+    pub fn atlas_stats(&self) -> crate::atlas::AtlasStats {
+        self.atlas.stats()
+    }
+
     /// Read back a headless pixel. Returns `None` for a surface target.
     #[must_use]
     pub fn read_pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
+        let (width, height, data) = self.read_image()?;
+        if x >= width || y >= height {
+            return None;
+        }
+        let offset = ((y * width + x) * 4) as usize;
+        Some([
+            *data.get(offset)?,
+            *data.get(offset + 1)?,
+            *data.get(offset + 2)?,
+            *data.get(offset + 3)?,
+        ])
+    }
+
+    /// Read the whole offscreen image as RGBA rows.
+    #[must_use]
+    pub fn read_image(&self) -> Option<(u32, u32, Vec<u8>)> {
         let texture = match &self.target {
             Target::Offscreen { texture, .. } => texture,
             #[cfg(feature = "window")]
@@ -176,9 +230,6 @@ impl WgpuBackend {
         };
         let width = self.metrics.physical_width.max(1);
         let height = self.metrics.physical_height.max(1);
-        if x >= width || y >= height {
-            return None;
-        }
         let unpadded = width * 4;
         let padded = unpadded.div_ceil(256) * 256;
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -222,16 +273,37 @@ impl WgpuBackend {
         let _ = self.device.poll(wgpu::Maintain::Wait);
         receiver.recv().ok()?.ok()?;
         let data = slice.get_mapped_range();
-        let offset = (y * padded + x * 4) as usize;
-        let pixel = [
-            *data.get(offset)?,
-            *data.get(offset + 1)?,
-            *data.get(offset + 2)?,
-            *data.get(offset + 3)?,
-        ];
+        let mut pixels = Vec::with_capacity((unpadded * height) as usize);
+        for row in 0..height {
+            let start = (row * padded) as usize;
+            pixels.extend_from_slice(&data[start..start + unpadded as usize]);
+        }
         drop(data);
         buffer.unmap();
-        Some(pixel)
+        Some((width, height, pixels))
+    }
+
+    fn upload_atlas(&mut self) {
+        self.queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &self.atlas_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            self.atlas.data(),
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(ATLAS_SIZE),
+                rows_per_image: Some(ATLAS_SIZE),
+            },
+            wgpu::Extent3d {
+                width: ATLAS_SIZE,
+                height: ATLAS_SIZE,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.atlas.clear_dirty();
     }
 
     fn ensure_buffer(&mut self, needed: u64) {
@@ -309,7 +381,16 @@ impl PaintBackend for WgpuBackend {
             damage_rects: damage.len(),
             ..FrameStats::default()
         };
-        collect_vertices(scene, self.metrics, &mut vertices, &mut stats);
+        collect_vertices(
+            scene,
+            self.metrics,
+            &mut self.atlas,
+            &mut vertices,
+            &mut stats,
+        );
+        if self.atlas.is_dirty() {
+            self.upload_atlas();
+        }
 
         self.ensure_buffer(vertices.len() as u64);
         if !vertices.is_empty() {
@@ -345,6 +426,7 @@ impl PaintBackend for WgpuBackend {
             });
             if !vertices.is_empty() {
                 pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &self.atlas_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 pass.draw(0..(vertices.len() as u32 / VERTEX_BYTES as u32), 0..1);
             }
@@ -431,14 +513,109 @@ fn create_vertex_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
     })
 }
 
-fn create_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+fn create_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("atlas layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
+}
+
+fn create_atlas(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layout: &wgpu::BindGroupLayout,
+    atlas: &GlyphAtlas,
+) -> (wgpu::Texture, wgpu::BindGroup) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("glyph atlas"),
+        size: wgpu::Extent3d {
+            width: ATLAS_SIZE,
+            height: ATLAS_SIZE,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::ImageCopyTexture {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        atlas.data(),
+        wgpu::ImageDataLayout {
+            offset: 0,
+            bytes_per_row: Some(ATLAS_SIZE),
+            rows_per_image: Some(ATLAS_SIZE),
+        },
+        wgpu::Extent3d {
+            width: ATLAS_SIZE,
+            height: ATLAS_SIZE,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("atlas sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::FilterMode::Nearest,
+        ..wgpu::SamplerDescriptor::default()
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("atlas bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
+    });
+    (texture, bind_group)
+}
+
+fn create_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    bind_group_layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("scene shader"),
         source: wgpu::ShaderSource::Wgsl(SHADER.into()),
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("scene layout"),
-        bind_group_layouts: &[],
+        bind_group_layouts: &[bind_group_layout],
         push_constant_ranges: &[],
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -460,6 +637,11 @@ fn create_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::
                         format: wgpu::VertexFormat::Float32x4,
                         offset: 8,
                         shader_location: 1,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x2,
+                        offset: 24,
+                        shader_location: 2,
                     },
                 ],
             }],
@@ -483,13 +665,15 @@ fn create_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::
 fn collect_vertices(
     scene: &Scene,
     metrics: BackendMetrics,
+    atlas: &mut GlyphAtlas,
     vertices: &mut Vec<u8>,
     stats: &mut FrameStats,
 ) {
+    let white = atlas.white_uv();
     for primitive in scene.ops() {
         match primitive {
             Primitive::Fill { rect, color, .. } => {
-                push_quad(vertices, metrics, *rect, *color);
+                push_quad(vertices, metrics, *rect, *color, white);
                 stats.fill_quads += 1;
             }
             Primitive::Border {
@@ -502,6 +686,7 @@ fn collect_vertices(
                         metrics,
                         Rect::new(rect.x, rect.y, rect.width, width.top),
                         *color,
+                        white,
                     );
                     edges += 1;
                 }
@@ -516,6 +701,7 @@ fn collect_vertices(
                             width.bottom,
                         ),
                         *color,
+                        white,
                     );
                     edges += 1;
                 }
@@ -530,6 +716,7 @@ fn collect_vertices(
                             (rect.height - width.top - width.bottom).max(0.0),
                         ),
                         *color,
+                        white,
                     );
                     edges += 1;
                 }
@@ -544,6 +731,7 @@ fn collect_vertices(
                             (rect.height - width.top - width.bottom).max(0.0),
                         ),
                         *color,
+                        white,
                     );
                     edges += 1;
                 }
@@ -558,23 +746,63 @@ fn collect_vertices(
                 for line in &layout.lines {
                     let line_y = rect.y + line.baseline - layout.ascent;
                     for glyph in &line.glyphs {
+                        if let Some(image) = &glyph.image {
+                            if let Some(entry) = atlas.ensure(image) {
+                                draw_glyph(vertices, metrics, rect, line_y, glyph, *color, entry);
+                                stats.atlas_glyphs += 1;
+                                continue;
+                            }
+                        }
                         push_quad(
                             vertices,
                             metrics,
-                            Rect::new(
-                                rect.x + glyph.x,
-                                line_y,
-                                (glyph.advance * 0.65).max(0.5),
-                                (layout.ascent * 0.8).max(0.5),
-                            ),
+                            placeholder_glyph(rect, line_y, glyph, layout.ascent),
                             *color,
+                            white,
                         );
-                        stats.glyph_quads += 1;
+                        stats.placeholder_glyphs += 1;
                     }
                 }
+                stats.glyph_quads += layout
+                    .lines
+                    .iter()
+                    .map(|line| line.glyphs.len())
+                    .sum::<usize>();
             }
         }
     }
+}
+
+fn placeholder_glyph(rect: &Rect, line_y: f32, glyph: &Glyph, ascent: f32) -> Rect {
+    Rect::new(
+        rect.x + glyph.x,
+        line_y,
+        (glyph.advance * 0.65).max(0.5),
+        (ascent * 0.8).max(0.5),
+    )
+}
+
+fn draw_glyph(
+    vertices: &mut Vec<u8>,
+    metrics: BackendMetrics,
+    rect: &Rect,
+    line_y: f32,
+    glyph: &Glyph,
+    color: renderer_api::Color,
+    entry: crate::atlas::AtlasEntry,
+) {
+    push_textured_quad(
+        vertices,
+        metrics,
+        Rect::new(
+            rect.x + glyph.x + entry.left,
+            line_y + glyph.y - entry.top,
+            entry.width,
+            entry.height,
+        ),
+        color,
+        entry.uv,
+    );
 }
 
 fn push_quad(
@@ -582,6 +810,17 @@ fn push_quad(
     metrics: BackendMetrics,
     rect: Rect,
     color: renderer_api::Color,
+    uv: [f32; 2],
+) {
+    push_textured_quad(vertices, metrics, rect, color, [uv[0], uv[1], uv[0], uv[1]]);
+}
+
+fn push_textured_quad(
+    vertices: &mut Vec<u8>,
+    metrics: BackendMetrics,
+    rect: Rect,
+    color: renderer_api::Color,
+    uv: [f32; 4],
 ) {
     if rect.width <= 0.0 || rect.height <= 0.0 {
         return;
@@ -593,13 +832,21 @@ fn push_quad(
     let x1 = (rect.x + rect.width) * scale / width * 2.0 - 1.0;
     let y0 = 1.0 - rect.y * scale / height * 2.0;
     let y1 = 1.0 - (rect.y + rect.height) * scale / height * 2.0;
-    for (x, y) in [(x0, y0), (x1, y0), (x1, y1), (x0, y0), (x1, y1), (x0, y1)] {
-        push_vertex(vertices, x, y, color);
+    let [u0, v0, u1, v1] = uv;
+    for (x, y, u, v) in [
+        (x0, y0, u0, v0),
+        (x1, y0, u1, v0),
+        (x1, y1, u1, v1),
+        (x0, y0, u0, v0),
+        (x1, y1, u1, v1),
+        (x0, y1, u0, v1),
+    ] {
+        push_vertex(vertices, x, y, color, [u, v]);
     }
 }
 
-fn push_vertex(vertices: &mut Vec<u8>, x: f32, y: f32, color: renderer_api::Color) {
-    for value in [x, y, color.r, color.g, color.b, color.a] {
+fn push_vertex(vertices: &mut Vec<u8>, x: f32, y: f32, color: renderer_api::Color, uv: [f32; 2]) {
+    for value in [x, y, color.r, color.g, color.b, color.a, uv[0], uv[1]] {
         vertices.extend_from_slice(&value.to_ne_bytes());
     }
 }

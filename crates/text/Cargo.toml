@@ -9,3 +9,4 @@ repository.workspace = true
 
 [dependencies]
 renderer-api = { path = "../renderer-api" }
+cosmic-text = { version = "0.17", default-features = false, features = ["std", "swash"] }

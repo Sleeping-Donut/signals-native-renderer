@@ -5,7 +5,7 @@ use std::sync::Arc;
 use renderer_api::{Color, Edges, TextStyle};
 use renderer_native::{run_windowed, BackendMetrics, FrameOutput, WindowApp};
 use scene::{Primitive, Rect, Scene};
-use text::{MonospaceShaper, ShapeRequest, ShapedLayout, Shaper, TextSystem};
+use text::{CosmicShaper, ShapeRequest, ShapedLayout, Shaper};
 
 struct Demo {
     layout: Arc<ShapedLayout>,
@@ -19,13 +19,12 @@ impl Demo {
             line_height: 40.0,
             weight: 500,
         };
-        let mut shaper = MonospaceShaper::default();
+        let mut shaper = CosmicShaper::new();
         let layout = shaper.shape(ShapeRequest {
             text: "signals-native-renderer",
             style,
             max_width: None,
         });
-        let _cache = TextSystem::new(Box::new(MonospaceShaper::default()));
         Self {
             layout: Arc::new(layout),
         }
