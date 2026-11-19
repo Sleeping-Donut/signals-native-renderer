@@ -54,16 +54,38 @@ enum ViewEvent {
     Blur,
 }
 
-type ViewCallback = Rc<RefCell<Box<dyn FnMut(&reactive_core::Cx<'_>)>>>;
+/// Dispatch phase for listeners.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DispatchPhase {
+    /// Root-to-target.
+    Capture,
+    /// Target-to-root.
+    Bubble,
+}
+
+/// Result of a listener.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DispatchResult {
+    /// Continue propagating.
+    Continue,
+    /// Stop propagation without suppressing default actions.
+    Stop,
+    /// Stop propagation and suppress default actions.
+    Handled,
+}
+
+type ViewCallback = Rc<RefCell<Box<dyn FnMut(&reactive_core::Cx<'_>) -> DispatchResult>>>;
 
 struct ViewListener {
     event: ViewEvent,
+    phase: DispatchPhase,
     callback: ViewCallback,
 }
 
 #[derive(Clone)]
 struct KeyBinding {
     stroke: KeyStroke,
+    phase: DispatchPhase,
     callback: ViewCallback,
 }
 
@@ -562,7 +584,8 @@ impl ViewTree {
         if focusable {
             self.set_focus(Some(node));
         }
-        self.dispatch_view_event(node, ViewEvent::Click)
+        self.dispatch_view_event(node, ViewEvent::Click);
+        true
     }
 
     /// Move focus to the next tab stop.
@@ -653,42 +676,72 @@ impl ViewTree {
     /// default Tab traversal.
     pub fn key_down(&self, event: &KeyEvent) -> bool {
         let cx = self.inner.runtime.cx();
+        let mut path = Vec::new();
         let mut current = self.focused();
         while let Some(node) = current {
-            let bindings = {
-                let nodes = self.inner.nodes.borrow();
-                nodes.get(node).map(|data| {
-                    data.key_bindings
-                        .iter()
-                        .filter(|binding| {
-                            binding.stroke.key == event.key
-                                && binding.stroke.modifiers == event.modifiers
-                        })
-                        .map(|binding| Rc::clone(&binding.callback))
-                        .collect::<Vec<_>>()
-                })
-            };
-            if let Some(bindings) = bindings {
-                if !bindings.is_empty() {
-                    for callback in bindings {
-                        (callback.borrow_mut())(&cx);
-                    }
-                    return true;
-                }
-            }
+            path.push(node);
             current = self
                 .inner
                 .nodes
                 .borrow()
                 .get(node)
-                .and_then(|node| node.parent);
+                .and_then(|data| data.parent);
+        }
+
+        let mut stopped = false;
+        let mut invoked = false;
+        for phase in [DispatchPhase::Capture, DispatchPhase::Bubble] {
+            let iter: Box<dyn Iterator<Item = &ViewNodeId>> = if phase == DispatchPhase::Capture {
+                Box::new(path.iter().rev())
+            } else {
+                Box::new(path.iter())
+            };
+            for node in iter {
+                let bindings = {
+                    let nodes = self.inner.nodes.borrow();
+                    nodes.get(*node).map(|data| {
+                        data.key_bindings
+                            .iter()
+                            .filter(|binding| {
+                                binding.phase == phase
+                                    && binding.stroke.key == event.key
+                                    && binding.stroke.modifiers == event.modifiers
+                            })
+                            .map(|binding| Rc::clone(&binding.callback))
+                            .collect::<Vec<_>>()
+                    })
+                };
+                if let Some(bindings) = bindings {
+                    for callback in bindings {
+                        invoked = true;
+                        match (callback.borrow_mut())(&cx) {
+                            DispatchResult::Continue => {}
+                            DispatchResult::Stop => {
+                                stopped = true;
+                                break;
+                            }
+                            DispatchResult::Handled => return true,
+                        }
+                    }
+                }
+                if stopped {
+                    break;
+                }
+            }
+            if stopped {
+                break;
+            }
         }
 
         let globals = self.inner.global_keys.borrow().clone();
         for binding in globals {
             if binding.stroke.key == event.key && binding.stroke.modifiers == event.modifiers {
-                (binding.callback.borrow_mut())(&cx);
-                return true;
+                invoked = true;
+                match (binding.callback.borrow_mut())(&cx) {
+                    DispatchResult::Continue => {}
+                    DispatchResult::Stop => break,
+                    DispatchResult::Handled => return true,
+                }
             }
         }
 
@@ -700,7 +753,7 @@ impl ViewTree {
             }
             return true;
         }
-        false
+        invoked
     }
 
     /// Register a window-level key binding.
@@ -711,7 +764,11 @@ impl ViewTree {
     ) {
         self.inner.global_keys.borrow_mut().push(KeyBinding {
             stroke,
-            callback: Rc::new(RefCell::new(Box::new(callback))),
+            phase: DispatchPhase::Bubble,
+            callback: Rc::new(RefCell::new(Box::new(move |cx| {
+                callback(cx);
+                DispatchResult::Continue
+            }))),
         });
     }
 
@@ -780,25 +837,10 @@ impl ViewTree {
 
     fn dispatch_view_event(&self, node: ViewNodeId, event: ViewEvent) -> bool {
         let cx = self.inner.runtime.cx();
+        let mut path = Vec::new();
         let mut current = Some(node);
-        let mut handled = false;
         while let Some(node) = current {
-            let callbacks = {
-                let nodes = self.inner.nodes.borrow();
-                nodes.get(node).map(|data| {
-                    data.view_listeners
-                        .iter()
-                        .filter(|listener| listener.event == event)
-                        .map(|listener| Rc::clone(&listener.callback))
-                        .collect::<Vec<_>>()
-                })
-            };
-            if let Some(callbacks) = callbacks {
-                for callback in callbacks {
-                    (callback.borrow_mut())(&cx);
-                    handled = true;
-                }
-            }
+            path.push(node);
             current = self
                 .inner
                 .nodes
@@ -806,7 +848,46 @@ impl ViewTree {
                 .get(node)
                 .and_then(|data| data.parent);
         }
-        handled
+
+        let mut stopped = false;
+        for phase in [DispatchPhase::Capture, DispatchPhase::Bubble] {
+            let iter: Box<dyn Iterator<Item = &ViewNodeId>> = if phase == DispatchPhase::Capture {
+                Box::new(path.iter().rev())
+            } else {
+                Box::new(path.iter())
+            };
+            for node in iter {
+                let callbacks = {
+                    let nodes = self.inner.nodes.borrow();
+                    nodes.get(*node).map(|data| {
+                        data.view_listeners
+                            .iter()
+                            .filter(|listener| listener.event == event && listener.phase == phase)
+                            .map(|listener| Rc::clone(&listener.callback))
+                            .collect::<Vec<_>>()
+                    })
+                };
+                if let Some(callbacks) = callbacks {
+                    for callback in callbacks {
+                        match (callback.borrow_mut())(&cx) {
+                            DispatchResult::Continue => {}
+                            DispatchResult::Stop => {
+                                stopped = true;
+                                break;
+                            }
+                            DispatchResult::Handled => return true,
+                        }
+                    }
+                }
+                if stopped {
+                    break;
+                }
+            }
+            if stopped {
+                break;
+            }
+        }
+        false
     }
 
     /// Activate an accessibility node by its stable id.
@@ -1203,12 +1284,14 @@ impl ViewTree {
         &self,
         view: ViewNodeId,
         event: ViewEvent,
-        callback: Box<dyn FnMut(&reactive_core::Cx<'_>)>,
+        phase: DispatchPhase,
+        callback: Box<dyn FnMut(&reactive_core::Cx<'_>) -> DispatchResult>,
     ) {
         if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
             node.interactive = true;
             node.view_listeners.push(ViewListener {
                 event,
+                phase,
                 callback: Rc::new(RefCell::new(callback)),
             });
         }
@@ -1218,12 +1301,14 @@ impl ViewTree {
         &self,
         view: ViewNodeId,
         stroke: KeyStroke,
-        callback: Box<dyn FnMut(&reactive_core::Cx<'_>)>,
+        phase: DispatchPhase,
+        callback: Box<dyn FnMut(&reactive_core::Cx<'_>) -> DispatchResult>,
     ) {
         if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
             node.focusable = true;
             node.key_bindings.push(KeyBinding {
                 stroke,
+                phase,
                 callback: Rc::new(RefCell::new(callback)),
             });
         }
@@ -1511,10 +1596,32 @@ impl View {
     /// Add a click listener to the mounted root.
     #[must_use]
     pub fn on_click(self, handler: impl Fn(&reactive_core::Cx<'_>) + 'static) -> Self {
+        self.on_click_filter(DispatchPhase::Bubble, move |cx| {
+            handler(cx);
+            DispatchResult::Continue
+        })
+    }
+
+    /// Add a capture-phase click listener to the mounted root.
+    #[must_use]
+    pub fn on_click_capture(self, handler: impl Fn(&reactive_core::Cx<'_>) + 'static) -> Self {
+        self.on_click_filter(DispatchPhase::Capture, move |cx| {
+            handler(cx);
+            DispatchResult::Continue
+        })
+    }
+
+    /// Add a click listener with an explicit phase and result.
+    #[must_use]
+    pub fn on_click_filter(
+        self,
+        phase: DispatchPhase,
+        handler: impl Fn(&reactive_core::Cx<'_>) -> DispatchResult + 'static,
+    ) -> Self {
         let mount = self.mount;
         view(move |cx, tree| {
             let id = mount(cx, tree);
-            tree.add_view_listener(id, ViewEvent::Click, Box::new(move |cx| handler(cx)));
+            tree.add_view_listener(id, ViewEvent::Click, phase, Box::new(move |cx| handler(cx)));
             id
         })
     }
@@ -1526,10 +1633,37 @@ impl View {
         stroke: KeyStroke,
         handler: impl Fn(&reactive_core::Cx<'_>) + 'static,
     ) -> Self {
+        self.on_key_filter(stroke, DispatchPhase::Bubble, move |cx| {
+            handler(cx);
+            DispatchResult::Continue
+        })
+    }
+
+    /// Add a capture-phase key binding.
+    #[must_use]
+    pub fn on_key_capture(
+        self,
+        stroke: KeyStroke,
+        handler: impl Fn(&reactive_core::Cx<'_>) + 'static,
+    ) -> Self {
+        self.on_key_filter(stroke, DispatchPhase::Capture, move |cx| {
+            handler(cx);
+            DispatchResult::Continue
+        })
+    }
+
+    /// Add a key binding with an explicit phase and result.
+    #[must_use]
+    pub fn on_key_filter(
+        self,
+        stroke: KeyStroke,
+        phase: DispatchPhase,
+        handler: impl Fn(&reactive_core::Cx<'_>) -> DispatchResult + 'static,
+    ) -> Self {
         let mount = self.mount;
         view(move |cx, tree| {
             let id = mount(cx, tree);
-            tree.add_key_binding(id, stroke.clone(), Box::new(move |cx| handler(cx)));
+            tree.add_key_binding(id, stroke.clone(), phase, Box::new(move |cx| handler(cx)));
             id
         })
     }
@@ -1629,7 +1763,15 @@ pub fn button(children: Vec<View>, on_click: impl Fn(&reactive_core::Cx<'_>) + '
         tree.set_interactive(id);
         tree.set_focusable(id, true);
         tree.set_a11y(id, Some(A11yRole::Button), None, None);
-        tree.add_view_listener(id, ViewEvent::Click, Box::new(move |cx| on_click(cx)));
+        tree.add_view_listener(
+            id,
+            ViewEvent::Click,
+            DispatchPhase::Bubble,
+            Box::new(move |cx| {
+                on_click(cx);
+                DispatchResult::Continue
+            }),
+        );
         id
     })
 }

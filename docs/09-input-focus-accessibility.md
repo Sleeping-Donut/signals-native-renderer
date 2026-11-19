@@ -14,8 +14,10 @@ owns `Key`, `KeyEvent`, `Modifiers`, and `PointerEvent`;
 [`renderer-native`](../crates/renderer-native/src/lib.rs) maps winit pointer and
 keyboard events into `WindowDriver`. Hit testing inverses translation/scale transforms and honors
 ancestor content masks; scene building emits transformed primitives with clip
-rectangles. Capture/stop results, drag/drop, scroll, IME, AccessKit protocol
-wiring, richer hover/focus styling, and cursor/tooltip layers remain.
+rectangles. Pointer and key dispatch run capture then bubble and support
+`Continue`/`Stop`/`Handled`, with `Handled` suppressing defaults such as Tab
+focus traversal. Drag/drop, scroll, IME, AccessKit protocol wiring, richer
+hover/focus styling, and cursor/tooltip layers remain.
 
 ---
 

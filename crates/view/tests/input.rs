@@ -9,7 +9,10 @@ use renderer_api::{
     Position, ResolvedStyle, Size, TextStyle, Transform,
 };
 use renderer_null::{NullRenderer, SharedNullRenderer};
-use view::{button_text, column, keyed_list, text_fn, FocusHandle, KeyStroke, ViewTree};
+use view::{
+    button_text, column, keyed_list, text_fn, DispatchPhase, DispatchResult, FocusHandle,
+    KeyStroke, ViewTree,
+};
 
 fn px(width: f32, height: f32) -> ResolvedStyle {
     ResolvedStyle {
@@ -254,6 +257,159 @@ fn removing_focused_row_moves_focus_to_previous_focusable_sibling() {
     tree.frame(&cx, 1);
 
     assert_eq!(tree.focused(), Some(rows[0]));
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn click_dispatch_runs_capture_then_bubble() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let order = Rc::new(RefCell::new(Vec::new()));
+    let order_root_capture = Rc::clone(&order);
+    let order_child_capture = Rc::clone(&order);
+    let order_child_bubble = Rc::clone(&order);
+    let order_root_bubble = Rc::clone(&order);
+    let child = column(vec![])
+        .on_click_capture(move |_| order_child_capture.borrow_mut().push("child-capture"))
+        .on_click(move |_| order_child_bubble.borrow_mut().push("child-bubble"));
+    let root = tree.mount(
+        &cx,
+        column(vec![child])
+            .on_click_capture(move |_| order_root_capture.borrow_mut().push("root-capture"))
+            .on_click(move |_| order_root_bubble.borrow_mut().push("root-bubble"))
+            .style(px(100.0, 100.0)),
+    );
+    tree.set_viewport(100.0, 100.0);
+    tree.frame(&cx, 0);
+    let child = tree.children(root)[0];
+    assert!(tree.click_node(child));
+    assert_eq!(
+        &*order.borrow(),
+        &[
+            "root-capture",
+            "child-capture",
+            "child-bubble",
+            "root-bubble"
+        ]
+    );
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn capture_stop_prevents_bubble() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let child_capture = Rc::new(RefCell::new(false));
+    let child_bubble = Rc::new(RefCell::new(false));
+    let capture_flag = Rc::clone(&child_capture);
+    let bubble_flag = Rc::clone(&child_bubble);
+    let child = column(vec![])
+        .on_click_capture(move |_| *capture_flag.borrow_mut() = true)
+        .on_click(move |_| *bubble_flag.borrow_mut() = true);
+    let root = tree.mount(
+        &cx,
+        column(vec![child])
+            .on_click_filter(DispatchPhase::Capture, |_| DispatchResult::Stop)
+            .style(px(100.0, 100.0)),
+    );
+    tree.set_viewport(100.0, 100.0);
+    tree.frame(&cx, 0);
+    let child = tree.children(root)[0];
+    tree.click_node(child);
+    assert!(!*child_capture.borrow());
+    assert!(!*child_bubble.borrow());
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn handled_key_binding_suppresses_tab_default() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let first = button_text("first", |_| {})
+        .on_key_filter(
+            KeyStroke::named(NamedKey::Tab),
+            DispatchPhase::Bubble,
+            |_| DispatchResult::Handled,
+        )
+        .style(px(100.0, 20.0));
+    let root = tree.mount(
+        &cx,
+        column(vec![
+            first,
+            button_text("second", |_| {}).style(px(100.0, 20.0)),
+        ])
+        .style(px(200.0, 200.0)),
+    );
+    tree.set_viewport(200.0, 200.0);
+    tree.frame(&cx, 0);
+    let buttons = tree.children(root);
+    tree.set_focus(Some(buttons[0]));
+
+    let tab = KeyEvent::new(Key::Named(NamedKey::Tab), Modifiers::NONE);
+    assert!(tree.key_down(&tab));
+    assert_eq!(tree.focused(), Some(buttons[0]), "Handled suppresses Tab");
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn stopped_key_binding_does_not_suppress_tab_default() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let first = button_text("first", |_| {})
+        .on_key_filter(
+            KeyStroke::named(NamedKey::Tab),
+            DispatchPhase::Bubble,
+            |_| DispatchResult::Stop,
+        )
+        .style(px(100.0, 20.0));
+    let root = tree.mount(
+        &cx,
+        column(vec![
+            first,
+            button_text("second", |_| {}).style(px(100.0, 20.0)),
+        ])
+        .style(px(200.0, 200.0)),
+    );
+    tree.set_viewport(200.0, 200.0);
+    tree.frame(&cx, 0);
+    let buttons = tree.children(root);
+    tree.set_focus(Some(buttons[0]));
+
+    let tab = KeyEvent::new(Key::Named(NamedKey::Tab), Modifiers::NONE);
+    tree.key_down(&tab);
+    assert_eq!(tree.focused(), Some(buttons[1]), "Stop leaves Tab default");
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn key_dispatch_runs_capture_then_bubble() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let order = Rc::new(RefCell::new(Vec::new()));
+    let capture = Rc::clone(&order);
+    let bubble = Rc::clone(&order);
+    let child = button_text("child", |_| {})
+        .on_key_capture(KeyStroke::character('x'), move |_| {
+            capture.borrow_mut().push("capture");
+        })
+        .on_key(KeyStroke::character('x'), move |_| {
+            bubble.borrow_mut().push("bubble");
+        })
+        .style(px(100.0, 20.0));
+    let root = tree.mount(&cx, column(vec![child]).style(px(200.0, 200.0)));
+    tree.set_viewport(200.0, 200.0);
+    tree.frame(&cx, 0);
+    let child = tree.children(root)[0];
+    tree.set_focus(Some(child));
+
+    let key = KeyEvent::new(Key::Character('x'), Modifiers::NONE);
+    assert!(tree.key_down(&key));
+    assert_eq!(&*order.borrow(), &["capture", "bubble"]);
 
     tree.unmount(&cx, root);
 }

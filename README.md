@@ -89,8 +89,8 @@ sampled glyph atlas, and a wgpu backend with a winit window loop (behind the
 (60.0 fps) on an M3 Pro at 2×; the 2019 target laptop and visible 1×/1.5× runs
 remain. Phase 6 has retained hit testing, pointer/click dispatch, focus and tab
 order, key bindings, accessibility snapshots/actions, native winit input
-routing, content-mask clipping, translation/scale transforms, and a native
-two-instance counter example.
+routing, content-mask clipping, translation/scale transforms, capture/bubble
+dispatch with default suppression, and a native two-instance counter example.
 
 CI is path-filtered: changes to prose, docs, plans, and the README do not run the
 Rust gate. Code, dependency, flake, toolchain, and workflow changes do.
