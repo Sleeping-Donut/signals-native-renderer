@@ -156,6 +156,140 @@ impl Event {
     }
 }
 
+/// Keyboard modifiers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Modifiers {
+    /// Shift.
+    pub shift: bool,
+    /// Control.
+    pub control: bool,
+    /// Alt/Option.
+    pub alt: bool,
+    /// Command/Windows/Super.
+    pub meta: bool,
+}
+
+impl Modifiers {
+    /// No modifiers.
+    pub const NONE: Self = Self {
+        shift: false,
+        control: false,
+        alt: false,
+        meta: false,
+    };
+
+    /// Construct modifiers.
+    #[must_use]
+    pub const fn new(shift: bool, control: bool, alt: bool, meta: bool) -> Self {
+        Self {
+            shift,
+            control,
+            alt,
+            meta,
+        }
+    }
+}
+
+/// Named keyboard keys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NamedKey {
+    /// Enter/Return.
+    Enter,
+    /// Escape.
+    Escape,
+    /// Tab.
+    Tab,
+    /// Space.
+    Space,
+    /// Backspace.
+    Backspace,
+    /// Delete.
+    Delete,
+    /// Left arrow.
+    ArrowLeft,
+    /// Right arrow.
+    ArrowRight,
+    /// Up arrow.
+    ArrowUp,
+    /// Down arrow.
+    ArrowDown,
+    /// Home.
+    Home,
+    /// End.
+    End,
+    /// Page up.
+    PageUp,
+    /// Page down.
+    PageDown,
+    /// Function key number.
+    Function(u8),
+}
+
+/// A keyboard key.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Key {
+    /// Printable character.
+    Character(char),
+    /// Named non-character key.
+    Named(NamedKey),
+}
+
+/// A keyboard event.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyEvent {
+    /// The key.
+    pub key: Key,
+    /// Active modifiers.
+    pub modifiers: Modifiers,
+    /// Whether this is an auto-repeat.
+    pub repeat: bool,
+    /// Text produced by the key, if any.
+    pub text: Option<String>,
+}
+
+impl KeyEvent {
+    /// Construct a key event.
+    #[must_use]
+    pub fn new(key: Key, modifiers: Modifiers) -> Self {
+        Self {
+            key,
+            modifiers,
+            repeat: false,
+            text: None,
+        }
+    }
+}
+
+/// A pointer button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerButton {
+    /// Primary button.
+    Primary,
+    /// Secondary button.
+    Secondary,
+    /// Middle button.
+    Middle,
+}
+
+/// A pointer event in logical window coordinates.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PointerEvent {
+    /// Logical x.
+    pub x: f32,
+    /// Logical y.
+    pub y: f32,
+    /// Button, if any.
+    pub button: Option<PointerButton>,
+}
+
+impl PointerEvent {
+    /// Construct a pointer event.
+    #[must_use]
+    pub const fn new(x: f32, y: f32, button: Option<PointerButton>) -> Self {
+        Self { x, y, button }
+    }
+}
+
 /// Frame metadata passed to a backend.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameInfo {

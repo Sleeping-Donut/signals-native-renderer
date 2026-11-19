@@ -30,6 +30,10 @@ required-features = ["window"]
 name = "window_smoke"
 required-features = ["window"]
 
+[[example]]
+name = "counter"
+required-features = ["window"]
+
 [features]
 default = []
 window = ["dep:winit"]

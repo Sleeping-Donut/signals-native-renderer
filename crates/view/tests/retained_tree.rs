@@ -42,10 +42,9 @@ fn builder_tree_binds_text_and_dispatches_clicks() {
     assert!(tree.last_frame_dirty() > 0, "mount invalidates structure");
     let children = tree.children(root);
     let text_node = tree.renderer_id(children[0]).unwrap();
-    let button = tree.renderer_id(children[1]).unwrap();
     assert_eq!(renderer.borrow().text_of(text_node), Some("count 0"));
 
-    renderer.borrow_mut().click(button);
+    tree.click_node(children[1]);
     tree.frame(&cx, 1);
     assert_eq!(renderer.borrow().text_of(text_node), Some("count 1"));
 

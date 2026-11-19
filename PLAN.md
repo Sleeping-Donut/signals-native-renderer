@@ -330,6 +330,29 @@ tree, cursor/tooltip layers.
 click/drag/scroll are correct under transforms and clipping; focus survives
 list reorder.
 
+**Status (2026-11-19): input/focus/a11y slice implemented.** [`view`](crates/view/src/lib.rs)
+now has hit testing over layout bounds, pointer move/down/up and click
+dispatch, hover/pressed state, view-level click listeners, focus handles and
+tab traversal, disabled-node skipping, focused/global key bindings, focus
+fallback when a focused row is removed, and an accessibility snapshot with
+stable renderer ids, roles, labels, values, bounds, focus state, and
+press/focus actions. [`renderer-api`](crates/renderer-api/src/lib.rs) owns the
+key/modifier/pointer event types. [`renderer-native`](crates/renderer-native/src/lib.rs)
+routes winit pointer and keyboard events through `WindowDriver` into the app;
+[`examples/counter.rs`](crates/renderer-native/examples/counter.rs) is a native
+two-instance counter with clickable buttons and key bindings.
+
+Tests cover topmost hit testing, click dispatch, tab order and disabled nodes,
+focused/global key bindings, a11y roles/labels/focus, a11y press/focus actions,
+stable a11y ids across keyed reorder, focus preservation across reorder, focus
+fallback on row removal, and native window-driver pointer/key routing
+([input.rs](crates/view/tests/input.rs),
+[renderer-native/tests/input.rs](crates/renderer-native/tests/input.rs)).
+Remaining Phase 6 work: content masks and transforms under clipping, capture
+phase and stop/default-action results, drag/drop, scroll state and wheel
+routing, IME/text-input handlers, AccessKit protocol integration, and
+cursor/tooltip layers.
+
 ### Phase 7 — Stores and authoring (3–4 weeks)
 
 **Build:** `#[derive(Store)]`, `Field`/`Subfield`, `Patch`, keyed collections,

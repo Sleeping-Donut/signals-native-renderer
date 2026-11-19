@@ -4,6 +4,18 @@
 **Owns:** hit testing, event dispatch, actions/keybindings, focus, tab order,
 gestures, IME, cursors/tooltips, and the accessibility tree.
 
+**Implementation status (2026-11-19).** The retained input slice is in
+[`crates/view`](../crates/view/src/lib.rs): layout-bounds hit testing, pointer
+move/down/up and click bubbling, hover/pressed state, view click listeners,
+focus handles and tab traversal, disabled-node skipping, focused/global key
+bindings, focus fallback on removal, and an accessibility snapshot with
+stable ids and press/focus actions. [`renderer-api`](../crates/renderer-api/src/lib.rs)
+owns `Key`, `KeyEvent`, `Modifiers`, and `PointerEvent`;
+[`renderer-native`](../crates/renderer-native/src/lib.rs) maps winit pointer and
+keyboard events into `WindowDriver`. Content masks/transforms, capture/stop
+results, drag/drop, scroll, IME, AccessKit protocol wiring, and cursor/tooltip
+layers remain.
+
 ---
 
 ## 1. Input model

@@ -16,15 +16,14 @@ use reactive_core::{
     render_effect, EffectHandle, NodeId as ViewNodeId, OwnerHandle, ReadSignal, RuntimeHandle,
 };
 use renderer_api::{
-    Display, Edges, ElementTag, EventKind, FlexDirection, FrameInfo, ListenerId,
-    NodeId as RendererNodeId, Renderer, ResolvedStyle, Size, TextMeasureRequest, TextMetrics,
-    TextStyle,
+    A11yRole, Display, Edges, ElementTag, FlexDirection, FrameInfo, Key, KeyEvent, Modifiers,
+    NamedKey, NodeId as RendererNodeId, PointerEvent, Renderer, ResolvedStyle, Size,
+    TextMeasureRequest, TextMetrics, TextStyle,
 };
 use scene::{PaintTree, Primitive, Scene, SceneBuilder, SceneStats};
 use text::{MonospaceShaper, TextSystem};
 
 /// A mounted view node.
-#[derive(Debug)]
 struct ViewNode {
     renderer_id: RendererNodeId,
     layout_id: LayoutId,
@@ -33,9 +32,112 @@ struct ViewNode {
     parent: Option<ViewNodeId>,
     children: Vec<ViewNodeId>,
     bindings: Vec<EffectHandle>,
-    listeners: Vec<ListenerId>,
     owner: Option<OwnerHandle>,
     dirty: Cell<bool>,
+    interactive: bool,
+    focusable: bool,
+    tab_index: Option<i32>,
+    disabled: bool,
+    a11y_role: A11yRole,
+    a11y_label: Option<String>,
+    a11y_value: Option<String>,
+    view_listeners: Vec<ViewListener>,
+    key_bindings: Vec<KeyBinding>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewEvent {
+    Click,
+    PointerEnter,
+    PointerLeave,
+    Focus,
+    Blur,
+}
+
+type ViewCallback = Rc<RefCell<Box<dyn FnMut(&reactive_core::Cx<'_>)>>>;
+
+struct ViewListener {
+    event: ViewEvent,
+    callback: ViewCallback,
+}
+
+#[derive(Clone)]
+struct KeyBinding {
+    stroke: KeyStroke,
+    callback: ViewCallback,
+}
+
+/// A key plus modifiers used for bindings.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct KeyStroke {
+    /// The key.
+    pub key: Key,
+    /// Active modifiers.
+    pub modifiers: Modifiers,
+}
+
+/// A stable focus identity for a focusable view node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FocusHandle(ViewNodeId);
+
+impl FocusHandle {
+    /// The backing view node.
+    #[must_use]
+    pub const fn node(self) -> ViewNodeId {
+        self.0
+    }
+}
+
+/// One accessibility node.
+#[derive(Clone, Debug, PartialEq)]
+pub struct A11yNode {
+    /// Stable node id.
+    pub id: u64,
+    /// Role.
+    pub role: A11yRole,
+    /// Label.
+    pub label: Option<String>,
+    /// Value.
+    pub value: Option<String>,
+    /// Disabled state.
+    pub disabled: bool,
+    /// Whether the node can receive focus.
+    pub focusable: bool,
+    /// Whether the node currently has focus.
+    pub focused: bool,
+    /// Snapped logical bounds.
+    pub bounds: Rect,
+    /// Child a11y ids.
+    pub children: Vec<u64>,
+}
+
+/// A snapshot of the accessibility tree.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct A11yTree {
+    /// Root ids.
+    pub roots: Vec<u64>,
+    /// Nodes with child ids referencing this list.
+    pub nodes: Vec<A11yNode>,
+}
+
+impl KeyStroke {
+    /// Construct a key stroke.
+    #[must_use]
+    pub fn new(key: Key, modifiers: Modifiers) -> Self {
+        Self { key, modifiers }
+    }
+
+    /// A printable character without modifiers.
+    #[must_use]
+    pub fn character(ch: char) -> Self {
+        Self::new(Key::Character(ch), Modifiers::NONE)
+    }
+
+    /// A named key without modifiers.
+    #[must_use]
+    pub fn named(key: NamedKey) -> Self {
+        Self::new(Key::Named(key), Modifiers::NONE)
+    }
 }
 
 struct ViewTreeInner {
@@ -50,6 +152,9 @@ struct ViewTreeInner {
     viewport: Cell<Size<f32>>,
     last_layout: Cell<LayoutStats>,
     focused: RefCell<Option<ViewNodeId>>,
+    hovered: RefCell<Option<ViewNodeId>>,
+    pressed: RefCell<Option<ViewNodeId>>,
+    global_keys: RefCell<Vec<KeyBinding>>,
     last_dirty: Cell<usize>,
     runtime: RuntimeHandle,
 }
@@ -96,6 +201,9 @@ impl ViewTree {
                 }),
                 last_layout: Cell::new(LayoutStats::default()),
                 focused: RefCell::new(None),
+                hovered: RefCell::new(None),
+                pressed: RefCell::new(None),
+                global_keys: RefCell::new(Vec::new()),
                 last_dirty: Cell::new(0),
                 runtime,
             }),
@@ -227,10 +335,20 @@ impl ViewTree {
         self.mark_paint_dirty(id);
     }
 
-    /// Set the retained focus identity. The renderer focus system arrives in
-    /// Phase 6; the view tree preserves this identity across reorders.
+    /// Set the retained focus identity. Focus survives keyed reorders because
+    /// the node identity is retained.
     pub fn set_focus(&self, focus: Option<ViewNodeId>) {
+        let previous = *self.inner.focused.borrow();
+        if previous == focus {
+            return;
+        }
         *self.inner.focused.borrow_mut() = focus;
+        if let Some(previous) = previous {
+            self.dispatch_view_event(previous, ViewEvent::Blur);
+        }
+        if let Some(focus) = focus {
+            self.dispatch_view_event(focus, ViewEvent::Focus);
+        }
         let renderer_id = focus.and_then(|id| self.renderer_id(id));
         let mut renderer = self.inner.renderer.borrow_mut();
         if let Some(capability) = renderer.focus_capable() {
@@ -242,6 +360,454 @@ impl ViewTree {
     #[must_use]
     pub fn focused(&self) -> Option<ViewNodeId> {
         *self.inner.focused.borrow()
+    }
+
+    /// A focus handle for a focusable node.
+    #[must_use]
+    pub fn focus_handle(&self, id: ViewNodeId) -> Option<FocusHandle> {
+        self.inner
+            .nodes
+            .borrow()
+            .get(id)
+            .filter(|node| node.focusable && !node.disabled)
+            .map(|_| FocusHandle(id))
+    }
+
+    /// Focus a handle.
+    pub fn focus(&self, handle: FocusHandle) {
+        self.set_focus(Some(handle.node()));
+    }
+
+    /// Whether a node is focused.
+    #[must_use]
+    pub fn is_focused(&self, id: ViewNodeId) -> bool {
+        self.focused() == Some(id)
+    }
+
+    /// The currently hovered interactive node.
+    #[must_use]
+    pub fn hovered(&self) -> Option<ViewNodeId> {
+        *self.inner.hovered.borrow()
+    }
+
+    /// The node pressed by the current pointer gesture.
+    #[must_use]
+    pub fn pressed(&self) -> Option<ViewNodeId> {
+        *self.inner.pressed.borrow()
+    }
+
+    /// Test a logical point against the retained interactive nodes.
+    #[must_use]
+    pub fn hit_test(&self, x: f32, y: f32) -> Option<ViewNodeId> {
+        let roots = self.inner.roots.borrow().clone();
+        for root in roots.iter().rev() {
+            if let Some(hit) = self.hit_test_node(*root, x, y) {
+                return Some(hit);
+            }
+        }
+        None
+    }
+
+    fn hit_test_node(&self, node: ViewNodeId, x: f32, y: f32) -> Option<ViewNodeId> {
+        let (children, interactive, disabled) = {
+            let nodes = self.inner.nodes.borrow();
+            let node = nodes.get(node)?;
+            (node.children.clone(), node.interactive, node.disabled)
+        };
+        for child in children.iter().rev() {
+            if let Some(hit) = self.hit_test_node(*child, x, y) {
+                return Some(hit);
+            }
+        }
+        if interactive && !disabled {
+            if let Some(rect) = self.layout_rect(node) {
+                if x >= rect.x && x <= rect.right() && y >= rect.y && y <= rect.bottom() {
+                    return Some(node);
+                }
+            }
+        }
+        None
+    }
+
+    /// Update hover state and return the topmost hit.
+    pub fn pointer_move(&self, event: &PointerEvent) -> Option<ViewNodeId> {
+        let hit = self.hit_test(event.x, event.y);
+        let previous = *self.inner.hovered.borrow();
+        if previous != hit {
+            if let Some(previous) = previous {
+                self.dispatch_view_event(previous, ViewEvent::PointerLeave);
+            }
+            if let Some(hit) = hit {
+                self.dispatch_view_event(hit, ViewEvent::PointerEnter);
+            }
+            *self.inner.hovered.borrow_mut() = hit;
+        }
+        hit
+    }
+
+    /// Pointer press. Focuses the hit node when it is focusable.
+    pub fn pointer_down(&self, event: &PointerEvent) -> Option<ViewNodeId> {
+        let hit = self.hit_test(event.x, event.y);
+        *self.inner.pressed.borrow_mut() = hit;
+        if let Some(hit) = hit {
+            let focusable = self
+                .inner
+                .nodes
+                .borrow()
+                .get(hit)
+                .is_some_and(|node| node.focusable && !node.disabled);
+            if focusable {
+                self.set_focus(Some(hit));
+            }
+        }
+        hit
+    }
+
+    /// Pointer release. Dispatches a click when press and release share a node.
+    pub fn pointer_up(&self, event: &PointerEvent) -> bool {
+        let hit = self.hit_test(event.x, event.y);
+        let pressed = *self.inner.pressed.borrow();
+        *self.inner.pressed.borrow_mut() = None;
+        if pressed.is_some() && pressed == hit {
+            if let Some(node) = hit {
+                return self.click_node(node);
+            }
+        }
+        false
+    }
+
+    /// Dispatch a click to a node and its ancestors.
+    pub fn click_node(&self, node: ViewNodeId) -> bool {
+        let disabled = self
+            .inner
+            .nodes
+            .borrow()
+            .get(node)
+            .is_some_and(|node| node.disabled);
+        if disabled {
+            return false;
+        }
+        let focusable = self
+            .inner
+            .nodes
+            .borrow()
+            .get(node)
+            .is_some_and(|node| node.focusable);
+        if focusable {
+            self.set_focus(Some(node));
+        }
+        self.dispatch_view_event(node, ViewEvent::Click)
+    }
+
+    /// Move focus to the next tab stop.
+    pub fn focus_next(&self) -> Option<ViewNodeId> {
+        self.focus_step(true)
+    }
+
+    /// Move focus to the previous tab stop.
+    pub fn focus_prev(&self) -> Option<ViewNodeId> {
+        self.focus_step(false)
+    }
+
+    fn focus_step(&self, forward: bool) -> Option<ViewNodeId> {
+        let order = self.tab_order();
+        if order.is_empty() {
+            return None;
+        }
+        let current = self.focused();
+        let index = current
+            .and_then(|current| order.iter().position(|node| *node == current))
+            .unwrap_or(if forward { order.len() - 1 } else { 0 });
+        let next = if forward {
+            (index + 1) % order.len()
+        } else if index == 0 {
+            order.len() - 1
+        } else {
+            index - 1
+        };
+        let node = order[next];
+        self.set_focus(Some(node));
+        Some(node)
+    }
+
+    fn tab_order(&self) -> Vec<ViewNodeId> {
+        let roots = self.inner.roots.borrow().clone();
+        let mut natural = Vec::new();
+        for root in roots {
+            self.collect_focusable(root, &mut natural);
+        }
+        let mut explicit = natural
+            .iter()
+            .enumerate()
+            .filter_map(|(order, node)| {
+                self.inner
+                    .nodes
+                    .borrow()
+                    .get(*node)
+                    .and_then(|data| data.tab_index)
+                    .map(|index| (index, order, *node))
+            })
+            .collect::<Vec<_>>();
+        explicit.sort_by_key(|(index, order, _)| (*index, *order));
+        let mut ordered = explicit
+            .into_iter()
+            .map(|(_, _, node)| node)
+            .collect::<Vec<_>>();
+        for node in natural {
+            let explicit = self
+                .inner
+                .nodes
+                .borrow()
+                .get(node)
+                .is_some_and(|data| data.tab_index.is_some());
+            if !explicit {
+                ordered.push(node);
+            }
+        }
+        ordered
+    }
+
+    fn collect_focusable(&self, node: ViewNodeId, out: &mut Vec<ViewNodeId>) {
+        let (children, focusable, disabled) = {
+            let nodes = self.inner.nodes.borrow();
+            let Some(data) = nodes.get(node) else {
+                return;
+            };
+            (data.children.clone(), data.focusable, data.disabled)
+        };
+        if focusable && !disabled {
+            out.push(node);
+        }
+        for child in children {
+            self.collect_focusable(child, out);
+        }
+    }
+
+    /// Dispatch a key event to the focused path, then global bindings, then
+    /// default Tab traversal.
+    pub fn key_down(&self, event: &KeyEvent) -> bool {
+        let cx = self.inner.runtime.cx();
+        let mut current = self.focused();
+        while let Some(node) = current {
+            let bindings = {
+                let nodes = self.inner.nodes.borrow();
+                nodes.get(node).map(|data| {
+                    data.key_bindings
+                        .iter()
+                        .filter(|binding| {
+                            binding.stroke.key == event.key
+                                && binding.stroke.modifiers == event.modifiers
+                        })
+                        .map(|binding| Rc::clone(&binding.callback))
+                        .collect::<Vec<_>>()
+                })
+            };
+            if let Some(bindings) = bindings {
+                if !bindings.is_empty() {
+                    for callback in bindings {
+                        (callback.borrow_mut())(&cx);
+                    }
+                    return true;
+                }
+            }
+            current = self
+                .inner
+                .nodes
+                .borrow()
+                .get(node)
+                .and_then(|node| node.parent);
+        }
+
+        let globals = self.inner.global_keys.borrow().clone();
+        for binding in globals {
+            if binding.stroke.key == event.key && binding.stroke.modifiers == event.modifiers {
+                (binding.callback.borrow_mut())(&cx);
+                return true;
+            }
+        }
+
+        if event.key == Key::Named(NamedKey::Tab) {
+            if event.modifiers.shift {
+                self.focus_prev();
+            } else {
+                self.focus_next();
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Register a window-level key binding.
+    pub fn bind_global_key(
+        &self,
+        stroke: KeyStroke,
+        callback: impl Fn(&reactive_core::Cx<'_>) + 'static,
+    ) {
+        self.inner.global_keys.borrow_mut().push(KeyBinding {
+            stroke,
+            callback: Rc::new(RefCell::new(Box::new(callback))),
+        });
+    }
+
+    /// Build an accessibility snapshot.
+    #[must_use]
+    pub fn a11y_tree(&self) -> A11yTree {
+        let roots = self.inner.roots.borrow().clone();
+        let mut tree = A11yTree::default();
+        for root in roots {
+            let id = self.a11y_visit(root, &mut tree.nodes);
+            tree.roots.push(id);
+        }
+        tree
+    }
+
+    fn a11y_visit(&self, node: ViewNodeId, out: &mut Vec<A11yNode>) -> u64 {
+        let (children, renderer_id, role, label, value, disabled, focusable, bounds) = {
+            let nodes = self.inner.nodes.borrow();
+            let Some(data) = nodes.get(node) else {
+                return 0;
+            };
+            let bounds = self.layout_rect(node).unwrap_or_default();
+            let label = data.a11y_label.clone().or_else(|| {
+                if data.a11y_role == A11yRole::Button {
+                    data.children.iter().find_map(|child| {
+                        nodes
+                            .get(*child)
+                            .and_then(|child| child.text.as_deref())
+                            .map(str::to_string)
+                    })
+                } else {
+                    None
+                }
+            });
+            (
+                data.children.clone(),
+                data.renderer_id,
+                data.a11y_role,
+                label,
+                data.a11y_value.clone(),
+                data.disabled,
+                data.focusable,
+                bounds,
+            )
+        };
+        let mut child_ids = Vec::with_capacity(children.len());
+        for child in children {
+            let id = self.a11y_visit(child, out);
+            if id != 0 {
+                child_ids.push(id);
+            }
+        }
+        out.push(A11yNode {
+            id: renderer_id,
+            role,
+            label,
+            value,
+            disabled,
+            focusable,
+            focused: self.focused() == Some(node),
+            bounds,
+            children: child_ids,
+        });
+        renderer_id
+    }
+
+    fn dispatch_view_event(&self, node: ViewNodeId, event: ViewEvent) -> bool {
+        let cx = self.inner.runtime.cx();
+        let mut current = Some(node);
+        let mut handled = false;
+        while let Some(node) = current {
+            let callbacks = {
+                let nodes = self.inner.nodes.borrow();
+                nodes.get(node).map(|data| {
+                    data.view_listeners
+                        .iter()
+                        .filter(|listener| listener.event == event)
+                        .map(|listener| Rc::clone(&listener.callback))
+                        .collect::<Vec<_>>()
+                })
+            };
+            if let Some(callbacks) = callbacks {
+                for callback in callbacks {
+                    (callback.borrow_mut())(&cx);
+                    handled = true;
+                }
+            }
+            current = self
+                .inner
+                .nodes
+                .borrow()
+                .get(node)
+                .and_then(|data| data.parent);
+        }
+        handled
+    }
+
+    /// Activate an accessibility node by its stable id.
+    pub fn a11y_activate(&self, id: u64) -> bool {
+        let node = self
+            .inner
+            .nodes
+            .borrow()
+            .iter()
+            .find(|(_, node)| node.renderer_id == id)
+            .map(|(handle, _)| handle.id());
+        node.is_some_and(|node| self.click_node(node))
+    }
+
+    /// Focus an accessibility node by its stable id.
+    pub fn a11y_focus(&self, id: u64) -> bool {
+        let node = self
+            .inner
+            .nodes
+            .borrow()
+            .iter()
+            .find(|(_, node)| node.renderer_id == id && node.focusable && !node.disabled)
+            .map(|(handle, _)| handle.id());
+        if let Some(node) = node {
+            self.set_focus(Some(node));
+            true
+        } else {
+            false
+        }
+    }
+
+    fn focus_fallback(&self, removed: ViewNodeId) -> Option<ViewNodeId> {
+        let nodes = self.inner.nodes.borrow();
+        let mut current = nodes.get(removed).and_then(|node| node.parent);
+        while let Some(node) = current {
+            let Some(data) = nodes.get(node) else {
+                break;
+            };
+            if data.focusable && !data.disabled {
+                return Some(node);
+            }
+            current = data.parent;
+        }
+        let parent = nodes.get(removed).and_then(|node| node.parent)?;
+        let siblings = nodes.get(parent).map(|node| node.children.clone())?;
+        let index = siblings.iter().position(|node| *node == removed)?;
+        siblings[..index]
+            .iter()
+            .rev()
+            .find_map(|sibling| self.focusable_in_subtree(*sibling, &nodes))
+    }
+
+    fn focusable_in_subtree(
+        &self,
+        node: ViewNodeId,
+        nodes: &reactive_core::Arena<ViewNode>,
+    ) -> Option<ViewNodeId> {
+        let data = nodes.get(node)?;
+        if data.focusable && !data.disabled {
+            return Some(node);
+        }
+        for child in data.children.iter().rev() {
+            if let Some(found) = self.focusable_in_subtree(*child, nodes) {
+                return Some(found);
+            }
+        }
+        None
     }
 
     fn is_descendant(&self, node: ViewNodeId, ancestor: ViewNodeId) -> bool {
@@ -385,7 +951,13 @@ impl ViewTree {
             .borrow_mut()
             .create_element(ElementTag::new(tag))
             .expect("create element");
-        self.alloc_node(renderer_id, default_style(tag), None)
+        let id = self.alloc_node(renderer_id, default_style(tag), None);
+        let role = match tag {
+            "Button" => A11yRole::Button,
+            _ => A11yRole::Generic,
+        };
+        self.set_a11y(id, Some(role), None, None);
+        id
     }
 
     fn create_text(&self, text: &str) -> ViewNodeId {
@@ -396,14 +968,16 @@ impl ViewTree {
             .create_text(text)
             .expect("create text");
         let style = default_text_style();
-        self.alloc_node(
+        let id = self.alloc_node(
             renderer_id,
             style,
             Some(TextContent {
                 text: text.to_string(),
                 style: style.text,
             }),
-        )
+        );
+        self.set_a11y(id, Some(A11yRole::Text), None, None);
+        id
     }
 
     fn create_fragment(&self) -> ViewNodeId {
@@ -435,9 +1009,17 @@ impl ViewTree {
                 parent: None,
                 children: Vec::new(),
                 bindings: Vec::new(),
-                listeners: Vec::new(),
                 owner: None,
                 dirty: Cell::new(false),
+                interactive: false,
+                focusable: false,
+                tab_index: None,
+                disabled: false,
+                a11y_role: A11yRole::Generic,
+                a11y_label: None,
+                a11y_value: None,
+                view_listeners: Vec::new(),
+                key_bindings: Vec::new(),
             })
             .id()
     }
@@ -551,9 +1133,77 @@ impl ViewTree {
         }
     }
 
-    fn add_listener(&self, view: ViewNodeId, listener: ListenerId) {
+    fn add_view_listener(
+        &self,
+        view: ViewNodeId,
+        event: ViewEvent,
+        callback: Box<dyn FnMut(&reactive_core::Cx<'_>)>,
+    ) {
         if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
-            node.listeners.push(listener);
+            node.interactive = true;
+            node.view_listeners.push(ViewListener {
+                event,
+                callback: Rc::new(RefCell::new(callback)),
+            });
+        }
+    }
+
+    fn add_key_binding(
+        &self,
+        view: ViewNodeId,
+        stroke: KeyStroke,
+        callback: Box<dyn FnMut(&reactive_core::Cx<'_>)>,
+    ) {
+        if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
+            node.focusable = true;
+            node.key_bindings.push(KeyBinding {
+                stroke,
+                callback: Rc::new(RefCell::new(callback)),
+            });
+        }
+    }
+
+    fn set_interactive(&self, view: ViewNodeId) {
+        if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
+            node.interactive = true;
+        }
+    }
+
+    fn set_focusable(&self, view: ViewNodeId, focusable: bool) {
+        if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
+            node.focusable = focusable;
+        }
+    }
+
+    fn set_tab_index(&self, view: ViewNodeId, index: Option<i32>) {
+        if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
+            node.tab_index = index;
+        }
+    }
+
+    fn set_disabled(&self, view: ViewNodeId, disabled: bool) {
+        if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
+            node.disabled = disabled;
+        }
+    }
+
+    fn set_a11y(
+        &self,
+        view: ViewNodeId,
+        role: Option<A11yRole>,
+        label: Option<String>,
+        value: Option<String>,
+    ) {
+        if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
+            if let Some(role) = role {
+                node.a11y_role = role;
+            }
+            if label.is_some() {
+                node.a11y_label = label;
+            }
+            if value.is_some() {
+                node.a11y_value = value;
+            }
         }
     }
 
@@ -571,7 +1221,8 @@ impl ViewTree {
             .borrow()
             .is_some_and(|focus| self.is_descendant(focus, id))
         {
-            self.set_focus(None);
+            let fallback = self.focus_fallback(id);
+            self.set_focus(fallback);
         }
         let Some(node_data) = ({
             let nodes = self.inner.nodes.borrow();
@@ -614,25 +1265,24 @@ impl ViewTree {
 
         self.inner.layout.borrow_mut().remove_node(layout_id);
         self.inner.scene.borrow_mut().remove(id);
+        if self
+            .inner
+            .hovered
+            .borrow()
+            .is_some_and(|hovered| hovered == id)
+        {
+            *self.inner.hovered.borrow_mut() = None;
+        }
+        if self
+            .inner
+            .pressed
+            .borrow()
+            .is_some_and(|pressed| pressed == id)
+        {
+            *self.inner.pressed.borrow_mut() = None;
+        }
         let node = self.inner.nodes.borrow_mut().remove(id);
         if let Some(node) = node {
-            for listener in node.listeners {
-                let parent_renderer = node
-                    .parent
-                    .and_then(|parent| {
-                        self.inner
-                            .nodes
-                            .borrow()
-                            .get(parent)
-                            .map(|parent| parent.renderer_id)
-                    })
-                    .unwrap_or(node.renderer_id);
-                let _ = self
-                    .inner
-                    .renderer
-                    .borrow_mut()
-                    .unlisten(parent_renderer, listener);
-            }
             for binding in node.bindings {
                 binding.dispose(cx);
             }
@@ -683,6 +1333,101 @@ impl View {
         view(move |cx, tree| {
             let id = mount(cx, tree);
             tree.set_style(id, style);
+            id
+        })
+    }
+
+    /// Make this view focusable or not.
+    #[must_use]
+    pub fn focusable(self, focusable: bool) -> Self {
+        let mount = self.mount;
+        view(move |cx, tree| {
+            let id = mount(cx, tree);
+            tree.set_focusable(id, focusable);
+            id
+        })
+    }
+
+    /// Set an explicit tab index.
+    #[must_use]
+    pub fn tab_index(self, index: i32) -> Self {
+        let mount = self.mount;
+        view(move |cx, tree| {
+            let id = mount(cx, tree);
+            tree.set_tab_index(id, Some(index));
+            tree.set_focusable(id, true);
+            id
+        })
+    }
+
+    /// Disable pointer and keyboard interaction.
+    #[must_use]
+    pub fn disabled(self, disabled: bool) -> Self {
+        let mount = self.mount;
+        view(move |cx, tree| {
+            let id = mount(cx, tree);
+            tree.set_disabled(id, disabled);
+            id
+        })
+    }
+
+    /// Set the accessibility label.
+    #[must_use]
+    pub fn a11y_label(self, label: impl Into<String>) -> Self {
+        let label = label.into();
+        let mount = self.mount;
+        view(move |cx, tree| {
+            let id = mount(cx, tree);
+            tree.set_a11y(id, None, Some(label.clone()), None);
+            id
+        })
+    }
+
+    /// Set the accessibility role.
+    #[must_use]
+    pub fn a11y_role(self, role: A11yRole) -> Self {
+        let mount = self.mount;
+        view(move |cx, tree| {
+            let id = mount(cx, tree);
+            tree.set_a11y(id, Some(role), None, None);
+            id
+        })
+    }
+
+    /// Set the accessibility value.
+    #[must_use]
+    pub fn a11y_value(self, value: impl Into<String>) -> Self {
+        let value = value.into();
+        let mount = self.mount;
+        view(move |cx, tree| {
+            let id = mount(cx, tree);
+            tree.set_a11y(id, None, None, Some(value.clone()));
+            id
+        })
+    }
+
+    /// Add a click listener to the mounted root.
+    #[must_use]
+    pub fn on_click(self, handler: impl Fn(&reactive_core::Cx<'_>) + 'static) -> Self {
+        let mount = self.mount;
+        view(move |cx, tree| {
+            let id = mount(cx, tree);
+            tree.add_view_listener(id, ViewEvent::Click, Box::new(move |cx| handler(cx)));
+            id
+        })
+    }
+
+    /// Add a key binding to the mounted root.
+    #[must_use]
+    pub fn on_key(
+        self,
+        stroke: KeyStroke,
+        handler: impl Fn(&reactive_core::Cx<'_>) + 'static,
+    ) -> Self {
+        let mount = self.mount;
+        view(move |cx, tree| {
+            let id = mount(cx, tree);
+            tree.add_key_binding(id, stroke.clone(), Box::new(move |cx| handler(cx)));
             id
         })
     }
@@ -779,22 +1524,10 @@ pub fn button(children: Vec<View>, on_click: impl Fn(&reactive_core::Cx<'_>) + '
             let child_id = child.mount(cx, tree);
             tree.insert_child(id, child_id, None);
         }
-        let renderer_id = tree.renderer_id(id).expect("button");
-        let runtime = tree.runtime().clone();
-        let listener = tree
-            .inner
-            .renderer
-            .borrow_mut()
-            .listen(
-                renderer_id,
-                EventKind::Click,
-                Box::new(move |_event| {
-                    let cx = runtime.cx();
-                    on_click(&cx);
-                }),
-            )
-            .expect("listen");
-        tree.add_listener(id, listener);
+        tree.set_interactive(id);
+        tree.set_focusable(id, true);
+        tree.set_a11y(id, Some(A11yRole::Button), None, None);
+        tree.add_view_listener(id, ViewEvent::Click, Box::new(move |cx| on_click(cx)));
         id
     })
 }

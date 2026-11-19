@@ -1,5 +1,6 @@
 use std::fmt;
 
+use renderer_api::{KeyEvent, PointerEvent};
 use scene::{Rect, Scene};
 
 /// Physical and logical window metrics.
@@ -138,6 +139,16 @@ pub trait WindowApp {
     fn resize(&mut self, metrics: BackendMetrics);
     /// Produce one frame.
     fn frame(&mut self, metrics: BackendMetrics) -> FrameOutput;
+    /// Pointer moved in logical window coordinates.
+    fn pointer_move(&mut self, _event: &PointerEvent) {}
+    /// Primary pointer pressed.
+    fn pointer_down(&mut self, _event: &PointerEvent) {}
+    /// Primary pointer released.
+    fn pointer_up(&mut self, _event: &PointerEvent) {}
+    /// Key pressed. Return `true` when consumed.
+    fn key_down(&mut self, _event: &KeyEvent) -> bool {
+        false
+    }
 }
 
 /// Drives an application and a backend through resize and redraw steps.
@@ -194,6 +205,26 @@ impl<A: WindowApp, B: PaintBackend> WindowDriver<A, B> {
         self.metrics = BackendMetrics::new(width, height, scale);
         self.backend.resize(width, height, scale);
         self.app.resize(self.metrics);
+    }
+
+    /// Route a pointer move to the app.
+    pub fn pointer_move(&mut self, event: &PointerEvent) {
+        self.app.pointer_move(event);
+    }
+
+    /// Route a pointer press to the app.
+    pub fn pointer_down(&mut self, event: &PointerEvent) {
+        self.app.pointer_down(event);
+    }
+
+    /// Route a pointer release to the app.
+    pub fn pointer_up(&mut self, event: &PointerEvent) {
+        self.app.pointer_up(event);
+    }
+
+    /// Route a key press to the app.
+    pub fn key_down(&mut self, event: &KeyEvent) -> bool {
+        self.app.key_down(event)
     }
 
     /// Run one app frame and present it.

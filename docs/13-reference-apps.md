@@ -160,6 +160,15 @@ Notes:
 4. `counter_two_mounts` — disposal of one instance leaves the other's local and
    the shared value intact.
 
+**Implementation status.** The headless two-instance port and operation-log
+checks are in [`headless_counter.rs`](../crates/renderer-null/tests/headless_counter.rs).
+A native two-instance window example with real clicks and key bindings is in
+[`renderer-native/examples/counter.rs`](../crates/renderer-native/examples/counter.rs).
+Native pointer/key routing is covered by
+[`renderer-native/tests/input.rs`](../crates/renderer-native/tests/input.rs).
+The full-op-log no-structural-work assertion and an explicit disposal test for
+one counter instance remain.
+
 **Milestone:** M1 headless (signals and bindings), M3 on the null renderer
 (operation log), M4–M5 natively.
 

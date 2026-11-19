@@ -1,10 +1,12 @@
 use std::fmt;
 use std::sync::Arc;
 
+use renderer_api::{KeyEvent, Modifiers, NamedKey, PointerButton, PointerEvent};
 use winit::{
     dpi::LogicalSize,
-    event::{Event, WindowEvent},
+    event::{ElementState, Event, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
+    keyboard::{Key as WinitKey, NamedKey as WinitNamedKey},
     window::WindowBuilder,
 };
 
@@ -57,6 +59,8 @@ pub fn run_windowed<A: WindowApp + 'static>(
     let backend = WgpuBackend::new_surface(Arc::clone(&window), size.width, size.height, scale)
         .map_err(WindowError::Backend)?;
     let mut driver = WindowDriver::new(app, backend);
+    let mut cursor = (0.0_f32, 0.0_f32);
+    let mut modifiers = Modifiers::NONE;
     window.request_redraw();
 
     event_loop
@@ -64,6 +68,48 @@ pub fn run_windowed<A: WindowApp + 'static>(
             if let Event::WindowEvent { event, .. } = event {
                 match event {
                     WindowEvent::CloseRequested => target.exit(),
+                    WindowEvent::CursorMoved { position, .. } => {
+                        let scale = window.scale_factor() as f32;
+                        cursor = (position.x as f32 / scale, position.y as f32 / scale);
+                        driver.pointer_move(&PointerEvent::new(cursor.0, cursor.1, None));
+                    }
+                    WindowEvent::MouseInput { state, button, .. } => {
+                        let button = match button {
+                            MouseButton::Left => Some(PointerButton::Primary),
+                            MouseButton::Right => Some(PointerButton::Secondary),
+                            MouseButton::Middle => Some(PointerButton::Middle),
+                            _ => None,
+                        };
+                        if let Some(button) = button {
+                            let event = PointerEvent::new(cursor.0, cursor.1, Some(button));
+                            match state {
+                                ElementState::Pressed => driver.pointer_down(&event),
+                                ElementState::Released => driver.pointer_up(&event),
+                            }
+                        }
+                    }
+                    WindowEvent::ModifiersChanged(state) => {
+                        let state = state.state();
+                        modifiers = Modifiers::new(
+                            state.shift_key(),
+                            state.control_key(),
+                            state.alt_key(),
+                            state.super_key(),
+                        );
+                    }
+                    WindowEvent::KeyboardInput { event, .. }
+                        if event.state == ElementState::Pressed =>
+                    {
+                        if let Some(key) = map_key(&event.logical_key) {
+                            let key_event = KeyEvent {
+                                key,
+                                modifiers,
+                                repeat: event.repeat,
+                                text: event.text.as_ref().map(ToString::to_string),
+                            };
+                            driver.key_down(&key_event);
+                        }
+                    }
                     WindowEvent::Resized(size) => {
                         driver.resize(size.width, size.height, window.scale_factor() as f32);
                         window.request_redraw();
@@ -88,4 +134,44 @@ pub fn run_windowed<A: WindowApp + 'static>(
             }
         })
         .map_err(|error| WindowError::EventLoop(error.to_string()))
+}
+
+fn map_key(key: &WinitKey) -> Option<renderer_api::Key> {
+    match key {
+        WinitKey::Character(text) => text.chars().next().map(renderer_api::Key::Character),
+        WinitKey::Named(named) => map_named(*named).map(renderer_api::Key::Named),
+        _ => None,
+    }
+}
+
+fn map_named(named: WinitNamedKey) -> Option<NamedKey> {
+    Some(match named {
+        WinitNamedKey::Enter => NamedKey::Enter,
+        WinitNamedKey::Escape => NamedKey::Escape,
+        WinitNamedKey::Tab => NamedKey::Tab,
+        WinitNamedKey::Space => NamedKey::Space,
+        WinitNamedKey::Backspace => NamedKey::Backspace,
+        WinitNamedKey::Delete => NamedKey::Delete,
+        WinitNamedKey::ArrowLeft => NamedKey::ArrowLeft,
+        WinitNamedKey::ArrowRight => NamedKey::ArrowRight,
+        WinitNamedKey::ArrowUp => NamedKey::ArrowUp,
+        WinitNamedKey::ArrowDown => NamedKey::ArrowDown,
+        WinitNamedKey::Home => NamedKey::Home,
+        WinitNamedKey::End => NamedKey::End,
+        WinitNamedKey::PageUp => NamedKey::PageUp,
+        WinitNamedKey::PageDown => NamedKey::PageDown,
+        WinitNamedKey::F1 => NamedKey::Function(1),
+        WinitNamedKey::F2 => NamedKey::Function(2),
+        WinitNamedKey::F3 => NamedKey::Function(3),
+        WinitNamedKey::F4 => NamedKey::Function(4),
+        WinitNamedKey::F5 => NamedKey::Function(5),
+        WinitNamedKey::F6 => NamedKey::Function(6),
+        WinitNamedKey::F7 => NamedKey::Function(7),
+        WinitNamedKey::F8 => NamedKey::Function(8),
+        WinitNamedKey::F9 => NamedKey::Function(9),
+        WinitNamedKey::F10 => NamedKey::Function(10),
+        WinitNamedKey::F11 => NamedKey::Function(11),
+        WinitNamedKey::F12 => NamedKey::Function(12),
+        _ => return None,
+    })
 }

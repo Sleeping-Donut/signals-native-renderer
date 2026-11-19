@@ -32,10 +32,9 @@ fn view_macro_builds_a_counter() {
 
     let children = tree.children(root);
     let text_node = tree.renderer_id(children[0]).unwrap();
-    let button = tree.renderer_id(children[1]).unwrap();
     assert_eq!(renderer.borrow().text_of(text_node), Some("count 0"));
 
-    renderer.borrow_mut().click(button);
+    tree.click_node(children[1]);
     tree.frame(&cx, 1);
     assert_eq!(renderer.borrow().text_of(text_node), Some("count 1"));
 
