@@ -5,7 +5,9 @@
 //! Tests assert structure, properties, events, and frame hooks against it. It is
 //! also the conformance target for every backend.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use renderer_api::{
     AttrName, AttrValue, ElementTag, Event, EventKind, FrameInfo, ListenerId, NodeId, Renderer,
@@ -465,5 +467,74 @@ impl Renderer for NullRenderer {
     fn end_frame(&mut self) -> Result<(), RendererError> {
         self.ops.push(Op::EndFrame);
         Ok(())
+    }
+}
+
+/// A renderer proxy that shares its recording state with the test.
+///
+/// A [`ViewTree`](../view/index.html) owns a `Box<dyn Renderer>`; this wrapper
+/// lets a test keep the `Rc<RefCell<NullRenderer>>` for assertions.
+#[derive(Clone)]
+pub struct SharedNullRenderer(pub Rc<RefCell<NullRenderer>>);
+
+impl SharedNullRenderer {
+    /// Wrap a shared null renderer.
+    #[must_use]
+    pub fn new(renderer: Rc<RefCell<NullRenderer>>) -> Self {
+        Self(renderer)
+    }
+}
+
+impl Renderer for SharedNullRenderer {
+    fn create_element(&mut self, tag: ElementTag<'_>) -> Result<NodeId, RendererError> {
+        self.0.borrow_mut().create_element(tag)
+    }
+    fn create_text(&mut self, text: &str) -> Result<NodeId, RendererError> {
+        self.0.borrow_mut().create_text(text)
+    }
+    fn create_fragment(&mut self) -> Result<NodeId, RendererError> {
+        self.0.borrow_mut().create_fragment()
+    }
+    fn insert(
+        &mut self,
+        parent: NodeId,
+        child: NodeId,
+        anchor: Option<NodeId>,
+    ) -> Result<(), RendererError> {
+        self.0.borrow_mut().insert(parent, child, anchor)
+    }
+    fn remove(&mut self, parent: NodeId, child: NodeId) -> Result<(), RendererError> {
+        self.0.borrow_mut().remove(parent, child)
+    }
+    fn set_text(&mut self, node: NodeId, text: &str) -> Result<(), RendererError> {
+        self.0.borrow_mut().set_text(node, text)
+    }
+    fn set_attr(
+        &mut self,
+        node: NodeId,
+        name: AttrName<'_>,
+        value: AttrValue<'_>,
+    ) -> Result<(), RendererError> {
+        self.0.borrow_mut().set_attr(node, name, value)
+    }
+    fn set_style(&mut self, node: NodeId, style: &ResolvedStyle) -> Result<(), RendererError> {
+        self.0.borrow_mut().set_style(node, style)
+    }
+    fn listen(
+        &mut self,
+        node: NodeId,
+        event: EventKind,
+        handler: Box<dyn FnMut(&Event)>,
+    ) -> Result<ListenerId, RendererError> {
+        self.0.borrow_mut().listen(node, event, handler)
+    }
+    fn unlisten(&mut self, node: NodeId, listener: ListenerId) -> Result<(), RendererError> {
+        self.0.borrow_mut().unlisten(node, listener)
+    }
+    fn begin_frame(&mut self, info: &FrameInfo) -> Result<(), RendererError> {
+        self.0.borrow_mut().begin_frame(info)
+    }
+    fn end_frame(&mut self) -> Result<(), RendererError> {
+        self.0.borrow_mut().end_frame()
     }
 }

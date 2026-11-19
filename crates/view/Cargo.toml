@@ -1,0 +1,16 @@
+[package]
+name = "view"
+description = "Retained view tree, bindings, keyed lists, and view slots"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+reactive-core = { path = "../reactive-core" }
+renderer-api = { path = "../renderer-api" }
+
+[dev-dependencies]
+macros = { path = "../macros" }
+renderer-null = { path = "../renderer-null" }

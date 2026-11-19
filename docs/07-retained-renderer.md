@@ -5,6 +5,13 @@
 **Owns:** the retained view tree, node bindings, structural updates, paint
 caches, scene replay, and the first-party render path.
 
+**Implementation status (2026-11-19).** The structural Phase 4 slice is in
+[`crates/view`](../crates/view/src/lib.rs) with the first `view!` macro in
+[`crates/macros`](../crates/macros/src/lib.rs). It includes retained nodes, child
+lists, keyed lists, `show`/`view_slot`, bindings, mount/unmount/frame lifecycle,
+retained focus identity, and the 10k-row reorder test. Renderer-level focus and
+the allocation-profile measurement are later-phase work.
+
 ---
 
 ## 1. The central choice
