@@ -10,8 +10,8 @@ use renderer_api::{
 };
 use renderer_null::{NullRenderer, SharedNullRenderer};
 use view::{
-    button_text, column, keyed_list, text_fn, DispatchPhase, DispatchResult, FocusHandle,
-    KeyStroke, ViewTree,
+    button_text, column, keyed_list, row, text_fn, DispatchPhase, DispatchResult, DragEnd,
+    DragEvent, DragPayload, FocusHandle, KeyStroke, ViewTree,
 };
 
 fn px(width: f32, height: f32) -> ResolvedStyle {
@@ -416,6 +416,142 @@ fn key_dispatch_runs_capture_then_bubble() {
     let key = KeyEvent::new(Key::Character('x'), Modifiers::NONE);
     assert!(tree.key_down(&key));
     assert_eq!(&*order.borrow(), &["capture", "bubble"]);
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn drag_source_drops_typed_payload_on_target() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let dropped_value = Rc::new(RefCell::new(None));
+    let moved_target = Rc::new(RefCell::new(None));
+    let end = Rc::new(RefCell::new(None));
+    let value_for_drop = Rc::clone(&dropped_value);
+    let target_for_move = Rc::clone(&moved_target);
+    let end_for_source = Rc::clone(&end);
+    let source = button_text("source", |_| {})
+        .on_drag_start(|_| DragPayload::new(42_u32))
+        .on_drag(move |_, event: &DragEvent| {
+            *target_for_move.borrow_mut() = event.target;
+        })
+        .on_drag_end(move |_, event: &DragEnd| {
+            *end_for_source.borrow_mut() = Some(*event);
+        })
+        .style(px(50.0, 50.0));
+    let target = column(vec![])
+        .on_drop::<u32>(move |_, value| {
+            *value_for_drop.borrow_mut() = Some(*value);
+            true
+        })
+        .style(px(50.0, 50.0));
+    let root = tree.mount(&cx, row(vec![source, target]).style(px(100.0, 50.0)));
+    tree.set_viewport(100.0, 50.0);
+    tree.frame(&cx, 0);
+    let source = tree.children(root)[0];
+    let target = tree.children(root)[1];
+
+    tree.pointer_down(&pointer(25.0, 25.0));
+    tree.pointer_move(&pointer(75.0, 25.0));
+    assert_eq!(tree.active_drag(), Some(source));
+    assert_eq!(tree.drag_target(), Some(target));
+    assert_eq!(*moved_target.borrow(), Some(target));
+    assert!(tree.pointer_up(&pointer(75.0, 25.0)));
+
+    assert_eq!(*dropped_value.borrow(), Some(42));
+    assert_eq!(
+        *end.borrow(),
+        Some(DragEnd {
+            dropped: true,
+            target: Some(target)
+        })
+    );
+    assert_eq!(tree.active_drag(), None);
+    assert_eq!(tree.drag_target(), None);
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn typed_drop_target_rejects_other_payloads() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let accepted = Rc::new(RefCell::new(false));
+    let accepted_for_drop = Rc::clone(&accepted);
+    let source = button_text("source", |_| {})
+        .on_drag_start(|_| DragPayload::new(1_u32))
+        .style(px(50.0, 50.0));
+    let target = column(vec![])
+        .on_drop::<String>(move |_, _| {
+            *accepted_for_drop.borrow_mut() = true;
+            true
+        })
+        .style(px(50.0, 50.0));
+    let root = tree.mount(&cx, row(vec![source, target]).style(px(100.0, 50.0)));
+    tree.set_viewport(100.0, 50.0);
+    tree.frame(&cx, 0);
+
+    tree.pointer_down(&pointer(25.0, 25.0));
+    tree.pointer_move(&pointer(75.0, 25.0));
+    tree.pointer_up(&pointer(75.0, 25.0));
+    assert!(!*accepted.borrow(), "type mismatch must not call on_drop");
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn escape_cancels_a_drag() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let end = Rc::new(RefCell::new(None));
+    let end_for_source = Rc::clone(&end);
+    let source = button_text("source", |_| {})
+        .on_drag_start(|_| DragPayload::new(()))
+        .on_drag_end(move |_, event: &DragEnd| {
+            *end_for_source.borrow_mut() = Some(*event);
+        })
+        .style(px(50.0, 50.0));
+    let root = tree.mount(&cx, row(vec![source]).style(px(100.0, 50.0)));
+    tree.set_viewport(100.0, 50.0);
+    tree.frame(&cx, 0);
+
+    tree.pointer_down(&pointer(25.0, 25.0));
+    tree.pointer_move(&pointer(75.0, 25.0));
+    assert!(tree.active_drag().is_some());
+    let escape = KeyEvent::new(Key::Named(NamedKey::Escape), Modifiers::NONE);
+    assert!(tree.key_down(&escape));
+    assert_eq!(tree.active_drag(), None);
+    assert_eq!(
+        *end.borrow(),
+        Some(DragEnd {
+            dropped: false,
+            target: None
+        })
+    );
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn drag_does_not_start_below_the_threshold() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let (count, set_count) = create_signal(&cx, 0_u32);
+    let source = button_text("source", move |cx| {
+        set_count.update_with(cx, |value| value + 1);
+    })
+    .on_drag_start(|_| DragPayload::new(1_u32))
+    .style(px(50.0, 50.0));
+    let root = tree.mount(&cx, row(vec![source]).style(px(100.0, 50.0)));
+    tree.set_viewport(100.0, 50.0);
+    tree.frame(&cx, 0);
+
+    tree.pointer_down(&pointer(25.0, 25.0));
+    tree.pointer_move(&pointer(26.0, 25.0));
+    assert_eq!(tree.active_drag(), None);
+    tree.pointer_up(&pointer(26.0, 25.0));
+    tree.frame(&cx, 1);
+    assert_eq!(count.get(&cx), 1, "small movement remains a click");
 
     tree.unmount(&cx, root);
 }

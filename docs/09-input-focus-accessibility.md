@@ -19,7 +19,9 @@ rectangles. Pointer and key dispatch run capture then bubble and support
 focus traversal. Wheel routing finds the deepest scrollable ancestor, dispatches
 through capture/bubble, and applies a clamped `ScrollState`; scroll offsets
 translate painted children and hit testing while clipping to the viewport.
-Drag/drop, IME, AccessKit protocol wiring, richer hover/focus styling, and
+Drag/drop is implemented with a type-erased payload, pointer threshold,
+source move/end callbacks, typed drop-target validation, and Escape
+cancellation. IME, AccessKit protocol wiring, richer hover/focus styling, and
 cursor/tooltip layers remain.
 
 ---

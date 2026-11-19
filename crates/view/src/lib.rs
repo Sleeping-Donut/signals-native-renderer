@@ -6,8 +6,10 @@
 //! rows, and view slots replace one branch when a key changes. Structure is not
 //! rebuilt per frame.
 
+use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::hash::Hash;
 use std::rc::Rc;
 
@@ -44,6 +46,25 @@ struct ViewNode {
     a11y_value: Option<String>,
     view_listeners: Vec<ViewListener>,
     key_bindings: Vec<KeyBinding>,
+    drag_start: Option<Rc<RefCell<DragStartFn>>>,
+    drag_move: Option<Rc<RefCell<DragMoveFn>>>,
+    drag_end: Option<Rc<RefCell<DragEndFn>>>,
+    drop_target: Option<DropTarget>,
+}
+
+type DragStartFn = Box<dyn FnMut(&reactive_core::Cx<'_>) -> DragPayload>;
+type DragMoveFn = Box<dyn FnMut(&reactive_core::Cx<'_>, &DragEvent)>;
+type DragEndFn = Box<dyn FnMut(&reactive_core::Cx<'_>, &DragEnd)>;
+type DropFn = Box<dyn FnMut(&reactive_core::Cx<'_>, &DragPayload) -> bool>;
+
+struct DropTarget {
+    type_id: TypeId,
+    callback: Rc<RefCell<DropFn>>,
+}
+
+struct DragSession {
+    source: ViewNodeId,
+    payload: DragPayload,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +110,64 @@ struct KeyBinding {
     stroke: KeyStroke,
     phase: DispatchPhase,
     callback: ViewCallback,
+}
+
+/// A type-erased drag payload.
+#[derive(Clone)]
+pub struct DragPayload {
+    type_id: TypeId,
+    value: Rc<dyn Any>,
+}
+
+impl DragPayload {
+    /// Construct a payload from a concrete value.
+    #[must_use]
+    pub fn new<T: 'static>(value: T) -> Self {
+        Self {
+            type_id: TypeId::of::<T>(),
+            value: Rc::new(value),
+        }
+    }
+
+    /// Whether the payload holds `T`.
+    #[must_use]
+    pub fn is<T: 'static>(&self) -> bool {
+        self.type_id == TypeId::of::<T>()
+    }
+
+    /// Borrow the payload as `T`.
+    #[must_use]
+    pub fn get<T: 'static>(&self) -> Option<&T> {
+        self.value.downcast_ref::<T>()
+    }
+}
+
+impl fmt::Debug for DragPayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DragPayload")
+            .field("type_id", &self.type_id)
+            .finish()
+    }
+}
+
+/// A drag move event.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DragEvent {
+    /// Pointer x.
+    pub x: f32,
+    /// Pointer y.
+    pub y: f32,
+    /// Current drop target.
+    pub target: Option<ViewNodeId>,
+}
+
+/// A drag completion event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DragEnd {
+    /// Whether a drop target accepted the payload.
+    pub dropped: bool,
+    /// The target that accepted or was hovered.
+    pub target: Option<ViewNodeId>,
 }
 
 /// A key plus modifiers used for bindings.
@@ -235,6 +314,9 @@ struct ViewTreeInner {
     focused: RefCell<Option<ViewNodeId>>,
     hovered: RefCell<Option<ViewNodeId>>,
     pressed: RefCell<Option<ViewNodeId>>,
+    press_position: Cell<(f32, f32)>,
+    drag: RefCell<Option<DragSession>>,
+    drag_target: RefCell<Option<ViewNodeId>>,
     global_keys: RefCell<Vec<KeyBinding>>,
     last_dirty: Cell<usize>,
     runtime: RuntimeHandle,
@@ -284,6 +366,9 @@ impl ViewTree {
                 focused: RefCell::new(None),
                 hovered: RefCell::new(None),
                 pressed: RefCell::new(None),
+                press_position: Cell::new((0.0, 0.0)),
+                drag: RefCell::new(None),
+                drag_target: RefCell::new(None),
                 global_keys: RefCell::new(Vec::new()),
                 last_dirty: Cell::new(0),
                 runtime,
@@ -711,6 +796,7 @@ impl ViewTree {
             }
             *self.inner.hovered.borrow_mut() = hit;
         }
+        self.update_drag(event);
         hit
     }
 
@@ -718,6 +804,7 @@ impl ViewTree {
     pub fn pointer_down(&self, event: &PointerEvent) -> Option<ViewNodeId> {
         let hit = self.hit_test(event.x, event.y);
         *self.inner.pressed.borrow_mut() = hit;
+        self.inner.press_position.set((event.x, event.y));
         if let Some(hit) = hit {
             let focusable = self
                 .inner
@@ -732,8 +819,51 @@ impl ViewTree {
         hit
     }
 
-    /// Pointer release. Dispatches a click when press and release share a node.
+    /// Pointer release. Completes a drag, or dispatches a click when press and
+    /// release share a node.
     pub fn pointer_up(&self, event: &PointerEvent) -> bool {
+        if let Some(session) = self.inner.drag.borrow_mut().take() {
+            let target = self.deepest_drop_target(event.x, event.y);
+            let accepted = target.is_some_and(|target| {
+                let drop = {
+                    let nodes = self.inner.nodes.borrow();
+                    nodes.get(target).and_then(|node| {
+                        node.drop_target
+                            .as_ref()
+                            .map(|drop| (drop.type_id, Rc::clone(&drop.callback)))
+                    })
+                };
+                let Some((type_id, callback)) = drop else {
+                    return false;
+                };
+                if type_id != session.payload.type_id {
+                    return false;
+                }
+                let cx = self.inner.runtime.cx();
+                let accepted = (callback.borrow_mut())(&cx, &session.payload);
+                accepted
+            });
+            let cx = self.inner.runtime.cx();
+            if let Some(callback) = self
+                .inner
+                .nodes
+                .borrow()
+                .get(session.source)
+                .and_then(|node| node.drag_end.as_ref().map(Rc::clone))
+            {
+                (callback.borrow_mut())(
+                    &cx,
+                    &DragEnd {
+                        dropped: accepted,
+                        target,
+                    },
+                );
+            }
+            *self.inner.drag_target.borrow_mut() = None;
+            *self.inner.pressed.borrow_mut() = None;
+            return true;
+        }
+
         let hit = self.hit_test(event.x, event.y);
         let pressed = *self.inner.pressed.borrow();
         *self.inner.pressed.borrow_mut() = None;
@@ -743,6 +873,128 @@ impl ViewTree {
             }
         }
         false
+    }
+
+    /// The current drag source, if a drag is active.
+    #[must_use]
+    pub fn active_drag(&self) -> Option<ViewNodeId> {
+        self.inner.drag.borrow().as_ref().map(|drag| drag.source)
+    }
+
+    /// The current drop target, if any.
+    #[must_use]
+    pub fn drag_target(&self) -> Option<ViewNodeId> {
+        *self.inner.drag_target.borrow()
+    }
+
+    fn update_drag(&self, event: &PointerEvent) {
+        if self.inner.drag.borrow().is_none() {
+            let Some(source) = *self.inner.pressed.borrow() else {
+                return;
+            };
+            let (start_x, start_y) = self.inner.press_position.get();
+            let dx = event.x - start_x;
+            let dy = event.y - start_y;
+            if dx * dx + dy * dy < 16.0 {
+                return;
+            }
+            let callback = {
+                let nodes = self.inner.nodes.borrow();
+                nodes
+                    .get(source)
+                    .and_then(|node| node.drag_start.as_ref().map(Rc::clone))
+            };
+            let Some(callback) = callback else {
+                return;
+            };
+            let cx = self.inner.runtime.cx();
+            let payload = (callback.borrow_mut())(&cx);
+            *self.inner.drag.borrow_mut() = Some(DragSession { source, payload });
+        }
+
+        let target = self.deepest_drop_target(event.x, event.y);
+        *self.inner.drag_target.borrow_mut() = target;
+        let source = self.inner.drag.borrow().as_ref().map(|drag| drag.source);
+        if let Some(source) = source {
+            let callback = {
+                let nodes = self.inner.nodes.borrow();
+                nodes
+                    .get(source)
+                    .and_then(|node| node.drag_move.as_ref().map(Rc::clone))
+            };
+            if let Some(callback) = callback {
+                let cx = self.inner.runtime.cx();
+                (callback.borrow_mut())(
+                    &cx,
+                    &DragEvent {
+                        x: event.x,
+                        y: event.y,
+                        target,
+                    },
+                );
+            }
+        }
+    }
+
+    fn cancel_drag(&self) -> bool {
+        let Some(session) = self.inner.drag.borrow_mut().take() else {
+            return false;
+        };
+        let callback = {
+            let nodes = self.inner.nodes.borrow();
+            nodes
+                .get(session.source)
+                .and_then(|node| node.drag_end.as_ref().map(Rc::clone))
+        };
+        if let Some(callback) = callback {
+            let cx = self.inner.runtime.cx();
+            (callback.borrow_mut())(
+                &cx,
+                &DragEnd {
+                    dropped: false,
+                    target: None,
+                },
+            );
+        }
+        *self.inner.drag_target.borrow_mut() = None;
+        *self.inner.pressed.borrow_mut() = None;
+        true
+    }
+
+    fn deepest_drop_target(&self, x: f32, y: f32) -> Option<ViewNodeId> {
+        let roots = self.inner.roots.borrow().clone();
+        for root in roots.iter().rev() {
+            if let Some(hit) = self.drop_target_node(*root, x, y) {
+                return Some(hit);
+            }
+        }
+        None
+    }
+
+    fn drop_target_node(&self, node: ViewNodeId, x: f32, y: f32) -> Option<ViewNodeId> {
+        let (children, has_target) = {
+            let nodes = self.inner.nodes.borrow();
+            let data = nodes.get(node)?;
+            (data.children.clone(), data.drop_target.is_some())
+        };
+        for child in children.iter().rev() {
+            if let Some(hit) = self.drop_target_node(*child, x, y) {
+                return Some(hit);
+            }
+        }
+        if has_target {
+            if let Some(rect) = self.layout_rect(node) {
+                let world = self.world_transform(node);
+                let local = world.inverse_point(renderer_api::Point { x, y })?;
+                let unmasked = self
+                    .content_mask(node)
+                    .is_none_or(|mask| contains_point(mask, x, y));
+                if contains_point(rect, local.x, local.y) && unmasked {
+                    return Some(node);
+                }
+            }
+        }
+        None
     }
 
     /// Dispatch a click to a node and its ancestors.
@@ -856,6 +1108,9 @@ impl ViewTree {
     /// Dispatch a key event to the focused path, then global bindings, then
     /// default Tab traversal.
     pub fn key_down(&self, event: &KeyEvent) -> bool {
+        if event.key == Key::Named(NamedKey::Escape) && self.cancel_drag() {
+            return true;
+        }
         let cx = self.inner.runtime.cx();
         let mut path = Vec::new();
         let mut current = self.focused();
@@ -1349,6 +1604,10 @@ impl ViewTree {
                 a11y_value: None,
                 view_listeners: Vec::new(),
                 key_bindings: Vec::new(),
+                drag_start: None,
+                drag_move: None,
+                drag_end: None,
+                drop_target: None,
             })
             .id()
     }
@@ -1540,6 +1799,35 @@ impl ViewTree {
         }
     }
 
+    fn set_drag_start(&self, view: ViewNodeId, callback: DragStartFn) {
+        if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
+            node.interactive = true;
+            node.drag_start = Some(Rc::new(RefCell::new(callback)));
+        }
+    }
+
+    fn set_drag_move(&self, view: ViewNodeId, callback: DragMoveFn) {
+        if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
+            node.drag_move = Some(Rc::new(RefCell::new(callback)));
+        }
+    }
+
+    fn set_drag_end(&self, view: ViewNodeId, callback: DragEndFn) {
+        if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
+            node.drag_end = Some(Rc::new(RefCell::new(callback)));
+        }
+    }
+
+    fn set_drop_target(&self, view: ViewNodeId, type_id: TypeId, callback: DropFn) {
+        if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
+            node.interactive = true;
+            node.drop_target = Some(DropTarget {
+                type_id,
+                callback: Rc::new(RefCell::new(callback)),
+            });
+        }
+    }
+
     fn set_owner(&self, view: ViewNodeId, owner: OwnerHandle) {
         if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
             node.owner = Some(owner);
@@ -1556,6 +1844,23 @@ impl ViewTree {
         {
             let fallback = self.focus_fallback(id);
             self.set_focus(fallback);
+        }
+        if self
+            .inner
+            .drag
+            .borrow()
+            .as_ref()
+            .is_some_and(|drag| self.is_descendant(drag.source, id))
+        {
+            self.cancel_drag();
+        }
+        if self
+            .inner
+            .drag_target
+            .borrow()
+            .is_some_and(|target| target == id)
+        {
+            *self.inner.drag_target.borrow_mut() = None;
         }
         let Some(node_data) = ({
             let nodes = self.inner.nodes.borrow();
@@ -1785,6 +2090,64 @@ impl View {
         self.on_click_filter(DispatchPhase::Bubble, move |cx| {
             handler(cx);
             DispatchResult::Continue
+        })
+    }
+
+    /// Start a drag from the mounted root when the pointer leaves its click
+    /// threshold. The returned payload determines drop-target compatibility.
+    #[must_use]
+    pub fn on_drag_start(
+        self,
+        handler: impl Fn(&reactive_core::Cx<'_>) -> DragPayload + 'static,
+    ) -> Self {
+        let mount = self.mount;
+        view(move |cx, tree| {
+            let id = mount(cx, tree);
+            tree.set_drag_start(id, Box::new(move |cx| handler(cx)));
+            id
+        })
+    }
+
+    /// Receive drag move events on the source.
+    #[must_use]
+    pub fn on_drag(self, handler: impl Fn(&reactive_core::Cx<'_>, &DragEvent) + 'static) -> Self {
+        let mount = self.mount;
+        view(move |cx, tree| {
+            let id = mount(cx, tree);
+            tree.set_drag_move(id, Box::new(move |cx, event| handler(cx, event)));
+            id
+        })
+    }
+
+    /// Receive the drag completion event on the source.
+    #[must_use]
+    pub fn on_drag_end(self, handler: impl Fn(&reactive_core::Cx<'_>, &DragEnd) + 'static) -> Self {
+        let mount = self.mount;
+        view(move |cx, tree| {
+            let id = mount(cx, tree);
+            tree.set_drag_end(id, Box::new(move |cx, event| handler(cx, event)));
+            id
+        })
+    }
+
+    /// Accept a typed drag payload. The handler returns whether it accepted.
+    #[must_use]
+    pub fn on_drop<T: 'static>(
+        self,
+        handler: impl Fn(&reactive_core::Cx<'_>, &T) -> bool + 'static,
+    ) -> Self {
+        let mount = self.mount;
+        view(move |cx, tree| {
+            let id = mount(cx, tree);
+            tree.set_drop_target(
+                id,
+                TypeId::of::<T>(),
+                Box::new(move |cx, payload| match payload.get::<T>() {
+                    Some(value) => handler(cx, value),
+                    None => false,
+                }),
+            );
+            id
         })
     }
 
