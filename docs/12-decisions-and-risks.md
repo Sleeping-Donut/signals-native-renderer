@@ -755,6 +755,7 @@ or a measurement.
 | Core equality | Require `T: PartialEq` by default? | Yes; `create_signal_unchecked`/custom comparator escape |
 | Signal update | Should `update` compare or always notify? | Always notify; `set` compares; `update_with` if needed |
 | Memo reads | Guards or clones? | Both: guards internally, `Clone` convenience for app code |
+| Memo lifetime | Eager vs lazy default; autodisposal | Eager default; `create_lazy_memo` = lazy + autodispose (Solid); defer if autodisposal is not in v1 |
 | Props variants | Keep `Reactive`/`Derived` or one read handle? | Collapse; both implement `Read<T>` |
 | Effects | Public `EffectHandle` or owner-only? | Both: handles for bindings, owner-scoped for app effects |
 | Ownership | Public `OwnerId`? | No; opaque `Scope`, IDs for diagnostics |

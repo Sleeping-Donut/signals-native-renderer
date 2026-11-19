@@ -649,9 +649,22 @@ At the consumer boundary they are equivalent accessors: both implement the same
 whether a write half exists. Props can therefore take either; `Prop<T>` uses a
 read handle, not a node kind.
 
-`create_lazy_memo` defers the first computation until first read and disposes when
-unobserved, matching Solid's `lazy` option. This is useful for expensive
-derivations in branches that may never mount.
+`create_memo` is Solid's default memo: the initial computation is eager, and the
+memo lives for its owner's lifetime — losing subscribers does not drop the cached
+value. `create_lazy_memo` is Solid's `createMemo(fn, { lazy: true })`: the first
+computation waits for a read, and the memo **autodisposes** when it loses its
+last subscriber; the next read recomputes from scratch. The autodisposal is a
+lifetime policy, not just a timing flag, which is why it is a separate
+constructor rather than a boolean.
+
+Leptos differs here. `Memo::new` is lazy by default: it does not run until first
+read, and it does not re-run on a source change until read again; but it is
+arena-owned and disposed with its owner, not with subscriber loss. Since Solid is
+the north star, our default is eager and owner-lifetime; lazy is explicit. If v1
+does not implement subscriber-based autodisposal, **defer `create_lazy_memo`**
+rather than ship only the deferral under a name that promises both. Lazy async
+(no flight until first read) would need `create_lazy_async_memo` or a memo
+options value; decide with the async memo work.
 
 ## 13. Performance notes
 
