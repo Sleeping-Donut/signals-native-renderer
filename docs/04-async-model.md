@@ -899,7 +899,7 @@ nodes/readers/flights; the older id survives.
 pub struct LoadingBoundary {
     armed: bool,
     key: Option<Memo<Key>>,    // v1: changing the key remounts the boundary
-    on: Option<Memo<()>>,      // v2: dependency-list re-arm
+    on: Option<OnDeps>,        // v2: dependency-list re-arm, notification only
     content: ViewNodeId,
     fallback: ViewNodeId,
 }
@@ -962,6 +962,30 @@ In Solid:
 - Children are not re-created in Solid; they stay alive behind the fallback.
   Our v1 disposes content, so a `key` remount is equivalent in observable
   behavior for the common case.
+
+**`on` is a notification, not a value.** This is the part that is easy to get
+wrong in Rust. `on` is a tracked expression whose result is discarded; the
+boundary reacts to *any* tracked read changing, not to a value comparison. Solid
+implements it as a computed in rederive mode (`CONFIG_REDERIVE`) whose result is
+never compared. A `Memo<()>` cannot do this: every run produces `()`, equality
+suppresses the change, and the boundary is never re-armed. We need an `OnDeps`
+node (a dependency-list computation) that notifies on any tracked change and
+does not compare its result.
+
+**Shape in Rust.** Solid's JSX compiler wraps `on={id()}` into a thunk, which is
+why `on` takes an expression and passing `on={() => id()}` reads nothing. Rust
+has no equivalent automatic wrap unless our `view!` macro does it. The safe
+shape is an explicit tracked closure:
+
+```rust
+LoadingBoundary::new(cx)
+    .on(|cx| { let _ = product_id.get(cx); })
+    .fallback(...)
+```
+
+`view!` sugar can lower `on={product_id.get(cx)}` to that closure later, but the
+primitive should not depend on the macro. `on` remains v2 because the frame
+questions below are about the boundary, not about the API shape.
 
 **Leptos equivalent.** Leptos does not have an `on` dependency list. Its coarse
 version is the choice between `<Suspense>` and `<Transition>`:
