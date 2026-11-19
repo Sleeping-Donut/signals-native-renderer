@@ -16,6 +16,12 @@ spawned through a host `Spawner`; `ManualSpawner` is the default and the runtime
 crate re-exports the contract. The full multi-node transaction model is still a
 v2 refinement; the boundary hold covers the v1 cases.
 
+**No async-runtime lock-in.** `reactive-core` depends on no executor. Flights
+are `LocalBoxFuture`s spawned through the host-supplied [`Spawner`]; a tokio
+`LocalSet`, smol, `futures::executor`, or a custom host executor are all valid.
+`VirtualClock` and `ManualSpawner` are deterministic *test/manual* facilities,
+not a production scheduler requirement.
+
 ---
 
 ## 1. Scope
