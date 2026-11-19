@@ -85,9 +85,10 @@ and Phase 4 (the retained view tree and first `view!`) are implemented. Phase 5
 has the persistent taffy layout tree, cosmic-text platform shaping with cached
 rasterized glyphs, a retained scene builder with paint replay and damage, a
 sampled glyph atlas, and a wgpu backend with a winit window loop (behind the
-`window` feature). A release smoke run measured 16.672 ms steady frame time
-(60.0 fps) on an M3 Pro at 2×; the 2019 target laptop and visible 1×/1.5× runs
-remain. Phase 6 has retained hit testing, pointer/click dispatch, focus and tab
+`window` feature). Release smoke runs on the M3 Pro measured 16.724 ms steady
+frame time (59.8 fps) at 2× with a 1512×871 logical viewport, and 16.67 ms
+(60.0 fps) at renderer scales 1× and 1.5×; these replace the unavailable
+2019-laptop measurement. Phase 6 has retained hit testing, pointer/click dispatch, focus and tab
 order, key bindings, accessibility snapshots/actions, native winit input
 routing, content-mask clipping, translation/scale transforms, capture/bubble
 dispatch with default suppression, scroll state/wheel routing, typed

@@ -12,7 +12,7 @@ use scene::{Primitive, Rect, Scene};
 use text::{CosmicShaper, ShapeRequest, ShapedLayout, Shaper};
 use winit::{
     application::ApplicationHandler,
-    dpi::{LogicalSize, PhysicalSize},
+    dpi::PhysicalSize,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     window::Window,
@@ -23,6 +23,10 @@ struct Smoke {
     layout: Arc<ShapedLayout>,
     frame: u64,
     resize_index: usize,
+    resize_sweep: bool,
+    scale: f32,
+    rows: usize,
+    columns: usize,
     last_frame: Instant,
     samples: Arc<Mutex<Vec<f64>>>,
 }
@@ -46,15 +50,26 @@ impl ApplicationHandler for SmokeRunner {
         if self.state.is_some() {
             return;
         }
+        let logical_width = env_f32("SMOKE_LOGICAL_WIDTH", 400.0);
+        let logical_height = env_f32("SMOKE_LOGICAL_HEIGHT", 300.0);
+        let rows = env_usize("SMOKE_ROWS", 1);
+        let columns = env_usize("SMOKE_COLUMNS", 1);
+        let resize_sweep = env_usize("SMOKE_RESIZE", 1) != 0;
         let attributes = Window::default_attributes()
             .with_title("signals-native renderer smoke")
-            .with_inner_size(LogicalSize::new(400.0, 300.0));
+            .with_inner_size(winit::dpi::LogicalSize::new(logical_width, logical_height));
         let window = Arc::new(event_loop.create_window(attributes).expect("window"));
         let size = window.inner_size();
-        let scale = window.scale_factor() as f32;
+        let scale = env_f32("SMOKE_SCALE", window.scale_factor() as f32);
         let backend = WgpuBackend::new_surface(Arc::clone(&window), size.width, size.height, scale)
             .expect("wgpu surface");
-        eprintln!("surface backend: {}", backend.adapter_info());
+        eprintln!(
+            "surface backend: {} (renderer scale {:.2}, rows {}, columns {})",
+            backend.adapter_info(),
+            scale,
+            rows,
+            columns
+        );
 
         let mut shaper = CosmicShaper::new();
         let layout = Arc::new(shaper.shape(ShapeRequest {
@@ -72,6 +87,10 @@ impl ApplicationHandler for SmokeRunner {
             layout,
             frame: 0,
             resize_index: 0,
+            resize_sweep,
+            scale,
+            rows,
+            columns,
             last_frame: Instant::now(),
             samples: Arc::clone(&self.samples),
         };
@@ -91,19 +110,18 @@ impl ApplicationHandler for SmokeRunner {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
-                state.smoke.backend.resize(
-                    size.width,
-                    size.height,
-                    state.window.scale_factor() as f32,
-                );
+                state
+                    .smoke
+                    .backend
+                    .resize(size.width, size.height, state.smoke.scale);
                 state.window.request_redraw();
             }
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+            WindowEvent::ScaleFactorChanged { .. } => {
                 let size = state.window.inner_size();
                 state
                     .smoke
                     .backend
-                    .resize(size.width, size.height, scale_factor as f32);
+                    .resize(size.width, size.height, state.smoke.scale);
                 state.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
@@ -141,7 +159,10 @@ impl ApplicationHandler for SmokeRunner {
                     );
                 }
 
-                if state.smoke.frame % 2 == 0 && state.smoke.resize_index + 1 < SIZES.len() {
+                if state.smoke.resize_sweep
+                    && state.smoke.frame % 2 == 0
+                    && state.smoke.resize_index + 1 < SIZES.len()
+                {
                     state.smoke.resize_index += 1;
                     let (width, height) = SIZES[state.smoke.resize_index];
                     let _ = state
@@ -171,17 +192,44 @@ impl Smoke {
             radius: Edges::default(),
             clip: None,
         });
-        scene.push(Primitive::Text {
-            node: 2,
-            rect: Rect::new(24.0, 24.0, metrics.logical_width() - 48.0, 48.0),
-            layout: Arc::clone(&self.layout),
-            color: Color::new(0.92, 0.92, 0.95, 1.0),
-            clip: None,
-            transform: Transform::IDENTITY,
-            underline: false,
-        });
+        let column_width = self.layout.width.max(1.0) + 48.0;
+        for row in 0..self.rows {
+            let y = 24.0 + row as f32 * 34.0;
+            if y + 34.0 > metrics.logical_height() {
+                break;
+            }
+            for column in 0..self.columns {
+                let x = 24.0 + column as f32 * column_width;
+                if x + self.layout.width > metrics.logical_width() - 24.0 {
+                    break;
+                }
+                scene.push(Primitive::Text {
+                    node: 2 + (row * self.columns + column) as u64,
+                    rect: Rect::new(x, y, self.layout.width, 34.0),
+                    layout: Arc::clone(&self.layout),
+                    color: Color::new(0.92, 0.92, 0.95, 1.0),
+                    clip: None,
+                    transform: Transform::IDENTITY,
+                    underline: false,
+                });
+            }
+        }
         scene
     }
+}
+
+fn env_f32(name: &str, default: f32) -> f32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
 }
 
 fn main() {

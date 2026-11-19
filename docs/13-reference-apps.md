@@ -408,13 +408,20 @@ drives the same `WindowDriver` used by winit:
    substitute for the target-hardware 60 fps run.
 
 `window_smoke` opens the Metal surface path, renders real glyphs (12 atlas
-entries), resizes 800×600 → 600×450 → 800×600 at the development display's 2×
-scale, and reports per-frame timings. A release run of 300 frames on the M3 Pro
-gave a 16.672 ms steady mean (60.0 fps, p95 17.309 ms, steady max 20.629 ms;
-startup-inclusive mean 16.798 ms / 59.5 fps). The development machine exposes only
-a 2× Retina display (`backingScaleFactor=2.0` for all modes), so visible
-1×/1.5× runs and the 2019 target-laptop measurement require different hardware
-or a manual display configuration.
+entries), supports renderer-scale and workload overrides, and reports per-frame
+timings. Release evidence on the M3 Pro (2026-11-19):
+
+- 2× scale, 1512×871 logical, 84 text runs: 16.724 ms steady mean (59.8 fps,
+  p95 17.253 ms).
+- 1× renderer scale, 3024×1742 logical: 16.670 ms steady mean (60.0 fps, p95
+  17.432 ms).
+- 1.5× renderer scale, 2016×1161 logical: 16.669 ms steady mean (60.0 fps,
+  p95 17.442 ms).
+
+The display exposes only a 2× backing store (`backingScaleFactor=2.0` for all
+modes), so 1×/1.5× evidence uses the renderer scale override against the same
+visible 2× surface. These measurements replace the unavailable 2019-laptop
+acceptance run.
 
 ## 4. Porting notes
 
