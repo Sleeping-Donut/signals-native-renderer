@@ -1,6 +1,7 @@
 //! Native window-driver input routing into the retained view tree.
 
 use std::cell::RefCell;
+use std::ops::Range;
 use std::rc::Rc;
 
 use reactive_core::{create_signal, ReadSignal, Runtime, RuntimeHandle};
@@ -10,7 +11,7 @@ use renderer_api::{
 };
 use renderer_native::{BackendMetrics, FrameOutput, HeadlessBackend, WindowApp, WindowDriver};
 use renderer_null::{NullRenderer, SharedNullRenderer};
-use view::{button_text, column, text_fn, KeyStroke, ViewTree};
+use view::{button_text, column, text_fn, KeyStroke, TextInput, TextInputHandler, ViewTree};
 
 fn px(width: f32, height: f32) -> ResolvedStyle {
     ResolvedStyle {
@@ -166,6 +167,102 @@ impl WindowApp for ScrollApp {
     fn wheel(&mut self, event: &WheelEvent) -> bool {
         self.tree.wheel(event)
     }
+}
+
+struct TextApp {
+    runtime: RuntimeHandle,
+    tree: ViewTree,
+    root: reactive_core::NodeId,
+    input: Rc<RefCell<Box<dyn TextInputHandler>>>,
+    frames: u64,
+}
+
+impl TextApp {
+    fn new() -> Self {
+        let runtime = Runtime::new().into_handle();
+        let renderer = Rc::new(RefCell::new(NullRenderer::new()));
+        let tree = ViewTree::new(
+            Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
+            runtime.clone(),
+        );
+        let cx = runtime.cx();
+        let root = tree.mount(&cx, text_fn(|_| "input".to_string()).style(px(120.0, 30.0)));
+        let input = Rc::new(RefCell::new(
+            Box::new(TextInput::new("")) as Box<dyn TextInputHandler>
+        ));
+        tree.register_text_input(root, Rc::clone(&input));
+        tree.set_focus(Some(root));
+        Self {
+            runtime,
+            tree,
+            root,
+            input,
+            frames: 0,
+        }
+    }
+}
+
+impl Drop for TextApp {
+    fn drop(&mut self) {
+        let cx = self.runtime.cx();
+        self.tree.unmount(&cx, self.root);
+    }
+}
+
+impl WindowApp for TextApp {
+    fn resize(&mut self, metrics: BackendMetrics) {
+        self.tree
+            .set_viewport(metrics.logical_width(), metrics.logical_height());
+        self.tree.set_scale(metrics.scale);
+    }
+
+    fn frame(&mut self, _metrics: BackendMetrics) -> FrameOutput {
+        let cx = self.runtime.cx();
+        self.frames += 1;
+        self.tree.frame(&cx, self.frames);
+        let scene = self.tree.build_scene();
+        let damage = self.tree.take_scene_damage();
+        FrameOutput::new(scene, damage)
+    }
+
+    fn key_down(&mut self, event: &KeyEvent) -> bool {
+        self.tree.key_down(event)
+    }
+
+    fn ime_preedit(&mut self, text: &str, cursor: Option<Range<usize>>) {
+        self.tree.ime_preedit(text, cursor);
+    }
+
+    fn ime_commit(&mut self, text: &str) {
+        self.tree.ime_commit(text);
+    }
+
+    fn ime_cancel(&mut self) {
+        self.tree.ime_cancel();
+    }
+}
+
+#[test]
+fn window_driver_routes_ime_preedit_commit_and_cancel() {
+    let backend = HeadlessBackend::new(200, 100, 1.0);
+    let mut driver = WindowDriver::new(TextApp::new(), backend);
+    driver.redraw().expect("initial frame");
+
+    driver.ime_preedit("に", Some(0..3));
+    assert!(driver.app().input.borrow().is_composing());
+
+    driver.ime_commit("日本");
+    assert_eq!(driver.app().input.borrow().text(), "日本");
+    assert!(!driver.app().input.borrow().is_composing());
+
+    driver.ime_preedit("x", None);
+    driver.ime_cancel();
+    assert!(!driver.app().input.borrow().is_composing());
+    assert_eq!(driver.app().input.borrow().text(), "日本");
+
+    let key = KeyEvent::new(Key::Character('a'), Modifiers::NONE);
+    assert!(driver.key_down(&key));
+    assert_eq!(driver.app().input.borrow().text(), "日本a");
 }
 
 #[test]

@@ -11,6 +11,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
+use std::ops::Range;
 use std::rc::Rc;
 
 use layout::{LayoutEngine, LayoutId, LayoutStats, Rect, TextContent};
@@ -110,6 +111,192 @@ struct KeyBinding {
     stroke: KeyStroke,
     phase: DispatchPhase,
     callback: ViewCallback,
+}
+
+/// A shared text-input handler.
+pub type TextInputHandle = Rc<RefCell<Box<dyn TextInputHandler>>>;
+
+/// Composition state for IME input.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Composition {
+    /// The preedit text.
+    pub text: String,
+    /// Cursor/selection within the preedit text.
+    pub cursor: Option<Range<usize>>,
+}
+
+/// A text-input handler owned by a focused view node.
+pub trait TextInputHandler {
+    /// Insert committed text.
+    fn insert_text(&mut self, text: &str);
+    /// Set the IME composition string.
+    fn set_composition(&mut self, text: &str, cursor: Option<Range<usize>>);
+    /// Commit the composition into the buffer.
+    fn commit_composition(&mut self);
+    /// Cancel the composition without changing the buffer.
+    fn cancel_composition(&mut self);
+    /// Delete backward.
+    fn delete_backward(&mut self);
+    /// Delete forward.
+    fn delete_forward(&mut self);
+    /// Current selection.
+    fn selection(&self) -> Option<Range<usize>>;
+    /// Replace the selection.
+    fn set_selection(&mut self, range: Range<usize>);
+    /// The text buffer.
+    fn text(&self) -> &str;
+    /// Caret rectangle in logical coordinates.
+    fn caret_rect(&self) -> Rect;
+    /// Set the caret rectangle.
+    fn set_caret_rect(&mut self, rect: Rect);
+    /// Whether a composition is active.
+    fn is_composing(&self) -> bool {
+        false
+    }
+}
+
+/// A simple UTF-8 text buffer with selection and IME composition.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextInput {
+    text: String,
+    selection: Range<usize>,
+    composition: Option<Composition>,
+    caret_rect: Rect,
+}
+
+impl TextInput {
+    /// Create a text input with the caret at the end.
+    #[must_use]
+    pub fn new(text: impl Into<String>) -> Self {
+        let text = text.into();
+        let end = text.len();
+        Self {
+            text,
+            selection: end..end,
+            composition: None,
+            caret_rect: Rect::default(),
+        }
+    }
+
+    /// The composition state.
+    #[must_use]
+    pub fn composition(&self) -> Option<&Composition> {
+        self.composition.as_ref()
+    }
+
+    fn boundary(&self, mut index: usize) -> usize {
+        index = index.min(self.text.len());
+        while index > 0 && !self.text.is_char_boundary(index) {
+            index -= 1;
+        }
+        index
+    }
+
+    fn normalize(&self, range: Range<usize>) -> Range<usize> {
+        let start = self.boundary(range.start);
+        let end = self.boundary(range.end.max(range.start));
+        start..end
+    }
+}
+
+impl Default for TextInput {
+    fn default() -> Self {
+        Self::new("")
+    }
+}
+
+impl TextInputHandler for TextInput {
+    fn insert_text(&mut self, text: &str) {
+        let range = self.selection.clone();
+        self.text.replace_range(range.clone(), text);
+        let caret = range.start + text.len();
+        self.selection = caret..caret;
+    }
+
+    fn set_composition(&mut self, text: &str, cursor: Option<Range<usize>>) {
+        if text.is_empty() {
+            self.composition = None;
+        } else {
+            let max = text.len();
+            let cursor = cursor.map(|range| {
+                let start = range.start.min(max);
+                let end = range.end.min(max).max(start);
+                start..end
+            });
+            self.composition = Some(Composition {
+                text: text.to_string(),
+                cursor,
+            });
+        }
+    }
+
+    fn commit_composition(&mut self) {
+        if let Some(composition) = self.composition.take() {
+            self.insert_text(&composition.text);
+        }
+    }
+
+    fn cancel_composition(&mut self) {
+        self.composition = None;
+    }
+
+    fn delete_backward(&mut self) {
+        if self.selection.start != self.selection.end {
+            self.text.replace_range(self.selection.clone(), "");
+            self.selection = self.selection.start..self.selection.start;
+            return;
+        }
+        if self.selection.start == 0 {
+            return;
+        }
+        let mut start = self.selection.start - 1;
+        while start > 0 && !self.text.is_char_boundary(start) {
+            start -= 1;
+        }
+        self.text.replace_range(start..self.selection.start, "");
+        self.selection = start..start;
+    }
+
+    fn delete_forward(&mut self) {
+        if self.selection.start != self.selection.end {
+            self.text.replace_range(self.selection.clone(), "");
+            self.selection = self.selection.start..self.selection.start;
+            return;
+        }
+        if self.selection.end >= self.text.len() {
+            return;
+        }
+        let mut end = self.selection.end + 1;
+        while end < self.text.len() && !self.text.is_char_boundary(end) {
+            end += 1;
+        }
+        self.text.replace_range(self.selection.end..end, "");
+        self.selection = self.selection.start..self.selection.start;
+    }
+
+    fn selection(&self) -> Option<Range<usize>> {
+        Some(self.selection.clone())
+    }
+
+    fn set_selection(&mut self, range: Range<usize>) {
+        self.selection = self.normalize(range);
+    }
+
+    fn text(&self) -> &str {
+        &self.text
+    }
+
+    fn caret_rect(&self) -> Rect {
+        self.caret_rect
+    }
+
+    fn set_caret_rect(&mut self, rect: Rect) {
+        self.caret_rect = rect;
+    }
+
+    fn is_composing(&self) -> bool {
+        self.composition.is_some()
+    }
 }
 
 /// A type-erased drag payload.
@@ -317,6 +504,7 @@ struct ViewTreeInner {
     press_position: Cell<(f32, f32)>,
     drag: RefCell<Option<DragSession>>,
     drag_target: RefCell<Option<ViewNodeId>>,
+    text_inputs: RefCell<HashMap<ViewNodeId, TextInputHandle>>,
     global_keys: RefCell<Vec<KeyBinding>>,
     last_dirty: Cell<usize>,
     runtime: RuntimeHandle,
@@ -369,6 +557,7 @@ impl ViewTree {
                 press_position: Cell::new((0.0, 0.0)),
                 drag: RefCell::new(None),
                 drag_target: RefCell::new(None),
+                text_inputs: RefCell::new(HashMap::new()),
                 global_keys: RefCell::new(Vec::new()),
                 last_dirty: Cell::new(0),
                 runtime,
@@ -727,6 +916,141 @@ impl ViewTree {
     #[must_use]
     pub fn is_focused(&self, id: ViewNodeId) -> bool {
         self.focused() == Some(id)
+    }
+
+    /// Register a text-input handler on a view node.
+    pub fn register_text_input(&self, node: ViewNodeId, handler: TextInputHandle) {
+        self.inner.text_inputs.borrow_mut().insert(node, handler);
+        self.set_focusable(node, true);
+        self.set_interactive(node);
+        self.set_a11y(node, Some(A11yRole::TextInput), None, None);
+    }
+
+    /// The text-input handler on a node.
+    #[must_use]
+    pub fn text_input(&self, node: ViewNodeId) -> Option<TextInputHandle> {
+        self.inner.text_inputs.borrow().get(&node).cloned()
+    }
+
+    /// The text-input handler for the focused node.
+    #[must_use]
+    pub fn focused_text_input(&self) -> Option<TextInputHandle> {
+        let node = self.focused()?;
+        self.text_input(node)
+    }
+
+    /// Set the focused input's IME composition.
+    pub fn ime_preedit(&self, text: &str, cursor: Option<Range<usize>>) -> bool {
+        let Some(input) = self.focused_text_input() else {
+            return false;
+        };
+        input.borrow_mut().set_composition(text, cursor);
+        self.mark_paint_dirty(self.focused().unwrap_or(ViewNodeId::INVALID));
+        true
+    }
+
+    /// Commit IME text into the focused input.
+    pub fn ime_commit(&self, text: &str) -> bool {
+        let Some(input) = self.focused_text_input() else {
+            return false;
+        };
+        {
+            let mut input = input.borrow_mut();
+            input.cancel_composition();
+            input.insert_text(text);
+        }
+        self.mark_paint_dirty(self.focused().unwrap_or(ViewNodeId::INVALID));
+        true
+    }
+
+    /// Cancel the focused input's IME composition.
+    pub fn ime_cancel(&self) -> bool {
+        let Some(input) = self.focused_text_input() else {
+            return false;
+        };
+        input.borrow_mut().cancel_composition();
+        self.mark_paint_dirty(self.focused().unwrap_or(ViewNodeId::INVALID));
+        true
+    }
+
+    /// Insert text into the focused input.
+    pub fn insert_text(&self, text: &str) -> bool {
+        let Some(input) = self.focused_text_input() else {
+            return false;
+        };
+        input.borrow_mut().insert_text(text);
+        self.mark_paint_dirty(self.focused().unwrap_or(ViewNodeId::INVALID));
+        true
+    }
+
+    /// Delete backward in the focused input.
+    pub fn delete_backward(&self) -> bool {
+        let Some(input) = self.focused_text_input() else {
+            return false;
+        };
+        input.borrow_mut().delete_backward();
+        self.mark_paint_dirty(self.focused().unwrap_or(ViewNodeId::INVALID));
+        true
+    }
+
+    /// Delete forward in the focused input.
+    pub fn delete_forward(&self) -> bool {
+        let Some(input) = self.focused_text_input() else {
+            return false;
+        };
+        input.borrow_mut().delete_forward();
+        self.mark_paint_dirty(self.focused().unwrap_or(ViewNodeId::INVALID));
+        true
+    }
+
+    fn cancel_text_composition(&self) -> bool {
+        let Some(input) = self.focused_text_input() else {
+            return false;
+        };
+        let mut input = input.borrow_mut();
+        if input.is_composing() {
+            input.cancel_composition();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn handle_text_input_key(&self, event: &KeyEvent) -> bool {
+        let Some(input) = self.focused_text_input() else {
+            return false;
+        };
+        let mut input = input.borrow_mut();
+        match &event.key {
+            Key::Named(NamedKey::Backspace) => {
+                input.delete_backward();
+                true
+            }
+            Key::Named(NamedKey::Delete) => {
+                input.delete_forward();
+                true
+            }
+            Key::Named(NamedKey::Enter) => {
+                input.insert_text(
+                    "
+",
+                );
+                true
+            }
+            Key::Character(ch) if !event.modifiers.control && !event.modifiers.meta => {
+                if let Some(text) = &event.text {
+                    input.insert_text(text);
+                } else {
+                    input.insert_text(&ch.to_string());
+                }
+                true
+            }
+            Key::Named(NamedKey::Space) if !event.modifiers.control && !event.modifiers.meta => {
+                input.insert_text(event.text.as_deref().unwrap_or(" "));
+                true
+            }
+            _ => false,
+        }
     }
 
     /// The currently hovered interactive node.
@@ -1108,7 +1432,15 @@ impl ViewTree {
     /// Dispatch a key event to the focused path, then global bindings, then
     /// default Tab traversal.
     pub fn key_down(&self, event: &KeyEvent) -> bool {
-        if event.key == Key::Named(NamedKey::Escape) && self.cancel_drag() {
+        if event.key == Key::Named(NamedKey::Escape) {
+            if self.cancel_text_composition() {
+                return true;
+            }
+            if self.cancel_drag() {
+                return true;
+            }
+        }
+        if self.handle_text_input_key(event) {
             return true;
         }
         let cx = self.inner.runtime.cx();
@@ -1903,6 +2235,7 @@ impl ViewTree {
 
         self.inner.layout.borrow_mut().remove_node(layout_id);
         self.inner.scene.borrow_mut().remove(id);
+        self.inner.text_inputs.borrow_mut().remove(&id);
         if self
             .inner
             .hovered

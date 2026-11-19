@@ -21,8 +21,10 @@ through capture/bubble, and applies a clamped `ScrollState`; scroll offsets
 translate painted children and hit testing while clipping to the viewport.
 Drag/drop is implemented with a type-erased payload, pointer threshold,
 source move/end callbacks, typed drop-target validation, and Escape
-cancellation. IME, AccessKit protocol wiring, richer hover/focus styling, and
-cursor/tooltip layers remain.
+cancellation. Focused text inputs support insert, delete, selection, caret
+state, IME preedit, commit, and cancel, with winit IME events routed through
+`WindowDriver`. AccessKit protocol wiring, composition/caret paint overlays,
+richer hover/focus styling, and cursor/tooltip layers remain.
 
 ---
 

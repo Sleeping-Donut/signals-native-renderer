@@ -59,6 +59,7 @@ pub fn run_windowed<A: WindowApp + 'static>(
     let backend = WgpuBackend::new_surface(Arc::clone(&window), size.width, size.height, scale)
         .map_err(WindowError::Backend)?;
     let mut driver = WindowDriver::new(app, backend);
+    window.set_ime_allowed(true);
     let mut cursor = (0.0_f32, 0.0_f32);
     let mut modifiers = Modifiers::NONE;
     window.request_redraw();
@@ -97,6 +98,16 @@ pub fn run_windowed<A: WindowApp + 'static>(
                         };
                         driver.wheel(&WheelEvent::new(cursor.0, cursor.1, delta_x, delta_y));
                     }
+                    WindowEvent::Ime(ime) => match ime {
+                        winit::event::Ime::Preedit(text, cursor) => {
+                            driver.ime_preedit(&text, cursor.map(|(start, end)| start..end));
+                        }
+                        winit::event::Ime::Commit(text) => {
+                            driver.ime_commit(&text);
+                        }
+                        winit::event::Ime::Disabled => driver.ime_cancel(),
+                        winit::event::Ime::Enabled => {}
+                    },
                     WindowEvent::ModifiersChanged(state) => {
                         let state = state.state();
                         modifiers = Modifiers::new(

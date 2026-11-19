@@ -11,7 +11,7 @@ use renderer_api::{
 use renderer_null::{NullRenderer, SharedNullRenderer};
 use view::{
     button_text, column, keyed_list, row, text_fn, DispatchPhase, DispatchResult, DragEnd,
-    DragEvent, DragPayload, FocusHandle, KeyStroke, ViewTree,
+    DragEvent, DragPayload, FocusHandle, KeyStroke, TextInput, TextInputHandler, ViewTree,
 };
 
 fn px(width: f32, height: f32) -> ResolvedStyle {
@@ -416,6 +416,73 @@ fn key_dispatch_runs_capture_then_bubble() {
     let key = KeyEvent::new(Key::Character('x'), Modifiers::NONE);
     assert!(tree.key_down(&key));
     assert_eq!(&*order.borrow(), &["capture", "bubble"]);
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn text_input_insert_delete_selection_and_composition() {
+    let mut input = TextInput::new("hello");
+    input.set_selection(0..5);
+    input.insert_text("hi");
+    assert_eq!(input.text(), "hi");
+    assert_eq!(input.selection(), Some(2..2));
+
+    input.insert_text("!");
+    assert_eq!(input.text(), "hi!");
+    input.delete_backward();
+    assert_eq!(input.text(), "hi");
+    input.delete_forward();
+    assert_eq!(input.text(), "hi");
+
+    input.set_composition("にほ", Some(0..3));
+    assert_eq!(input.text(), "hi");
+    assert!(input.is_composing());
+    input.commit_composition();
+    assert_eq!(input.text(), "hiにほ");
+    assert!(!input.is_composing());
+
+    input.set_composition("x", None);
+    input.cancel_composition();
+    assert_eq!(input.text(), "hiにほ");
+}
+
+#[test]
+fn focused_text_input_receives_keys_and_ime() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let root = tree.mount(&cx, text_fn(|_| "input".to_string()).style(px(100.0, 30.0)));
+    let input = Rc::new(RefCell::new(
+        Box::new(TextInput::new("")) as Box<dyn TextInputHandler>
+    ));
+    tree.register_text_input(root, Rc::clone(&input));
+    tree.set_viewport(100.0, 100.0);
+    tree.frame(&cx, 0);
+    tree.set_focus(Some(root));
+
+    let z = KeyEvent::new(Key::Character('z'), Modifiers::NONE);
+    assert!(tree.key_down(&z));
+    assert_eq!(input.borrow().text(), "z");
+
+    assert!(tree.ime_preedit("に", Some(0..3)));
+    assert!(input.borrow().is_composing());
+    assert!(tree.ime_commit("日本"));
+    assert_eq!(input.borrow().text(), "z日本");
+    assert!(!input.borrow().is_composing());
+
+    assert!(tree.ime_preedit("x", None));
+    let escape = KeyEvent::new(Key::Named(NamedKey::Escape), Modifiers::NONE);
+    assert!(tree.key_down(&escape));
+    assert!(!input.borrow().is_composing());
+    assert_eq!(input.borrow().text(), "z日本");
+
+    let a11y = tree.a11y_tree();
+    assert!(
+        a11y.nodes
+            .iter()
+            .any(|node| node.id == tree.renderer_id(root).unwrap()
+                && node.role == A11yRole::TextInput)
+    );
 
     tree.unmount(&cx, root);
 }

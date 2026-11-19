@@ -1,4 +1,5 @@
 use std::fmt;
+use std::ops::Range;
 
 use renderer_api::{KeyEvent, PointerEvent, WheelEvent};
 use scene::{Rect, Scene};
@@ -153,6 +154,12 @@ pub trait WindowApp {
     fn wheel(&mut self, _event: &WheelEvent) -> bool {
         false
     }
+    /// IME composition changed.
+    fn ime_preedit(&mut self, _text: &str, _cursor: Option<Range<usize>>) {}
+    /// IME committed text.
+    fn ime_commit(&mut self, _text: &str) {}
+    /// IME was disabled or cancelled.
+    fn ime_cancel(&mut self) {}
 }
 
 /// Drives an application and a backend through resize and redraw steps.
@@ -234,6 +241,21 @@ impl<A: WindowApp, B: PaintBackend> WindowDriver<A, B> {
     /// Route a wheel event to the app.
     pub fn wheel(&mut self, event: &WheelEvent) -> bool {
         self.app.wheel(event)
+    }
+
+    /// Route an IME composition update to the app.
+    pub fn ime_preedit(&mut self, text: &str, cursor: Option<Range<usize>>) {
+        self.app.ime_preedit(text, cursor);
+    }
+
+    /// Route committed IME text to the app.
+    pub fn ime_commit(&mut self, text: &str) {
+        self.app.ime_commit(text);
+    }
+
+    /// Route IME cancellation to the app.
+    pub fn ime_cancel(&mut self) {
+        self.app.ime_cancel();
     }
 
     /// Run one app frame and present it.
