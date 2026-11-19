@@ -240,6 +240,32 @@ impl WindowApp for TextApp {
     fn ime_cancel(&mut self) {
         self.tree.ime_cancel();
     }
+
+    fn accesskit_update(&self) -> Option<accesskit::TreeUpdate> {
+        self.tree.accesskit_tree()
+    }
+}
+
+#[test]
+fn window_driver_exposes_accesskit_update() {
+    let backend = HeadlessBackend::new(200, 100, 1.0);
+    let mut driver = WindowDriver::new(TextApp::new(), backend);
+    driver.redraw().expect("initial frame");
+    let update = driver.accesskit_update().expect("accesskit update");
+    let root_id = accesskit::NodeId(
+        driver
+            .app()
+            .tree
+            .renderer_id(driver.app().root)
+            .expect("renderer id"),
+    );
+    assert_eq!(update.focus, root_id);
+    let node = update
+        .nodes
+        .iter()
+        .find_map(|(id, node)| (*id == root_id).then_some(node))
+        .expect("root node");
+    assert_eq!(node.role(), accesskit::Role::TextInput);
 }
 
 #[test]

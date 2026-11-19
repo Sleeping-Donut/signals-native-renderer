@@ -1552,6 +1552,78 @@ impl ViewTree {
         tree
     }
 
+    /// Build an AccessKit tree update from the current accessibility snapshot.
+    #[must_use]
+    pub fn accesskit_tree(&self) -> Option<accesskit::TreeUpdate> {
+        let snapshot = self.a11y_tree();
+        if snapshot.nodes.is_empty() {
+            return None;
+        }
+        let (root, synthetic) = if snapshot.roots.len() == 1 {
+            (snapshot.roots[0], None)
+        } else {
+            let mut root = accesskit::Node::new(accesskit::Role::GenericContainer);
+            root.set_children(
+                snapshot
+                    .roots
+                    .iter()
+                    .map(|id| accesskit::NodeId(*id))
+                    .collect::<Vec<_>>(),
+            );
+            (0, Some(root))
+        };
+        let mut nodes = snapshot
+            .nodes
+            .into_iter()
+            .map(|node| {
+                let mut output = accesskit::Node::new(match node.role {
+                    A11yRole::Generic => accesskit::Role::GenericContainer,
+                    A11yRole::Button => accesskit::Role::Button,
+                    A11yRole::Text => accesskit::Role::Label,
+                    A11yRole::TextInput => accesskit::Role::TextInput,
+                });
+                if let Some(label) = node.label {
+                    output.set_label(label);
+                }
+                if let Some(value) = node.value {
+                    output.set_value(value);
+                }
+                if node.disabled {
+                    output.set_disabled();
+                }
+                output.set_bounds(accesskit::Rect {
+                    x0: f64::from(node.bounds.x),
+                    y0: f64::from(node.bounds.y),
+                    x1: f64::from(node.bounds.right()),
+                    y1: f64::from(node.bounds.bottom()),
+                });
+                if !node.children.is_empty() {
+                    output.set_children(
+                        node.children
+                            .into_iter()
+                            .map(accesskit::NodeId)
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                (accesskit::NodeId(node.id), output)
+            })
+            .collect::<Vec<_>>();
+        if let Some(root) = synthetic {
+            nodes.push((accesskit::NodeId(0), root));
+        }
+        let root_id = accesskit::NodeId(root);
+        let focus = self
+            .focused()
+            .and_then(|node| self.renderer_id(node))
+            .map_or(root_id, accesskit::NodeId);
+        Some(accesskit::TreeUpdate {
+            nodes,
+            tree: Some(accesskit::TreeInfo::new(root_id)),
+            focus,
+            tree_id: accesskit::TreeId::ROOT,
+        })
+    }
+
     fn a11y_visit(&self, node: ViewNodeId, out: &mut Vec<A11yNode>) -> u64 {
         let (children, renderer_id, role, label, value, disabled, focusable, bounds) = {
             let nodes = self.inner.nodes.borrow();
@@ -1567,6 +1639,8 @@ impl ViewTree {
                             .and_then(|child| child.text.as_deref())
                             .map(str::to_string)
                     })
+                } else if data.a11y_role == A11yRole::Text {
+                    data.text.clone()
                 } else {
                     None
                 }

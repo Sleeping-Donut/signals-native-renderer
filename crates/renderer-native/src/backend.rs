@@ -160,6 +160,10 @@ pub trait WindowApp {
     fn ime_commit(&mut self, _text: &str) {}
     /// IME was disabled or cancelled.
     fn ime_cancel(&mut self) {}
+    /// Current AccessKit tree update, if the app exposes accessibility.
+    fn accesskit_update(&self) -> Option<accesskit::TreeUpdate> {
+        None
+    }
 }
 
 /// Drives an application and a backend through resize and redraw steps.
@@ -256,6 +260,12 @@ impl<A: WindowApp, B: PaintBackend> WindowDriver<A, B> {
     /// Route IME cancellation to the app.
     pub fn ime_cancel(&mut self) {
         self.app.ime_cancel();
+    }
+
+    /// The app's current AccessKit tree update.
+    #[must_use]
+    pub fn accesskit_update(&self) -> Option<accesskit::TreeUpdate> {
+        self.app.accesskit_update()
     }
 
     /// Run one app frame and present it.

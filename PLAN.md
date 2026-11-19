@@ -352,12 +352,14 @@ default-action suppression, and scroll state with clipped viewports, clamped
 offsets, deepest-scrollable wheel routing, painted/hit-test translation, and
 typed drag/drop sessions with start/move/end callbacks and payload validation,
 and focused text-input/IME handlers with composition, commit/cancel, deletion,
-selection, caret state, and native winit IME routing
+selection, caret state, native winit IME routing, and AccessKit `TreeUpdate`
+generation with roles, labels, values, bounds, disabled state, focus, and stable
+keyed-row ids exposed through `WindowDriver`
 ([input.rs](crates/view/tests/input.rs),
 [renderer-native/tests/input.rs](crates/renderer-native/tests/input.rs),
 [acceptance.rs](crates/renderer-native/tests/acceptance.rs)). Remaining Phase 6
-work: AccessKit protocol integration, richer hover/focus styling, cursor/tooltip
-layers, and composition/caret painting overlays.
+work: a platform AccessKit adapter and action dispatch, richer hover/focus
+styling, cursor/tooltip layers, and composition/caret painting overlays.
 
 ### Phase 7 — Stores and authoring (3–4 weeks)
 

@@ -488,6 +488,103 @@ fn focused_text_input_receives_keys_and_ime() {
 }
 
 #[test]
+fn accesskit_tree_exposes_roles_values_focus_and_bounds() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let root = tree.mount(
+        &cx,
+        column(vec![
+            button_text("Save", |_| {})
+                .a11y_value("draft")
+                .style(px(80.0, 20.0)),
+            button_text("Off", |_| {})
+                .disabled(true)
+                .style(px(80.0, 20.0)),
+        ])
+        .a11y_label("Actions")
+        .style(px(200.0, 100.0)),
+    );
+    tree.set_viewport(200.0, 100.0);
+    tree.frame(&cx, 0);
+    let save = tree.children(root)[0];
+    let off = tree.children(root)[1];
+    tree.set_focus(Some(save));
+
+    let update = tree.accesskit_tree().expect("accesskit update");
+    let root_id = update.tree.as_ref().expect("tree").root;
+    assert_eq!(root_id, accesskit::NodeId(tree.renderer_id(root).unwrap()));
+    assert_eq!(
+        update.focus,
+        accesskit::NodeId(tree.renderer_id(save).unwrap())
+    );
+
+    let save_node = update
+        .nodes
+        .iter()
+        .find_map(|(id, node)| {
+            (*id == accesskit::NodeId(tree.renderer_id(save).unwrap())).then_some(node)
+        })
+        .expect("save node");
+    assert_eq!(save_node.role(), accesskit::Role::Button);
+    assert_eq!(save_node.label(), Some("Save"));
+    assert_eq!(save_node.value(), Some("draft"));
+    assert!(save_node.bounds().is_some());
+
+    let off_node = update
+        .nodes
+        .iter()
+        .find_map(|(id, node)| {
+            (*id == accesskit::NodeId(tree.renderer_id(off).unwrap())).then_some(node)
+        })
+        .expect("off node");
+    assert!(off_node.is_disabled());
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn accesskit_keyed_row_ids_and_focus_survive_reorder() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let (order, set_order) = create_signal(&cx, vec![0_u32, 1, 2]);
+    let root = tree.mount(
+        &cx,
+        keyed_list(
+            move |cx| order.get(cx),
+            |index| *index,
+            |_cx, index| button_text(format!("row {index}"), |_| {}),
+        ),
+    );
+    tree.set_viewport(200.0, 200.0);
+    tree.frame(&cx, 0);
+    let row_one = tree.children(root)[1];
+    let before = tree.accesskit_tree().expect("before");
+    let before_id = before
+        .nodes
+        .iter()
+        .find_map(|(id, node)| {
+            (node.role() == accesskit::Role::Button && node.label() == Some("row 1")).then_some(*id)
+        })
+        .expect("row one");
+    tree.set_focus(Some(row_one));
+
+    set_order.set(&cx, vec![2, 1, 0]);
+    tree.frame(&cx, 1);
+    let after = tree.accesskit_tree().expect("after");
+    let after_id = after
+        .nodes
+        .iter()
+        .find_map(|(id, node)| {
+            (node.role() == accesskit::Role::Button && node.label() == Some("row 1")).then_some(*id)
+        })
+        .expect("row one after");
+    assert_eq!(before_id, after_id);
+    assert_eq!(after.focus, after_id);
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
 fn drag_source_drops_typed_payload_on_target() {
     let (runtime, tree, _renderer) = setup();
     let cx = runtime.cx();
@@ -849,7 +946,7 @@ fn keyed_row_a11y_id_and_focus_survive_reorder() {
         .a11y_tree()
         .nodes
         .into_iter()
-        .find(|node| node.label.as_deref() == Some("row 1"))
+        .find(|node| node.role == A11yRole::Button && node.label.as_deref() == Some("row 1"))
         .expect("row one");
     assert_eq!(before.id, tree.renderer_id(row_one).unwrap());
     tree.set_focus(Some(row_one));
@@ -861,7 +958,7 @@ fn keyed_row_a11y_id_and_focus_survive_reorder() {
         .a11y_tree()
         .nodes
         .into_iter()
-        .find(|node| node.label.as_deref() == Some("row 1"))
+        .find(|node| node.role == A11yRole::Button && node.label.as_deref() == Some("row 1"))
         .expect("row one after reorder");
     assert_eq!(after.id, before.id);
     assert!(after.focused);
