@@ -77,13 +77,19 @@ impl PaintBackend for HeadlessBackend {
             match primitive {
                 Primitive::Fill { .. } => stats.fill_quads += 1,
                 Primitive::Border { .. } => stats.border_quads += 1,
-                Primitive::Text { layout, .. } => {
+                Primitive::Caret { .. } => stats.caret_quads += 1,
+                Primitive::Text {
+                    layout, underline, ..
+                } => {
                     let glyphs = layout
                         .lines
                         .iter()
                         .map(|line| line.glyphs.len())
                         .sum::<usize>();
                     stats.glyph_quads += glyphs;
+                    if *underline {
+                        stats.underline_quads += 1;
+                    }
                     let atlas = layout
                         .lines
                         .iter()

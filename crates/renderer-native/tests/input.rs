@@ -252,6 +252,12 @@ impl WindowApp for TextApp {
     fn accesskit_update(&self) -> Option<accesskit::TreeUpdate> {
         self.tree.accesskit_tree()
     }
+
+    fn ime_cursor_area(&self) -> Option<scene::Rect> {
+        self.tree
+            .ime_cursor_area()
+            .map(|rect| scene::Rect::new(rect.x, rect.y, rect.width, rect.height))
+    }
 }
 
 #[test]
@@ -275,6 +281,15 @@ fn window_driver_exposes_accesskit_update() {
         .expect("root node");
     assert_eq!(node.role(), accesskit::Role::TextInput);
     assert_eq!(driver.accesskit_update_count(), 1);
+}
+
+#[test]
+fn window_driver_exposes_ime_cursor_area() {
+    let backend = HeadlessBackend::new(200, 100, 1.0);
+    let mut driver = WindowDriver::new(TextApp::new(), backend);
+    driver.redraw().expect("initial frame");
+    let area = driver.ime_cursor_area().expect("caret area");
+    assert!(area.width > 0.0 && area.height > 0.0);
 }
 
 #[test]

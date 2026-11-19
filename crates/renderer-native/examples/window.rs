@@ -50,6 +50,7 @@ impl WindowApp for Demo {
             color: Color::new(0.92, 0.92, 0.95, 1.0),
             clip: None,
             transform: Transform::IDENTITY,
+            underline: false,
         });
         FrameOutput::new(
             scene,

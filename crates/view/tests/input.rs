@@ -488,6 +488,108 @@ fn focused_text_input_receives_keys_and_ime() {
 }
 
 #[test]
+fn text_input_arrows_move_caret_and_extend_selection() {
+    let mut input = TextInput::new("abc");
+    input.move_left(false);
+    assert_eq!(input.selection(), Some(2..2));
+    input.move_left(true);
+    assert_eq!(input.selection(), Some(1..2));
+    input.move_home(true);
+    assert_eq!(input.selection(), Some(0..2));
+    input.move_end(false);
+    assert_eq!(input.selection(), Some(3..3));
+    input.move_home(false);
+    assert_eq!(input.selection(), Some(0..0));
+    input.move_right(true);
+    assert_eq!(input.selection(), Some(0..1));
+    input.move_right(false);
+    assert_eq!(input.selection(), Some(1..1));
+
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let root = tree.mount(&cx, text_fn(|_| "input".to_string()).style(px(100.0, 30.0)));
+    let shared = Rc::new(RefCell::new(
+        Box::new(TextInput::new("abc")) as Box<dyn TextInputHandler>
+    ));
+    tree.register_text_input(root, Rc::clone(&shared));
+    tree.set_viewport(100.0, 100.0);
+    tree.frame(&cx, 0);
+    tree.set_focus(Some(root));
+
+    let left = KeyEvent::new(Key::Named(NamedKey::ArrowLeft), Modifiers::NONE);
+    assert!(tree.key_down(&left));
+    assert_eq!(shared.borrow().selection(), Some(2..2));
+    let shift_left = KeyEvent::new(
+        Key::Named(NamedKey::ArrowLeft),
+        Modifiers {
+            shift: true,
+            ..Modifiers::NONE
+        },
+    );
+    assert!(tree.key_down(&shift_left));
+    assert_eq!(shared.borrow().selection(), Some(1..2));
+    let end = KeyEvent::new(Key::Named(NamedKey::End), Modifiers::NONE);
+    assert!(tree.key_down(&end));
+    assert_eq!(shared.borrow().selection(), Some(3..3));
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn preedit_paints_underline_and_focused_caret_geometry() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let root = tree.mount(&cx, text_fn(|_| "base".to_string()).style(px(120.0, 30.0)));
+    let input = Rc::new(RefCell::new(
+        Box::new(TextInput::new("ab")) as Box<dyn TextInputHandler>
+    ));
+    tree.register_text_input(root, Rc::clone(&input));
+    tree.set_viewport(120.0, 100.0);
+    tree.frame(&cx, 0);
+    tree.set_focus(Some(root));
+    tree.frame(&cx, 1);
+
+    let scene = tree.build_scene();
+    let caret = scene
+        .ops()
+        .iter()
+        .find_map(|primitive| match primitive {
+            scene::Primitive::Caret { rect, .. } => Some(*rect),
+            _ => None,
+        })
+        .expect("caret primitive");
+    assert!(caret.width > 0.0 && caret.height > 0.0);
+    let input_caret = input.borrow().caret_rect();
+    assert!(tree.ime_cursor_area().is_some(), "ime cursor area");
+    assert_eq!(input_caret.x, caret.x);
+    assert_eq!(input_caret.y, caret.y);
+
+    assert!(tree.ime_preedit("x", Some(0..1)));
+    tree.frame(&cx, 2);
+    let scene = tree.build_scene();
+    let text = scene
+        .ops()
+        .iter()
+        .find_map(|primitive| match primitive {
+            scene::Primitive::Text {
+                layout, underline, ..
+            } => Some((layout.width, *underline)),
+            _ => None,
+        })
+        .expect("text primitive");
+    assert!(text.1, "composition text should be underlined");
+    assert!(
+        scene
+            .ops()
+            .iter()
+            .any(|primitive| matches!(primitive, scene::Primitive::Caret { .. })),
+        "caret should still paint during composition"
+    );
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
 fn accesskit_tree_exposes_roles_values_focus_and_bounds() {
     let (runtime, tree, _renderer) = setup();
     let cx = runtime.cx();

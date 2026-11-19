@@ -22,9 +22,13 @@ translate painted children and hit testing while clipping to the viewport.
 Drag/drop is implemented with a type-erased payload, pointer threshold,
 source move/end callbacks, typed drop-target validation, and Escape
 cancellation. Focused text inputs support insert, delete, selection, caret
-state, IME preedit, commit, and cancel, with winit IME events routed through
-`WindowDriver`. AccessKit protocol wiring, composition/caret paint overlays,
-richer hover/focus styling, and cursor/tooltip layers remain.
+state, arrow/Home/End movement with Shift selection extension, IME preedit,
+commit, and cancel, with winit IME events routed through `WindowDriver`.
+Composition text paints with an underline, a focused caret paints as a scene
+primitive, and the caret rectangle feeds winit's IME cursor area. AccessKit
+tree generation and action routing are implemented. A concrete OS AccessKit
+adapter, richer hover/focus styling, cursor/tooltip layers, and scroll-edge
+chaining/scrollbars remain.
 
 ---
 
@@ -362,6 +366,9 @@ Handlers receive an `A11yAction` and stage writes like any other event.
 - Reorder a keyed list; assert the focused row's a11y ID is unchanged.
 - Toggle a conditional; assert the branch's IDs are removed and new ones added,
   not reused.
+- Focus a text input; assert composition underline and caret geometry.
+- Press arrows with and without Shift; assert caret movement and selection
+  extension.
 
 ## 9. Cursors and tooltips
 

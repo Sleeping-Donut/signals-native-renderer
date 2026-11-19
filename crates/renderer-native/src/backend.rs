@@ -91,6 +91,10 @@ pub struct FrameStats {
     pub border_quads: usize,
     /// Glyph rectangles.
     pub glyph_quads: usize,
+    /// Caret rectangles.
+    pub caret_quads: usize,
+    /// Composition underlines.
+    pub underline_quads: usize,
     /// Glyph rectangles sourced from the atlas.
     pub atlas_glyphs: usize,
     /// Glyph rectangles rendered as placeholders.
@@ -170,6 +174,10 @@ pub trait WindowApp {
     /// Handle an AccessKit action request.
     fn accesskit_action(&mut self, _request: &ActionRequest) -> bool {
         false
+    }
+    /// Caret rectangle for IME candidate window placement.
+    fn ime_cursor_area(&self) -> Option<Rect> {
+        None
     }
 }
 
@@ -292,6 +300,12 @@ impl<A: WindowApp, B: PaintBackend> WindowDriver<A, B> {
     #[must_use]
     pub fn accesskit_adapter(&self) -> &AccessKitAdapter {
         &self.accesskit
+    }
+
+    /// Caret rectangle for IME candidate window placement.
+    #[must_use]
+    pub fn ime_cursor_area(&self) -> Option<Rect> {
+        self.app.ime_cursor_area()
     }
 
     /// Run one app frame and present it.

@@ -156,6 +156,19 @@ pub enum Primitive {
         clip: Option<Rect>,
         /// Paint transform. Text glyph positions are transformed by this.
         transform: Transform,
+        /// Whether to draw a composition underline.
+        underline: bool,
+    },
+    /// A text caret.
+    Caret {
+        /// Owning scene node.
+        node: SceneNodeId,
+        /// Caret rectangle.
+        rect: Rect,
+        /// Caret color.
+        color: Color,
+        /// Ancestor clip in screen coordinates.
+        clip: Option<Rect>,
     },
 }
 
@@ -164,7 +177,10 @@ impl Primitive {
     #[must_use]
     pub fn node(&self) -> SceneNodeId {
         match self {
-            Self::Fill { node, .. } | Self::Border { node, .. } | Self::Text { node, .. } => *node,
+            Self::Fill { node, .. }
+            | Self::Border { node, .. }
+            | Self::Text { node, .. }
+            | Self::Caret { node, .. } => *node,
         }
     }
 
@@ -172,7 +188,10 @@ impl Primitive {
     #[must_use]
     pub fn bounds(&self) -> Rect {
         match self {
-            Self::Fill { rect, .. } | Self::Border { rect, .. } | Self::Text { rect, .. } => *rect,
+            Self::Fill { rect, .. }
+            | Self::Border { rect, .. }
+            | Self::Text { rect, .. }
+            | Self::Caret { rect, .. } => *rect,
         }
     }
 }

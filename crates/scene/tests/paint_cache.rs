@@ -94,6 +94,7 @@ impl PaintTree for Tree {
                 color: data.text_color,
                 clip: None,
                 transform: Transform::IDENTITY,
+                underline: false,
             });
         }
     }

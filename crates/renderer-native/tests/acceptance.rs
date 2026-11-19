@@ -319,6 +319,7 @@ fn wgpu_glyph_atlas_renders_platform_text() {
         color: style.color,
         clip: None,
         transform: Transform::IDENTITY,
+        underline: false,
     });
     backend.render(&scene, &[]).expect("glyph render");
     backend.present().expect("present");

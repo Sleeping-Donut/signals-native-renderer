@@ -359,9 +359,12 @@ boundary, and AccessKit press/focus/value/selection actions route back into the
 retained input methods
 ([input.rs](crates/view/tests/input.rs),
 [renderer-native/tests/input.rs](crates/renderer-native/tests/input.rs),
-[acceptance.rs](crates/renderer-native/tests/acceptance.rs)). Remaining Phase 6
-work: a concrete OS AccessKit adapter, richer hover/focus styling, cursor/tooltip
-layers, and composition/caret painting overlays.
+[acceptance.rs](crates/renderer-native/tests/acceptance.rs)). IME composition
+text paints with an underline, focused carets paint as scene primitives, caret
+arrow/Home/End movement supports Shift selection extension, and the caret
+rectangle feeds the winit IME cursor area. Remaining Phase 6 work: a concrete OS
+AccessKit adapter, richer hover/focus styling, cursor/tooltip layers, and
+scroll-edge chaining/scrollbars.
 
 ### Phase 7 — Stores and authoring (3–4 weeks)
 

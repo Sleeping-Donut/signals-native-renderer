@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use renderer_api::{KeyEvent, Modifiers, NamedKey, PointerButton, PointerEvent, WheelEvent};
 use winit::{
-    dpi::LogicalSize,
+    dpi::{LogicalPosition, LogicalSize},
     event::{ElementState, Event, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     keyboard::{Key as WinitKey, NamedKey as WinitNamedKey},
@@ -140,7 +140,17 @@ pub fn run_windowed<A: WindowApp + 'static>(
                         window.request_redraw();
                     }
                     WindowEvent::RedrawRequested => match driver.redraw() {
-                        Ok(_) => {}
+                        Ok(_) => {
+                            if let Some(rect) = driver.ime_cursor_area() {
+                                window.set_ime_cursor_area(
+                                    LogicalPosition::new(f64::from(rect.x), f64::from(rect.y)),
+                                    LogicalSize::new(
+                                        f64::from(rect.width.max(1.0)),
+                                        f64::from(rect.height.max(1.0)),
+                                    ),
+                                );
+                            }
+                        }
                         Err(BackendError::Outdated | BackendError::Lost) => {
                             let _ = driver.backend_mut().recover();
                             window.request_redraw();

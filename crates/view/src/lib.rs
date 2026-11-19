@@ -24,7 +24,7 @@ use renderer_api::{
     TextMeasureRequest, TextMetrics, TextStyle, Transform, WheelEvent,
 };
 use scene::{PaintTree, Primitive, Scene, SceneBuilder, SceneStats};
-use text::{MonospaceShaper, TextSystem};
+use text::{MonospaceShaper, ShapedLayout, TextSystem};
 
 /// A mounted view node.
 struct ViewNode {
@@ -153,13 +153,26 @@ pub trait TextInputHandler {
     fn is_composing(&self) -> bool {
         false
     }
+    /// The current composition, if any.
+    fn composition(&self) -> Option<Composition> {
+        None
+    }
+    /// Move the caret left.
+    fn move_left(&mut self, _extend: bool) {}
+    /// Move the caret right.
+    fn move_right(&mut self, _extend: bool) {}
+    /// Move the caret home.
+    fn move_home(&mut self, _extend: bool) {}
+    /// Move the caret to the end.
+    fn move_end(&mut self, _extend: bool) {}
 }
 
 /// A simple UTF-8 text buffer with selection and IME composition.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextInput {
     text: String,
-    selection: Range<usize>,
+    anchor: usize,
+    caret: usize,
     composition: Option<Composition>,
     caret_rect: Rect,
 }
@@ -172,7 +185,8 @@ impl TextInput {
         let end = text.len();
         Self {
             text,
-            selection: end..end,
+            anchor: end,
+            caret: end,
             composition: None,
             caret_rect: Rect::default(),
         }
@@ -182,6 +196,70 @@ impl TextInput {
     #[must_use]
     pub fn composition(&self) -> Option<&Composition> {
         self.composition.as_ref()
+    }
+
+    /// The current ordered selection.
+    #[must_use]
+    pub fn selection_range(&self) -> Range<usize> {
+        self.anchor.min(self.caret)..self.anchor.max(self.caret)
+    }
+
+    /// Move the caret left, optionally extending the selection.
+    pub fn move_left(&mut self, extend: bool) {
+        let range = self.selection_range();
+        if !extend && range.start != range.end {
+            self.anchor = range.start;
+            self.caret = range.start;
+            return;
+        }
+        let mut caret = self.caret.min(self.text.len());
+        if caret > 0 {
+            caret -= 1;
+            while caret > 0 && !self.text.is_char_boundary(caret) {
+                caret -= 1;
+            }
+        }
+        self.caret = caret;
+        if !extend {
+            self.anchor = caret;
+        }
+    }
+
+    /// Move the caret right, optionally extending the selection.
+    pub fn move_right(&mut self, extend: bool) {
+        let range = self.selection_range();
+        if !extend && range.start != range.end {
+            self.anchor = range.end;
+            self.caret = range.end;
+            return;
+        }
+        let mut caret = self.caret.min(self.text.len());
+        if caret < self.text.len() {
+            caret += 1;
+            while caret < self.text.len() && !self.text.is_char_boundary(caret) {
+                caret += 1;
+            }
+        }
+        self.caret = caret;
+        if !extend {
+            self.anchor = caret;
+        }
+    }
+
+    /// Move to the start, optionally extending.
+    pub fn move_home(&mut self, extend: bool) {
+        self.caret = 0;
+        if !extend {
+            self.anchor = 0;
+        }
+    }
+
+    /// Move to the end, optionally extending.
+    pub fn move_end(&mut self, extend: bool) {
+        self.caret = self.text.len();
+        if !extend {
+            self.anchor = self.caret;
+        }
     }
 
     fn boundary(&self, mut index: usize) -> usize {
@@ -207,10 +285,11 @@ impl Default for TextInput {
 
 impl TextInputHandler for TextInput {
     fn insert_text(&mut self, text: &str) {
-        let range = self.selection.clone();
+        let range = self.selection_range();
         self.text.replace_range(range.clone(), text);
         let caret = range.start + text.len();
-        self.selection = caret..caret;
+        self.anchor = caret;
+        self.caret = caret;
     }
 
     fn set_composition(&mut self, text: &str, cursor: Option<Range<usize>>) {
@@ -241,45 +320,53 @@ impl TextInputHandler for TextInput {
     }
 
     fn delete_backward(&mut self) {
-        if self.selection.start != self.selection.end {
-            self.text.replace_range(self.selection.clone(), "");
-            self.selection = self.selection.start..self.selection.start;
+        let range = self.selection_range();
+        if range.start != range.end {
+            self.text.replace_range(range.clone(), "");
+            self.anchor = range.start;
+            self.caret = range.start;
             return;
         }
-        if self.selection.start == 0 {
+        if range.start == 0 {
             return;
         }
-        let mut start = self.selection.start - 1;
+        let mut start = range.start - 1;
         while start > 0 && !self.text.is_char_boundary(start) {
             start -= 1;
         }
-        self.text.replace_range(start..self.selection.start, "");
-        self.selection = start..start;
+        self.text.replace_range(start..range.start, "");
+        self.anchor = start;
+        self.caret = start;
     }
 
     fn delete_forward(&mut self) {
-        if self.selection.start != self.selection.end {
-            self.text.replace_range(self.selection.clone(), "");
-            self.selection = self.selection.start..self.selection.start;
+        let range = self.selection_range();
+        if range.start != range.end {
+            self.text.replace_range(range.clone(), "");
+            self.anchor = range.start;
+            self.caret = range.start;
             return;
         }
-        if self.selection.end >= self.text.len() {
+        if range.end >= self.text.len() {
             return;
         }
-        let mut end = self.selection.end + 1;
+        let mut end = range.end + 1;
         while end < self.text.len() && !self.text.is_char_boundary(end) {
             end += 1;
         }
-        self.text.replace_range(self.selection.end..end, "");
-        self.selection = self.selection.start..self.selection.start;
+        self.text.replace_range(range.end..end, "");
+        self.anchor = range.start;
+        self.caret = range.start;
     }
 
     fn selection(&self) -> Option<Range<usize>> {
-        Some(self.selection.clone())
+        Some(self.selection_range())
     }
 
     fn set_selection(&mut self, range: Range<usize>) {
-        self.selection = self.normalize(range);
+        let range = self.normalize(range);
+        self.anchor = range.start;
+        self.caret = range.end;
     }
 
     fn text(&self) -> &str {
@@ -296,6 +383,26 @@ impl TextInputHandler for TextInput {
 
     fn is_composing(&self) -> bool {
         self.composition.is_some()
+    }
+
+    fn move_left(&mut self, extend: bool) {
+        TextInput::move_left(self, extend);
+    }
+
+    fn move_right(&mut self, extend: bool) {
+        TextInput::move_right(self, extend);
+    }
+
+    fn move_home(&mut self, extend: bool) {
+        TextInput::move_home(self, extend);
+    }
+
+    fn move_end(&mut self, extend: bool) {
+        TextInput::move_end(self, extend);
+    }
+
+    fn composition(&self) -> Option<Composition> {
+        self.composition.clone()
     }
 }
 
@@ -939,6 +1046,14 @@ impl ViewTree {
         self.text_input(node)
     }
 
+    /// The focused input's caret rectangle for IME cursor placement.
+    #[must_use]
+    pub fn ime_cursor_area(&self) -> Option<Rect> {
+        let input = self.focused_text_input()?;
+        let rect = input.borrow().caret_rect();
+        (rect.width > 0.0 && rect.height > 0.0).then_some(rect)
+    }
+
     /// Set the focused input's IME composition.
     pub fn ime_preedit(&self, text: &str, cursor: Option<Range<usize>>) -> bool {
         let Some(input) = self.focused_text_input() else {
@@ -1028,6 +1143,22 @@ impl ViewTree {
             }
             Key::Named(NamedKey::Delete) => {
                 input.delete_forward();
+                true
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                input.move_left(event.modifiers.shift);
+                true
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                input.move_right(event.modifiers.shift);
+                true
+            }
+            Key::Named(NamedKey::Home) => {
+                input.move_home(event.modifiers.shift);
+                true
+            }
+            Key::Named(NamedKey::End) => {
+                input.move_end(event.modifiers.shift);
                 true
             }
             Key::Named(NamedKey::Enter) => {
@@ -3000,6 +3131,27 @@ fn reconcile<T, K, G, R>(
     *state.borrow_mut() = next;
 }
 
+fn caret_rect_for_layout(layout: &ShapedLayout, rect: scene::Rect, caret: usize) -> scene::Rect {
+    let mut line_index = layout.lines.len().saturating_sub(1);
+    for (index, line) in layout.lines.iter().enumerate() {
+        if caret <= line.byte_range.end {
+            line_index = index;
+            break;
+        }
+    }
+    let Some(line) = layout.lines.get(line_index) else {
+        return scene::Rect::new(rect.x, rect.y, 1.0, rect.height.max(1.0));
+    };
+    let mut x = line.glyphs.first().map_or(0.0, |glyph| glyph.x);
+    for glyph in &line.glyphs {
+        if caret >= glyph.cluster + glyph.ch.len_utf8() {
+            x = glyph.x + glyph.advance;
+        }
+    }
+    let top = rect.y + line.baseline - layout.ascent;
+    scene::Rect::new(rect.x + x, top, 1.0, layout.line_height.max(1.0))
+}
+
 struct ViewPaintTree<'a> {
     tree: &'a ViewTree,
 }
@@ -3029,7 +3181,7 @@ impl PaintTree for ViewPaintTree<'_> {
     }
 
     fn paint(&self, node: Self::Node, out: &mut Vec<Primitive>) {
-        let Some((renderer_id, style, text, rect)) = ({
+        let Some((renderer_id, style, view_text, rect)) = ({
             let nodes = self.tree.inner.nodes.borrow();
             nodes.get(node).map(|view| {
                 (
@@ -3041,6 +3193,35 @@ impl PaintTree for ViewPaintTree<'_> {
             })
         }) else {
             return;
+        };
+        let text_input = self.tree.text_input(node);
+        let (text, caret, composing) = match &text_input {
+            Some(input) => {
+                let input = input.borrow();
+                let base = input.text().to_string();
+                match input.composition() {
+                    Some(composition) => {
+                        let caret_byte = input
+                            .selection()
+                            .map_or(base.len(), |selection| selection.end)
+                            .min(base.len());
+                        let mut text = base;
+                        text.insert_str(caret_byte, &composition.text);
+                        let caret = caret_byte
+                            + composition
+                                .cursor
+                                .as_ref()
+                                .map_or(composition.text.len(), |cursor| cursor.end);
+                        (Some(text), Some(caret), true)
+                    }
+                    None => (
+                        Some(base),
+                        input.selection().map(|selection| selection.end),
+                        false,
+                    ),
+                }
+            }
+            None => (view_text, None, false),
         };
         let layout_rect = scene::Rect::new(rect.x, rect.y, rect.width, rect.height);
         let transform = self.tree.world_transform(node);
@@ -3071,7 +3252,7 @@ impl PaintTree for ViewPaintTree<'_> {
             }
         }
         if let Some(text) = text {
-            if !text.is_empty() {
+            if !text.is_empty() || text_input.is_some() {
                 // Layout geometry is pixel-snapped; give shaping a half-pixel
                 // of slack so a line at the exact snapped width does not wrap.
                 let layout = self.tree.inner.text.borrow_mut().layout(
@@ -3079,6 +3260,8 @@ impl PaintTree for ViewPaintTree<'_> {
                     style.text,
                     Some(rect.width.max(1.0) + 0.5),
                 );
+                let caret_rect =
+                    caret.map(|caret| caret_rect_for_layout(&layout, layout_rect, caret));
                 out.push(Primitive::Text {
                     node: renderer_id,
                     rect: layout_rect,
@@ -3086,7 +3269,25 @@ impl PaintTree for ViewPaintTree<'_> {
                     color: style.text.color,
                     clip,
                     transform,
+                    underline: composing,
                 });
+                if let (Some(input), Some(caret_rect)) = (&text_input, caret_rect) {
+                    if self.tree.is_focused(node) {
+                        let caret_rect = caret_rect.transformed(transform);
+                        input.borrow_mut().set_caret_rect(Rect {
+                            x: caret_rect.x,
+                            y: caret_rect.y,
+                            width: caret_rect.width,
+                            height: caret_rect.height,
+                        });
+                        out.push(Primitive::Caret {
+                            node: renderer_id,
+                            rect: caret_rect,
+                            color: style.text.color,
+                            clip,
+                        });
+                    }
+                }
             }
         }
     }

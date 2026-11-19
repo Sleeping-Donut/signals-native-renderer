@@ -723,12 +723,21 @@ fn collect_vertices(
                 }
                 stats.border_quads += edges;
             }
+            Primitive::Caret {
+                rect, color, clip, ..
+            } => {
+                if let Some(rect) = apply_clip(*rect, *clip) {
+                    push_quad(vertices, metrics, rect, *color, white);
+                    stats.caret_quads += 1;
+                }
+            }
             Primitive::Text {
                 rect,
                 layout,
                 color,
                 clip,
                 transform,
+                underline,
                 ..
             } => {
                 for line in &layout.lines {
@@ -753,6 +762,19 @@ fn collect_vertices(
                             push_quad(vertices, metrics, placeholder, *color, white);
                             stats.placeholder_glyphs += 1;
                         }
+                    }
+                }
+                if *underline && layout.width > 0.0 {
+                    let underline_rect = Rect::new(
+                        rect.x,
+                        rect.y + layout.height.max(1.0) - 1.0,
+                        layout.width,
+                        1.0,
+                    )
+                    .transformed(*transform);
+                    if let Some(underline_rect) = apply_clip(underline_rect, *clip) {
+                        push_quad(vertices, metrics, underline_rect, *color, white);
+                        stats.underline_quads += 1;
                     }
                 }
                 stats.glyph_quads += layout
