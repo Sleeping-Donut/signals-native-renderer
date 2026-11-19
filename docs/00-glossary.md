@@ -72,8 +72,10 @@ Values are dropped at disposal; slots are reused with a bumped generation.
 deliberate difference from JavaScript implementations that can retain references
 to disposed computations.
 
-**Subscription guard** — an RAII value that disposes an effect or removes a
-subscription when dropped. View nodes store their guards.
+**Cleanup handle** — an RAII value that removes a cleanup when dropped.
+
+**Effect handle** — a `Copy` capability over an effect with explicit `dispose`.
+Dropping it does nothing; the owner or an explicit call disposes.
 
 **Context** — a typed value attached to an owner and available to descendants.
 

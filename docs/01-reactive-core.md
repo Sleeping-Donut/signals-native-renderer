@@ -375,8 +375,10 @@ pub fn render_effect(cx: &Cx, compute: impl FnMut(&Cx) -> T + 'static,
 where T: 'static;
 ```
 
-`EffectHandle` is an RAII guard: dropping it disposes the effect and unlinks its
-edges. View nodes store their `EffectHandle`s; removing a node drops the guards.
+`EffectHandle` is a `Copy` handle. Dropping it does **not** dispose the effect;
+call `dispose(cx)` for an early stop. The owner disposes effects on scope exit.
+View nodes store their binding handles and dispose them when the node is removed
+(or own them through the node's owner).
 
 ### 8.2 First run
 
@@ -575,7 +577,7 @@ derived.get(cx)                                   // runs the closure every read
 // Effects
 effect(cx, compute, apply) -> EffectHandle
 render_effect(cx, compute, apply) -> EffectHandle
-effect_once(cx, apply) -> EffectHandle      // no compute value; runs once
+effect_once(cx, apply)                      // no compute value; runs once, no handle
 on_cleanup(cx, f)
 
 // Control
@@ -583,6 +585,27 @@ untrack(cx, f)
 flush(cx)
 flush(cx, f)                                 // run f, then flush synchronously
 ```
+
+### 12.1 Choosing a write method
+
+| Need | Use | Equality |
+|---|---|---|
+| Replace a value | `set(cx, v)` | Compares (`PartialEq` or custom) |
+| Compute the next from the previous | `update_with(cx, \|&v\| next)` | Compares, no clone; this is Solid's `setCount(c => c + 1)` |
+| Mutate in place / large value | `update(cx, \|&mut v\| ...)` | **Always notifies**; bypasses custom equality |
+
+Guidance:
+
+- Default to `set`.
+- For counters, toggles, and small transforms, use `update_with`. It matches
+  Solid's setter-updater and suppresses equal writes without cloning.
+- Use `update` for `Vec::push`, `HashMap::insert`, and large in-place edits. It
+  cannot compare without cloning, so it always notifies; a no-op `update` still
+  dirties subscribers.
+- Do not use `update` when a custom comparator matters; it bypasses
+  `create_signal_with`.
+- The `update` closure must not read or write the same signal; a reentrant write
+  is a borrow conflict.
 
 There is no combined public signal handle and no `RwSignal`. `create_signal()`,
 `create_derived_signal()`, and `create_async_derived_signal()` return a `(ReadSignal<T>,
@@ -752,16 +775,10 @@ Property tests:
 
 ## 15. Open questions
 
-1. Should `create_signal()` require `T: PartialEq` by default, or should equality be
-   explicit? (Leaning: `PartialEq` default, `create_signal_unchecked` escape.)
-2. Do we expose `Memo<T>` values by guard or by clone? Guards are faster but can
-   conflict with writes; clone is simpler for users. (Leaning: both, with guards
-   for internal code and `Clone` convenience for app code.)
-3. Is `flush(fn)` enough for imperative bursts, or do we need a separate batch
+Equality, reads, and effect handles are resolved in §8, §11, and §12.
+
+1. Is `flush(fn)` enough for imperative bursts, or do we need a separate batch
    scope? (Leaning: no separate `batch`; the tick is the batch, as in Solid 2.0.)
-4. Do effects need a visible `EffectHandle` in the public API, or is owner-scoped
-   disposal enough? Renderer bindings need explicit handles; app effects can be
-   owner-scoped. (Leaning: both.)
-5. How do we expose diagnostics without paying for them in release? A `diagnostics`
+2. How do we expose diagnostics without paying for them in release? A `diagnostics`
    feature that compiles owner paths and node names; default on in dev, off in
    release.

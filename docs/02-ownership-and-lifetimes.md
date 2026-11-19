@@ -168,29 +168,36 @@ pub fn on_cleanup(cx: &Cx, f: impl FnOnce() + 'static) -> CleanupHandle
 already released). Cleanup callbacks may not panic; a panic is caught, reported,
 and the remaining cleanups still run (Solid's "cleanup throw continues" rule).
 
-## 4. Subscription guards
+## 4. Effect handles
 
-Bindings and user effects are stored as guards, not raw IDs:
+Bindings and user effects are held through handles, not raw IDs:
 
 ```rust
-#[must_use = "dropping the guard disposes the effect"]
+#[derive(Clone, Copy)]
 pub struct EffectHandle {
     id: NodeId,
-    owner: Option<OwnerId>,
+    generation: u32,
 }
 
-impl Drop for EffectHandle {
-    fn drop(&mut self) { /* dispose effect, unlink edges, run cleanup */ }
+impl EffectHandle {
+    pub fn dispose(self, cx: &Cx);
+    pub fn is_disposed(self, cx: &Cx) -> bool; // optional, diagnostics/tests
 }
 ```
 
-- A view node stores `SmallVec<[EffectHandle; 4]>` for its bindings. Removing the
-  view node drops the guards; the effects disappear before the node slot is
-  freed.
-- A user effect can be `detach()`ed (leaked intentionally) or stored in an
-  owner. Detaching is explicit, matching Solid's `runWithOwner(null, ...)`.
-- Dropping a guard during a flush removes the effect from the heap and queues
-  edges for unlink at the end of the pass, never during iteration.
+- **Dropping the handle does not dispose the effect.** The handle is a `Copy`
+  capability, not an RAII guard. `let _ = effect(...)` still runs the effect.
+- `dispose` is idempotent. A disposed handle is a no-op; a stale generation is
+  rejected rather than resolving to a reused node.
+- The owner is authoritative: disposing the owner/component disposes its effects.
+  `dispose` is the early-stop path.
+- A view node stores a `SmallVec<[EffectHandle; 4]>` for its bindings; removing
+  the node calls `dispose` on each (or disposes the node's owner) before the node
+  slot is freed.
+- `dispose` during a flush removes the effect from the heap and queues edge
+  unlinks for the end of the pass, never during iteration.
+- There is no pause/resume in v1, and no `detach`. An effect that must outlive
+  its current owner is created under a longer-lived owner.
 
 ## 5. Reclamation
 
@@ -313,8 +320,7 @@ drop(c);                                // early removal
 
 // Guards
 let effect = effect(cx, compute, apply);
-effect.detach();                        // intentional leak
-// drop(effect) disposes
+effect.dispose(cx);                     // early stop; drop does nothing
 
 // Context
 provide_context(cx, Theme::Dark);

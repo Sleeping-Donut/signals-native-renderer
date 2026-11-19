@@ -759,13 +759,15 @@ or a measurement.
 - Updates: `set` replaces and compares; `update_with` maps old to new and
   compares without cloning (Solid's updater); `update` mutates in place and
   always notifies (the large-value/Leptos-style escape hatch).
+- `EffectHandle` is a public `Copy` capability with explicit `dispose`. Effects
+  remain owner-scoped; dropping the handle does nothing. `effect_once` returns no
+  handle. No pause/resume or detach in v1.
 
 ### Leaning, needs confirmation (recommendation exists)
 
 | Area | Question | Current leaning |
 |---|---|---|
 | Props variants | Keep `Reactive`/`Derived` or one read handle? | Collapse; both implement `Read<T>` |
-| Effects | Public `EffectHandle` or owner-only? | Both: handles for bindings, owner-scoped for app effects |
 | Ownership | Public `OwnerId`? | No; opaque `Scope`, IDs for diagnostics |
 | Cleanup panic | Halt or report/continue? | Report and continue; halt only for uncaught compute/apply errors |
 | Boundary content | Dispose on fallback or keep alive? | Dispose in v1; `KeepAlive` opt-in |
@@ -788,7 +790,6 @@ or a measurement.
 
 | Phase | Question | Why it is still open | Next step |
 |---|---|---|---|
-| 1 | EffectHandle visibility | Public API surface vs binding lifetime | Decide before prelude freeze |
 | 2 | Colorless suspension implementation | Private panic payload vs custom unwinder; `panic = "abort"` | Prototype Path A/B; measure |
 | 2 | Transaction merge criterion | Sharing a reader vs sharing a node | Fuzz independent-widget shapes |
 | 2 | Re-ask detection | Explicit `refresh()` vs hashing tracked inputs | Decide with async rule tests |
@@ -824,18 +825,9 @@ or a measurement.
 The list is intentionally larger than the set of blockers. Most items are
 phase-gated or need a prototype/measurement; they do not prevent starting.
 
-**One Phase 0/1 item remains: `EffectHandle` visibility.** Equality, reads, and
-`update` are resolved above. The effect decision is the shape of the handle:
-
-- A. Public `Copy` handle with explicit `dispose`; owner-scoped lifetime.
-- B. Owner-only; effects return nothing.
-- C. Handle only for `render_effect`/bindings; user effects owner-only.
-- D. RAII handle; dropping it disposes.
-
-A is the recommendation: it matches Leptos's explicit handle while keeping
-Solid's owner-scoped lifetime. B is the minimal fallback; C is inconsistent; D
-has the `let _ = effect(...)` footgun and loses `Copy`. Accept A and Phase 0/1
-can start; the decision can still be revised before the core API freezes.
+**No Phase 0/1 items remain.** Equality, reads, `update`, and `EffectHandle`
+are resolved above, so Phase 0/1 can start. They can still be revised before the
+core API freezes.
 
 The next gate is the async core (Phase 2): colorless suspension, transaction
 merge criterion, re-ask detection, and `is_pending` in a held frame. Phase 3 adds
