@@ -183,15 +183,18 @@ The component is a mount function. It runs once. `impl View` is erased to
 also valid.
 
 **Why `cx` instead of an ambient runtime?** Leptos's `#[component]` has no `cx`;
-reactive functions find the runtime through thread-local owner context. We keep
-an explicit context so a process can host multiple runtimes (tests, multiple
-windows, embedding) and so ownership is visible. The macro injects `cx` as sugar:
-the generated function is `fn Counter(props, cx: &mut Cx) -> ViewNodeId`. Async
-bodies get an owned `CxHandle` instead of `&Cx`; see
-[04-async-model.md](04-async-model.md) §3.5. The alternatives are to require an
-explicit `cx` parameter (honest, noisy) or to adopt a scoped/thread-local runtime
-(clean authoring, hidden global). We keep the explicit form and pay the macro
-complexity.
+reactive functions find the runtime through thread-local owner context. Dioxus
+0.5 removed its `cx: Scope` parameter for the same hook-based model; Yew's
+function components use hooks, while its struct components take an explicit
+`&Context<Self>` in each lifecycle method. We keep an explicit context so a
+process can host multiple runtimes (tests, multiple windows, embedding) and so
+ownership is visible. The alternatives are to require an explicit `cx` parameter
+(honest, one extra parameter) or to adopt a scoped/thread-local runtime (clean
+authoring, hidden global). Our current leaning is the explicit parameter with the
+macro still handling props, children, and the owner scope; injection is sugar we
+may drop. Async bodies get an owned `CxHandle` instead of `&Cx` (see
+[04-async-model.md](04-async-model.md) §3.5), which is how we keep explicit
+context without Dioxus 0.4's "scope cannot escape the body" lifetime problem.
 
 ### 3.2 Props
 
