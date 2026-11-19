@@ -52,6 +52,29 @@ choose GPLv3 and combine Apache-2.0 code, but we keep GPUI reference-only until
 the project explicitly distributes under GPLv3-compatible terms and carries the
 Apache notices. See [`docs/reference-repos.md`](docs/reference-repos.md).
 
+## Development
+
+Phase 0 is implemented as a Cargo workspace with a Nix flake. The flake pins the
+toolchain; do not install Rust globally.
+
+```sh
+nix develop
+cargo test --workspace
+cargo bench -p reactive-core
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Without an interactive shell:
+
+```sh
+nix develop -c cargo test --workspace
+nix develop -c cargo bench -p reactive-core
+```
+
+Phase 0 covers the generational arena, `NodeId`/`Handle`, the runtime shell, the
+manual spawner, and the benchmark harness. Phase 1 adds the reactive graph.
+
 ## The one-paragraph summary
 
 One reactive graph, one retained tree, one checkpoint per frame. State and

@@ -158,6 +158,12 @@ harness.
 allocates and frees in bounded time; `cargo test` and `cargo bench` run on macOS
 and Linux.
 
+**Status (2026-11-19): implemented.** The workspace, arena, handles, runtime
+shell, manual spawner, property tests, and arena benchmark live in
+[`crates/`](crates/). The flake and CI matrix cover macOS and Linux:
+`nix develop -c cargo test --workspace` and
+`nix develop -c cargo bench -p reactive-core`.
+
 ### Phase 1 — Reactive core (3–4 weeks)
 
 **Build:** signals, memos, split effects, render effects, dependency edges,

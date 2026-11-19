@@ -1,2 +1,5 @@
 refs/*
-
+/target
+/result
+/.direnv
+Cargo.lock.orig
