@@ -143,6 +143,40 @@ fn tab_order_skips_disabled_nodes_and_wraps() {
 }
 
 #[test]
+fn focused_button_activates_with_enter_and_space() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let (count, set_count) = create_signal(&cx, 0_u32);
+    let root = tree.mount(
+        &cx,
+        button_text("bump", move |cx| {
+            set_count.update_with(cx, |value| value + 1);
+        })
+        .style(px(100.0, 30.0)),
+    );
+    tree.set_viewport(200.0, 100.0);
+    tree.frame(&cx, 0);
+    tree.set_focus(Some(root));
+
+    let enter = KeyEvent::new(Key::Named(NamedKey::Enter), Modifiers::NONE);
+    assert!(tree.key_down(&enter));
+    cx.flush().unwrap();
+    assert_eq!(count.get(&cx), 1);
+    let space = KeyEvent::new(
+        Key::Named(NamedKey::Space),
+        Modifiers {
+            shift: true,
+            ..Modifiers::NONE
+        },
+    );
+    assert!(tree.key_down(&space));
+    cx.flush().unwrap();
+    assert_eq!(count.get(&cx), 2);
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
 fn focused_key_binding_and_global_binding_dispatch() {
     let (runtime, tree, _renderer) = setup();
     let cx = runtime.cx();

@@ -160,14 +160,27 @@ Notes:
 4. `counter_two_mounts` — disposal of one instance leaves the other's local and
    the shared value intact.
 
-**Implementation status.** The headless two-instance port and operation-log
-checks are in [`headless_counter.rs`](../crates/renderer-null/tests/headless_counter.rs).
-A native two-instance window example with real clicks and key bindings is in
-[`renderer-native/examples/counter.rs`](../crates/renderer-native/examples/counter.rs).
-Native pointer/key routing is covered by
+**Implementation status.** The headless two-instance port implements all four
+checks in
+[`headless_counter.rs`](../crates/renderer-null/tests/headless_counter.rs):
+`counter_local_isolation`, `counter_shared_propagation`,
+`counter_no_rebuild_after_mount`, and
+`counter_two_mounts_survive_one_disposal`. The no-rebuild check rejects every
+non-`SetText` operation after mount, and each counter mounts under its own owner
+so one instance can be disposed independently.
+
+The same app shape runs on the retained view tree in
+[`view/tests/counter.rs`](../crates/view/tests/counter.rs). That test covers
+pointer clicks, Enter/Space activation of a focused button, AccessKit focus and
+labels, focus-state paint, and the pointer cursor.
+
+[`renderer-native/examples/counter.rs`](../crates/renderer-native/examples/counter.rs)
+is the native two-instance window app with hover/focus styles, pointer cursors,
+keyboard activation, and AccessKit tree/action exposure. Native pointer/key
+routing is covered by
 [`renderer-native/tests/input.rs`](../crates/renderer-native/tests/input.rs).
-The full-op-log no-structural-work assertion and an explicit disposal test for
-one counter instance remain.
+A manual OS screen-reader pass (VoiceOver/Narrator/Orca) is the remaining
+acceptance step for the labelled counter.
 
 **Milestone:** M1 headless (signals and bindings), M3 on the null renderer
 (operation log), M4–M5 natively.

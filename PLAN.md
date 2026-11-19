@@ -228,8 +228,9 @@ defines the object-safe contract and capability traits;
 deterministic operation log. Conformance tests cover structure, text,
 attributes, style, events, errors, frame hooks, and the log
 ([conformance.rs](crates/renderer-null/tests/conformance.rs)). The headless
-counter renders two instances, updates only the changed text operations, and
-preserves per-instance state
+counter renders two instances, updates only the changed text operations, rejects
+structural operations after mount, and preserves the surviving instance when the
+other is disposed
 ([headless_counter.rs](crates/renderer-null/tests/headless_counter.rs)).
 
 ### Phase 4 — Retained native renderer: structure (4–6 weeks)
@@ -251,6 +252,7 @@ the `FocusCapable` capability and survives reorder. Tests cover a two-counter
 builder tree, a 10k-row reorder with unchanged text bindings and preserved row
 state/focus, a branch slot, the macro, and an allocation profile
 ([retained_tree.rs](crates/view/tests/retained_tree.rs),
+[counter.rs](crates/view/tests/counter.rs),
 [view_macro.rs](crates/view/tests/view_macro.rs),
 [allocation_profile.rs](crates/view/tests/allocation_profile.rs)).
 
@@ -354,7 +356,9 @@ press/focus actions. [`renderer-api`](crates/renderer-api/src/lib.rs) owns the
 key/modifier/pointer event types. [`renderer-native`](crates/renderer-native/src/lib.rs)
 routes winit pointer and keyboard events through `WindowDriver` into the app;
 [`examples/counter.rs`](crates/renderer-native/examples/counter.rs) is a native
-two-instance counter with clickable buttons and key bindings.
+two-instance counter with clickable buttons, Enter/Space activation for focused
+buttons, hover/focus styles, pointer cursors, and AccessKit tree/action
+exposure.
 
 Tests cover topmost hit testing, click dispatch, tab order and disabled nodes,
 focused/global key bindings, a11y roles/labels/focus, a11y press/focus actions,
@@ -366,9 +370,10 @@ default-action suppression, and scroll state with clipped viewports, clamped
 offsets, deepest-scrollable wheel routing, painted/hit-test translation, and
 typed drag/drop sessions with start/move/end callbacks and payload validation,
 and focused text-input/IME handlers with composition, commit/cancel, deletion,
-selection, caret state, native winit IME routing, and AccessKit `TreeUpdate`
+selection, caret state, native winit IME routing, AccessKit `TreeUpdate`
 generation with roles, labels, values, bounds, disabled state, focus, and stable
-keyed-row ids. The native driver applies updates through an `AccessKitAdapter`
+keyed-row ids, and the counter demo's local/shared, keyboard-activation,
+focus-paint, cursor, and AccessKit checks. The native driver applies updates through an `AccessKitAdapter`
 boundary, and AccessKit press/focus/value/selection actions route back into the
 retained input methods
 ([input.rs](crates/view/tests/input.rs),
@@ -386,8 +391,11 @@ paint track/thumb primitives that move with the scroll offset. The winit window
 path now uses `accesskit_winit` (winit 0.30) to deliver AccessKit platform
 events: initial-tree requests trigger a redraw, action requests route through
 `WindowDriver`, and each redraw feeds the latest `TreeUpdate` back to the OS
-adapter. Phase 6's feature scope is complete; only the hardware-dependent
-Phase 5 evidence remains.
+adapter. Focused buttons activate with Enter/Space, and the native counter
+example exposes its AccessKit tree and actions. Phase 6's code scope is
+complete. The remaining acceptance step is a manual OS screen-reader pass
+(VoiceOver/Narrator/Orca) over the labelled counter. Phase 5 evidence is
+complete under the hardware-adapted M3 Pro baseline.
 
 ### Phase 7 — Stores and authoring (3–4 weeks)
 

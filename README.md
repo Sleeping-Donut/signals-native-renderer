@@ -95,7 +95,8 @@ dispatch with default suppression, scroll state/wheel routing, typed
 drag/drop, focused text input/IME with painted composition and caret,
 AccessKit tree generation, OS adapter delivery, and action routing, hover
 cursors and delayed tooltips, hover/focus state styles, scroll-edge chaining and painted
-scrollbars, and a native two-instance counter example.
+scrollbars, and a native two-instance counter example with click, keyboard, and
+AccessKit support.
 
 CI is path-filtered: changes to prose, docs, plans, and the README do not run the
 Rust gate. Code, dependency, flake, toolchain, and workflow changes do.

@@ -2033,6 +2033,23 @@ impl ViewTree {
             }
         }
 
+        if matches!(event.key, Key::Named(NamedKey::Enter | NamedKey::Space))
+            && !event.modifiers.control
+            && !event.modifiers.meta
+            && !event.modifiers.alt
+        {
+            if let Some(focused) = self.focused() {
+                let activatable = self
+                    .inner
+                    .nodes
+                    .borrow()
+                    .get(focused)
+                    .is_some_and(|node| node.interactive && !node.disabled);
+                if activatable {
+                    return self.click_node(focused);
+                }
+            }
+        }
         if event.key == Key::Named(NamedKey::Tab) {
             if event.modifiers.shift {
                 self.focus_prev();

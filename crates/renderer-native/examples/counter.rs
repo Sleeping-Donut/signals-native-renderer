@@ -9,11 +9,12 @@ use std::rc::Rc;
 
 use reactive_core::{create_memo, create_signal, ReadSignal, Runtime, RuntimeHandle, WriteSignal};
 use renderer_api::{
-    DefiniteLength, Edges, KeyEvent, Length, PointerEvent, ResolvedStyle, Size, TextStyle,
+    Color, CursorIcon, DefiniteLength, Edges, KeyEvent, Length, PointerEvent, ResolvedStyle, Size,
+    TextStyle,
 };
 use renderer_native::{run_windowed, BackendMetrics, FrameOutput, WindowApp};
 use renderer_null::{NullRenderer, SharedNullRenderer};
-use view::{button, column, text_fn, View, ViewTree};
+use view::{button, column, text_fn, StateStyle, View, ViewTree};
 
 struct CounterApp {
     runtime: RuntimeHandle,
@@ -50,26 +51,44 @@ fn counter(cx: &reactive_core::Cx<'_>, shared: ReadSignal<u32>, bump: WriteSigna
         bottom: DefiniteLength::Px(12.0),
         left: DefiniteLength::Px(12.0),
     };
-    stack.background = Some(renderer_api::Color::new(0.16, 0.17, 0.2, 1.0));
+    stack.background = Some(Color::new(0.16, 0.17, 0.2, 1.0));
 
     let mut button_style = style();
     button_style.size = Size {
         width: Length::Px(260.0),
         height: Length::Px(40.0),
     };
-    button_style.background = Some(renderer_api::Color::new(0.24, 0.28, 0.36, 1.0));
+    button_style.background = Some(Color::new(0.24, 0.28, 0.36, 1.0));
+    button_style.border = Edges {
+        top: 1.0,
+        right: 1.0,
+        bottom: 1.0,
+        left: 1.0,
+    };
+    button_style.border_color = Some(Color::new(0.36, 0.42, 0.54, 1.0));
+
+    let hover_style = StateStyle::new().background(Color::new(0.3, 0.36, 0.46, 1.0));
+    let focus_style = StateStyle::new()
+        .background(Color::new(0.2, 0.42, 0.62, 1.0))
+        .border_color(Color::new(0.62, 0.82, 1.0, 1.0));
 
     column(vec![
         button(
             vec![text_fn(move |cx| format!("local {}", local.get(cx)))],
             move |cx| set_local.update_with(cx, |value| value + 1),
         )
-        .style(button_style),
+        .style(button_style)
+        .hover_style(hover_style)
+        .focus_style(focus_style)
+        .cursor(CursorIcon::Pointer),
         button(
             vec![text_fn(move |cx| format!("shared {}", shared.get(cx)))],
             move |cx| bump.update_with(cx, |value| value + 1),
         )
-        .style(button_style),
+        .style(button_style)
+        .hover_style(hover_style)
+        .focus_style(focus_style)
+        .cursor(CursorIcon::Pointer),
         text_fn(move |cx| format!("local double {}", double.get(cx))).style(style()),
     ])
     .style(stack)
@@ -98,7 +117,7 @@ impl CounterApp {
             bottom: DefiniteLength::Px(16.0),
             left: DefiniteLength::Px(16.0),
         };
-        root_style.background = Some(renderer_api::Color::new(0.08, 0.09, 0.12, 1.0));
+        root_style.background = Some(Color::new(0.08, 0.09, 0.12, 1.0));
 
         let root = tree.mount(
             &cx,
@@ -150,6 +169,14 @@ impl WindowApp for CounterApp {
 
     fn key_down(&mut self, event: &KeyEvent) -> bool {
         self.tree.key_down(event)
+    }
+
+    fn accesskit_update(&self) -> Option<accesskit::TreeUpdate> {
+        self.tree.accesskit_tree()
+    }
+
+    fn accesskit_action(&mut self, request: &accesskit::ActionRequest) -> bool {
+        self.tree.dispatch_accesskit_action(request)
     }
 }
 
