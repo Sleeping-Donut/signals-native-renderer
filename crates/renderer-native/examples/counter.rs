@@ -3,8 +3,12 @@
 //! Each counter owns a local signal; both share a module-level signal. The
 //! local double is a memo. Clicks and keyboard focus are handled by the view
 //! tree, not by renderer-specific event hooks.
+//!
+//! Set `COUNTER_SNAPSHOT=/path/to/frame.rgba` to render one offscreen frame at
+//! 1520x720 (2x) without opening a window.
 
 use std::cell::RefCell;
+use std::io::Write;
 use std::rc::Rc;
 
 use reactive_core::{create_memo, create_signal, ReadSignal, Runtime, RuntimeHandle, WriteSignal};
@@ -12,7 +16,9 @@ use renderer_api::{
     Color, CursorIcon, DefiniteLength, Edges, KeyEvent, Length, PointerEvent, ResolvedStyle, Size,
     TextStyle,
 };
-use renderer_native::{run_windowed, BackendMetrics, FrameOutput, WindowApp};
+use renderer_native::{
+    run_windowed, BackendMetrics, FrameOutput, PaintBackend, WgpuBackend, WindowApp,
+};
 use renderer_null::{NullRenderer, SharedNullRenderer};
 use text::CosmicShaper;
 use view::{button, column, text_fn, StateStyle, View, ViewTree};
@@ -60,6 +66,12 @@ fn counter(cx: &reactive_core::Cx<'_>, shared: ReadSignal<u32>, bump: WriteSigna
         height: Length::Px(40.0),
     };
     button_style.background = Some(Color::new(0.24, 0.28, 0.36, 1.0));
+    button_style.padding = Edges {
+        top: DefiniteLength::Px(8.0),
+        right: DefiniteLength::Px(10.0),
+        bottom: DefiniteLength::Px(8.0),
+        left: DefiniteLength::Px(10.0),
+    };
     button_style.border = Edges {
         top: 1.0,
         right: 1.0,
@@ -182,7 +194,32 @@ impl WindowApp for CounterApp {
     }
 }
 
+fn write_snapshot(path: &str) {
+    let metrics = BackendMetrics::new(1520, 720, 2.0);
+    let mut app = CounterApp::new();
+    app.resize(metrics);
+    let output = app.frame(metrics);
+    let mut backend = WgpuBackend::new_headless(
+        metrics.physical_width,
+        metrics.physical_height,
+        metrics.scale,
+    )
+    .expect("headless wgpu");
+    backend
+        .render(&output.scene, &output.damage)
+        .expect("render");
+    backend.present().expect("present");
+    let (width, height, pixels) = backend.read_image().expect("readback");
+    let mut file = std::fs::File::create(path).expect("snapshot file");
+    file.write_all(&pixels).expect("snapshot pixels");
+    eprintln!("snapshot: {width}x{height}");
+}
+
 fn main() {
+    if let Ok(path) = std::env::var("COUNTER_SNAPSHOT") {
+        write_snapshot(&path);
+        return;
+    }
     let app = CounterApp::new();
     if let Err(error) = run_windowed("signals-native counter", 760, 360, app) {
         eprintln!("{error}");

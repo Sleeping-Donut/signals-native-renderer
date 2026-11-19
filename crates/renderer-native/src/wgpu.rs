@@ -848,6 +848,9 @@ fn draw_text_run(
     for line in &layout.lines {
         let line_y = rect.y + line.baseline - layout.ascent;
         for glyph in &line.glyphs {
+            if !crate::is_paintable_glyph(glyph) {
+                continue;
+            }
             if let Some(image) = &glyph.image {
                 if let Some(entry) = atlas.ensure(image) {
                     let glyph_rect = draw_glyph(
@@ -869,8 +872,9 @@ fn draw_text_run(
     stats.glyph_quads += layout
         .lines
         .iter()
-        .map(|line| line.glyphs.len())
-        .sum::<usize>();
+        .flat_map(|line| &line.glyphs)
+        .filter(|glyph| crate::is_paintable_glyph(glyph))
+        .count();
 }
 
 fn placeholder_glyph(rect: &Rect, line_y: f32, glyph: &Glyph, ascent: f32) -> Rect {

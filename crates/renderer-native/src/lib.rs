@@ -23,3 +23,39 @@ pub use headless::{HeadlessBackend, HeadlessFrame};
 pub use wgpu::WgpuBackend;
 #[cfg(feature = "window")]
 pub use window::{run_windowed, WindowError};
+
+/// Whether a shaped glyph should produce paint geometry.
+///
+/// Spaces, tabs, and line breaks carry an advance but no mask. Drawing a
+/// placeholder for them produces black rectangles between words.
+pub(crate) fn is_paintable_glyph(glyph: &text::Glyph) -> bool {
+    !glyph.ch.is_whitespace()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_paintable_glyph;
+    use text::Glyph;
+
+    fn glyph(ch: char) -> Glyph {
+        Glyph {
+            ch,
+            cluster: 0,
+            x: 0.0,
+            y: 0.0,
+            advance: 4.0,
+            glyph_id: 0,
+            font_id: 0,
+            image: None,
+        }
+    }
+
+    #[test]
+    fn whitespace_glyphs_are_not_painted() {
+        assert!(is_paintable_glyph(&glyph('a')));
+        assert!(is_paintable_glyph(&glyph('0')));
+        assert!(!is_paintable_glyph(&glyph(' ')));
+        assert!(!is_paintable_glyph(&glyph('\t')));
+        assert!(!is_paintable_glyph(&glyph('\n')));
+    }
+}

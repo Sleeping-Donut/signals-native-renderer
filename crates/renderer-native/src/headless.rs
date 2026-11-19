@@ -84,14 +84,15 @@ impl PaintBackend for HeadlessBackend {
                     let glyphs = layout
                         .lines
                         .iter()
-                        .map(|line| line.glyphs.len())
-                        .sum::<usize>();
+                        .flat_map(|line| &line.glyphs)
+                        .filter(|glyph| crate::is_paintable_glyph(glyph))
+                        .count();
                     stats.glyph_quads += glyphs;
                     let atlas = layout
                         .lines
                         .iter()
                         .flat_map(|line| &line.glyphs)
-                        .filter(|glyph| glyph.image.is_some())
+                        .filter(|glyph| crate::is_paintable_glyph(glyph) && glyph.image.is_some())
                         .count();
                     stats.atlas_glyphs += atlas;
                     stats.placeholder_glyphs += glyphs - atlas;
