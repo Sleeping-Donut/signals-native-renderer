@@ -152,8 +152,8 @@ separates "async" from "signal".
 The correct model is orthogonal:
 
 - **`ReadSignal<T>` / `WriteSignal<T>`** — the split view of a writable source:
-  plain (`signal`), derived writable (`derived_signal`, Solid's
-  `createSignal(fn)`), or async derived writable (`async_derived_signal`). A plain
+  plain (`create_signal`), derived writable (`create_derived_signal`, Solid's
+  `createSignal(fn)`), or async derived writable (`create_async_derived_signal`). A plain
   source has no compute and is always ready.
 - **`Memo<T>`** — read-only derived. Its compute may be synchronous or
   asynchronous.
@@ -168,21 +168,21 @@ Constructors differ because Rust has no overloading, but they return the same
 types:
 
 ```rust
-Memo::new(cx, |cx, prev| ...)          // sync
-Memo::new_async(cx, |cx| ...)          // async
-let (read, write) = signal(cx, value);// plain source
-let (read, write) = derived_signal(cx, |cx, prev| ...); // writable derived
-let (read, write) = async_derived_signal(cx, |cx| ...);         // writable derived, async
+create_memo(cx, |cx, prev| ...)          // sync
+create_async_memo(cx, |cx| ...)          // async
+let (read, write) = create_signal(cx, value);// plain source
+let (read, write) = create_derived_signal(cx, |cx, prev| ...); // writable derived
+let (read, write) = create_async_derived_signal(cx, |cx| ...);         // writable derived, async
 ```
 
 A helper taking `Memo<T>` does not care how it was built. `AsyncMemo<T>` is not a
 distinct type or read contract; keep it, if at all, as a type alias for
 readability.
 
-`async_derived_signal` is not an "async node type." It is a **writable derived
+`create_async_derived_signal` is not an "async node type." It is a **writable derived
 signal whose compute happens to be async**, and it returns the same
 `(ReadSignal<T>, WriteSignal<T>)` pair as a sync derived signal. If you only need
-a read-only async derivation, use `Memo::new_async` instead; there is no write
+a read-only async derivation, use `create_async_memo` instead; there is no write
 half.
 
 **Dependencies do not color the node.** Choose the async constructor only when
@@ -244,6 +244,9 @@ the same capabilities:
   A detached task gets `TaskCx`; its writes are mainline, not part of an action.
 - `async |cx|` binds `cx: CxHandle` (owned); a sync closure binds `&Cx`. The
   macro injects the right one from the closure form. The node type is unchanged.
+- Read/write methods are generic over the context capability (`&Cx` or
+  `&CxHandle`), so `state.get(&cx)` works with either; sketches often write
+  `get(cx)` for brevity.
 
 Do not hold a read guard across an `await`:
 
@@ -355,7 +358,7 @@ impl<T: 'static> WriteSignal<T> {
 }
 ```
 
-A plain `signal()` pair never suspends and `read.get` always returns a value. A
+A plain `create_signal()` pair never suspends and `read.get` always returns a value. A
 derived writable signal may suspend if its compute is async; writes through
 `write.update` set the `prev` value for the next compute, matching Solid's
 function-form signal. There is no combined public signal and no `RwSignal`.
@@ -430,7 +433,7 @@ enum AppError {
     // ...
 }
 
-let user = Memo::new_async(cx, {
+let user = create_async_memo(cx, {
     let user_id = props.user_id;
     move |cx| async move {
         let id = user_id.get(cx);          // sync tracked read; no ?
@@ -469,7 +472,7 @@ reads are tracked; constructor names are illustrative.)
 
 ```rust
 // 1. Colorless in a memo: the memo stays pending, its readers hold.
-let label = Memo::new(cx, move |cx| {
+let label = create_memo(cx, move |cx| {
     let user = user.get(cx);          // suspends if not ready
     format!("{} ({})", user.name, user.role)
 });
@@ -486,7 +489,7 @@ fn greeting(user: &User) -> String {
     format!("Hi {}", user.name)
 }
 
-let text = Memo::new(cx, move |cx| greeting(&user.get(cx)));
+let text = create_memo(cx, move |cx| greeting(&user.get(cx)));
 
 // 4. Imperative edge: read only when the value is ready.
 if !count.is_pending(cx) {
@@ -533,10 +536,10 @@ fn profile_ui(
 }
 
 #[component]
-fn ProfileCard(props: ProfileCardProps) -> impl View {
-    let (show_details, set_show_details) = signal(cx, false);
+fn ProfileCard(cx: &mut Cx, props: ProfileCardProps) -> impl View {
+    let (show_details, set_show_details) = create_signal(cx, false);
 
-    let user = Memo::new_async(cx, {
+    let user = create_async_memo(cx, {
         let user_id = props.user_id;
         move |cx| {
             let id = user_id.get(cx);
@@ -566,9 +569,9 @@ lands, the slot renders the profile.
 
 ```rust
 fn profile_card(cx: &mut Cx, props: ProfileCardProps) -> ViewNodeId {
-    let (show_details, set_show_details) = signal(cx, false);
+    let (show_details, set_show_details) = create_signal(cx, false);
 
-    let user = Memo::new_async(cx, {
+    let user = create_async_memo(cx, {
         let user_id = props.user_id;
         move |cx| {
             let id = user_id.get(cx);
@@ -671,7 +674,7 @@ impl FlightCtx {
 Typical pattern:
 
 ```rust
-Memo::new_async(cx, |cx| {
+create_async_memo(cx, |cx| {
     let ctx = cx.flight_ctx();
     let bg = cx.background_spawner();       // Clone + 'static handle
     async move {

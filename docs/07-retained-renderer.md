@@ -243,7 +243,7 @@ pub struct CounterProps {
 }
 
 #[component]
-fn Counter(props: CounterProps) -> impl View {
+fn Counter(cx: &mut Cx, props: CounterProps) -> impl View {
     view! {
         <div>
             <span>{props.label}</span>
@@ -516,8 +516,8 @@ struct AppState {
 struct Todo { id: u64, title: String, done: bool }
 
 #[component]
-fn App(state: Store<AppState>) -> impl View {
-    let (filter, _set_filter) = signal(cx, Filter::All);
+fn App(cx: &mut Cx, state: Store<AppState>) -> impl View {
+    let (filter, _set_filter) = create_signal(cx, Filter::All);
 
     view! {
         <div class="app">
@@ -546,7 +546,7 @@ fn App(state: Store<AppState>) -> impl View {
 }
 
 #[component]
-fn Row(todo: Field<Todo>) -> impl View {
+fn Row(cx: &mut Cx, todo: Field<Todo>) -> impl View {
     view! {
         <div class="row">
             <input type="checkbox" checked=todo.done() />

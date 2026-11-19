@@ -352,17 +352,17 @@ a signal with a compute function, not a read-only memo.
 
 **Decision.** Async is a property of the compute function:
 
-- Writable sources are split: `signal()` / `derived_signal()` / `async_derived_signal()`
+- Writable sources are split: `create_signal()` / `create_derived_signal()` / `create_async_derived_signal()`
   return `(ReadSignal<T>, WriteSignal<T>)`. There is no combined public signal
   and no `RwSignal`.
 - `Memo<T>` is read-only derived; its compute may be sync or async.
 - Both halves use `get`/`is_pending`/`latest`. A plain signal never suspends.
 - Async state is cold (`Option<Box<AsyncState>>`); sync nodes do not pay for it.
-- Constructors differ (`Memo::new` / `Memo::new_async`,
-  `signal` / `derived_signal` / `async_derived_signal`) because Rust has no overloading,
-  but the read half is always `ReadSignal<T>` and the write half is always
-  `WriteSignal<T>`. A helper taking `ReadSignal<T>` or `Memo<T>` does not care
-  how it was built.
+- Constructors differ (`create_memo` / `create_async_memo`,
+  `create_signal` / `create_derived_signal` / `create_async_derived_signal`)
+  because Rust has no overloading, but the read half is always `ReadSignal<T>`
+  and the write half is always `WriteSignal<T>`. A helper taking `ReadSignal<T>`
+  or `Memo<T>` does not care how it was built.
 - Do not add a normalizing `new` trait. Sync/async blanket impls overlap; a
   `Sync`/`Async` or `Compute` wrapper is still visible at the call site and only
   hides the mode. Keep the explicit constructors; a `Compute` wrapper may exist
@@ -721,7 +721,7 @@ or a measurement.
 ### Resolved / no longer open
 
 - Async is a compute mode, not a separate `AsyncMemo` type.
-- Signals are split by default: `signal()` returns
+- Signals are split by default: `create_signal()` returns
   `(ReadSignal<T>, WriteSignal<T>)`; no `RwSignal`.
 - Public reads are `get` + `is_pending`; no `try`/`try_get`/`get_or`.
 - Props are `Prop<T>` (`Static`, `Reactive(ReadSignal)`, `Derived(Memo)`).
@@ -736,15 +736,23 @@ or a measurement.
 - Async code uses owned context capabilities: `&Cx` for sync, read-only
   `CxHandle` for async compute, `ActionCx` for action writes, `TaskCx` for
   detached mainline work. Reads after `await` are tracked.
-- `Derived<T>` (no macro; `Derived::new`) is the uncached read-only derivation
+- `Derived<T>` (no macro; `create_derived`) is the uncached read-only derivation
   (Solid function form, Leptos `Signal::derive`). It is sync-only; async and
   `is_pending` need a memo node.
+- Components take `cx: &mut Cx` as their first parameter. `#[component]` handles
+  props, children, prop classification, and the owner scope; it does not inject a
+  hidden `cx`.
+- Reactive constructors use one `create_*` family: `create_signal`,
+  `create_derived_signal`, `create_async_derived_signal`, `create_memo`,
+  `create_async_memo`, `create_lazy_memo`, `create_derived`. Single-type
+  constructors keep `Type::new` (`Store::new`, `ViewSlot::new`). Macros
+  (`signal!`, `memo!`) sit on top.
 
 ### Leaning, needs confirmation (recommendation exists)
 
 | Area | Question | Current leaning |
 |---|---|---|
-| Core equality | Require `T: PartialEq` by default? | Yes; `signal_unchecked`/custom comparator escape |
+| Core equality | Require `T: PartialEq` by default? | Yes; `create_signal_unchecked`/custom comparator escape |
 | Signal update | Should `update` compare or always notify? | Always notify; `set` compares; `update_with` if needed |
 | Memo reads | Guards or clones? | Both: guards internally, `Clone` convenience for app code |
 | Props variants | Keep `Reactive`/`Derived` or one read handle? | Collapse; both implement `Read<T>` |
@@ -800,8 +808,6 @@ or a measurement.
 | 8 | `view!` syntax strictness | Tree syntax vs builder vs both | Macro prototype |
 | 8 | Reactive attribute detection | Macro type inference vs explicit syntax | `trybuild` prototype |
 | 8 | Optional props | `Prop<Option<T>>` vs `MaybeProp<T>` | Decide with props macro |
-| 8 | Component `cx` | Macro-injected local vs explicit first parameter | Prototype both on the counter; leaning explicit |
-| 8 | Constructor naming | Free functions vs `Type::new`/module namespaces | `Memo::new`/`Derived::new`; signals as `signal::new`/`derived`; `create_*` only for helpers |
 | 8 | `For` key inference | Explicit key vs `Keyed` trait | Prototype macro |
 | 8 | Macro error spans | Proc-macro diagnostics quality | Budget time; `trybuild` |
 | 8 | `view_builder!` | Fluent macro front-end | Stretch only; not scheduled |

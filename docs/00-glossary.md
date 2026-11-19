@@ -206,16 +206,19 @@ and frame loop.
 owner, observer, and frame phase. All reactive operations take `&Cx`.
 
 **Signal** — an internal full node handle. Public code gets the split pair from
-`signal()`: `ReadSignal<T>` (get/with/is_pending) and `WriteSignal<T>`
+`create_signal()`: `ReadSignal<T>` (get/with/is_pending) and `WriteSignal<T>`
 (set/update). There is no combined public signal and no `RwSignal`.
 
-**Core constructor** — `signal(cx, v)` returns `(ReadSignal, WriteSignal)`;
-`derived_signal`/`async_derived_signal` return the same pair. `Memo::new`,
-`Memo::new_async`, `Store::new`, `ViewSlot::new` are the other core constructors.
+**Core constructor** — reactive constructors use one `create_*` family:
+`create_signal`, `create_derived_signal`, `create_async_derived_signal`,
+`create_memo`, `create_async_memo`, `create_lazy_memo`, and `create_derived`.
+`create_derived` is the uncached read-only handle; `_signal` means a writable
+pair. `Store::new` and `ViewSlot::new` are single-type constructors.
 
-**`create_*` helper** — naming for custom primitive/abstraction wrappers, e.g.
-`create_resource`, `create_theme`, `create_counter`. These wrap the core types
-and take `&Cx`; the prefix distinguishes them from built-in constructors.
+**`create_*` helper** — custom primitive/abstraction wrappers such as
+`create_resource`, `create_theme`, and `create_counter`. The prefix is shared
+with the reactive constructors; the distinction is the return type and
+documentation, not the naming.
 
 **Phase** — one of pump, flush, apply, layout, scene, present.
 

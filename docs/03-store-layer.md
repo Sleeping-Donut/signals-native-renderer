@@ -369,7 +369,7 @@ impl<T: Patch + Clone> Projection<T> {
 - The derive runs as a memo computation; writes to the draft are applied to a
   shadow store at the end of the pass.
 - A keyed return value is reconciled with `Patch` semantics.
-- Async derives are `Memo::new_async` with a seed, returning `Memo<Store<T>>`;
+- Async derives are `create_async_memo` with a seed, returning `Memo<Store<T>>`;
   reads before the first answer see the seed or are pending, depending on options.
 - Do not catch `NotReady` inside a derive: it is how the projection learns to
   retry (Solid #3073; the same rule applies here).
@@ -458,7 +458,7 @@ dyn_store.get(&["a".into()]).set(json!(2));
 | Snapshot + memo | whole value | simplest | recompute whole subtree |
 | Immer-style draft | field | good | clone or persistent container |
 
-The store layer is opt-in. Flat state can use a `signal()` pair directly; a single
+The store layer is opt-in. Flat state can use a `create_signal()` pair directly; a single
 struct with a handful of fields does not need a store.
 
 ## 10. Tests
@@ -488,7 +488,7 @@ struct with a handful of fields does not need a store.
    guard? (Leaning: clone-modify-swap for v1, draft in v2.)
 3. **Field API naming.** `state.user().name()` vs `state.user.name()`. The
    method-call form is Rust-idiomatic and composes with `Field`; keep it.
-4. **Dynamic store in v1.** Probably defer; a config editor can use a `signal()` pair
+4. **Dynamic store in v1.** Probably defer; a config editor can use a `create_signal()` pair
    and rebuild bindings.
 5. **`Patch` for arbitrary types.** Require `PartialEq`; provide a manual
    `Patch` trait for types that cannot derive it.

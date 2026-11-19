@@ -102,7 +102,7 @@ struct SharedCount {
 }
 
 #[component]
-fn Counter(shared: Prop<SharedCount>) -> impl View {
+fn Counter(cx: &mut Cx, shared: Prop<SharedCount>) -> impl View {
     let shared = shared.get_untracked(cx); // stable Copy handles
     let (local, set_local) = signal!(cx, 0);
     let local_double = memo!(cx, |cx, _prev| local.get(cx) * 2);
@@ -121,7 +121,7 @@ fn Counter(shared: Prop<SharedCount>) -> impl View {
 }
 
 #[component]
-fn App() -> impl View {
+fn App(cx: &mut Cx) -> impl View {
     let (shared, set_shared) = signal!(cx, 0);
     let shared = SharedCount { value: shared, bump: set_shared };
 
@@ -141,7 +141,7 @@ Notes:
 - `local_double` is a `memo!`, so it is cached and notifies only when the value
   changes. The Solid original used an uncached getter; this port deliberately
   exercises the separate-derived-value authoring. For the uncached shape, use
-  `Derived::new(cx, |cx| local.get(cx) * 2)` (no node, every read runs) or a
+  `create_derived(cx, |cx| local.get(cx) * 2)` (no node, every read runs) or a
   plain function read in a binding. `Derived<T>` is sync-only; async or
   `is_pending` needs a memo node.
 - Passing a `Copy` bundle of handles as a prop avoids context plumbing and makes
@@ -279,44 +279,47 @@ bound value.
 ### 3.3 Port sketch
 
 ```rust
-let states = Memo::new_async(cx, |_cx| async move { get_states().await });
+#[component]
+fn App(cx: &mut Cx) -> impl View {
+    let states = create_async_memo(cx, |_cx| async move { get_states().await });
 
-let (state, set_state) = derived_signal(cx, move |cx, _prev| {
-    states.get(cx).first().cloned().unwrap_or_default()
-});
+    let (state, set_state) = create_derived_signal(cx, move |cx, _prev| {
+        states.get(cx).first().cloned().unwrap_or_default()
+    });
 
-let cities = Memo::new_async(cx, move |cx| {
-    let state_name = state.get(cx).clone();   // sync prefix; owns before await
-    async move { get_cities(&state_name).await }
-});
+    let cities = create_async_memo(cx, move |cx| {
+        let state_name = state.get(cx).clone(); // sync prefix; owns before await
+        async move { get_cities(&state_name).await }
+    });
 
-let (city, set_city) = derived_signal(cx, move |cx, _prev| {
-    cities.get(cx).first().cloned().unwrap_or_default()
-});
+    let (city, set_city) = create_derived_signal(cx, move |cx, _prev| {
+        cities.get(cx).first().cloned().unwrap_or_default()
+    });
 
-view! {
-    <LoadingBoundary fallback=|| view! {
-        <Column padding=16.0>
-            <Text>"Loading…"</Text>
-        </Column>
-    }>
-        <Column gap=12.0 padding=16.0>
-            <Select
-                items=states
-                selected=state
-                on_select=move |cx, name| set_state.set(cx, name)
-            />
-            <Select
-                items=cities
-                selected=city
-                disabled=move |cx| is_pending(cx, cities)
-                on_select=move |cx, name| set_city.set(cx, name)
-            />
-            <Text>
-                "Selection: " {city} ", " {state}
-            </Text>
-        </Column>
-    </LoadingBoundary>
+    view! {
+        <LoadingBoundary fallback=|| view! {
+            <Column padding=16.0>
+                <Text>"Loading…"</Text>
+            </Column>
+        }>
+            <Column gap=12.0 padding=16.0>
+                <Select
+                    items=states
+                    selected=state
+                    on_select=move |cx, name| set_state.set(cx, name)
+                />
+                <Select
+                    items=cities
+                    selected=city
+                    disabled=move |cx| is_pending(cx, cities)
+                    on_select=move |cx, name| set_city.set(cx, name)
+                />
+                <Text>
+                    "Selection: " {city} ", " {state}
+                </Text>
+            </Column>
+        </LoadingBoundary>
+    }
 }
 ```
 
@@ -326,9 +329,9 @@ Notes:
   element vocabulary), not a core element like `Column`. If the component layer
   does not exist yet, the fallback is two `For` lists of selectable rows; the
   reactive wiring is identical.
-- `derived_signal` is the right constructor for `state` and `city`: they are
+- `create_derived_signal` is the right constructor for `state` and `city`: they are
   writable, their compute is synchronous, and pending comes from the async read.
-  `async_derived_signal` would also work but would misrepresent the compute.
+  `create_async_derived_signal` would also work but would misrepresent the compute.
   This is the no-color rule in practice: `state` reads an async memo, but its
   constructor and type do not change. Only a compute body that itself `await`s
   uses the async constructor.
@@ -374,9 +377,9 @@ Notes:
 | Solid 2.0 | Ours |
 |---|---|
 | `createSignal(v)` | `signal!(cx, v)` → `(ReadSignal<T>, WriteSignal<T>)` |
-| `createSignal(fn)` (writable memo) | `derived_signal(cx, \|cx, prev\| ...)`; not a thunk value |
-| `createMemo(syncFn)` | `Memo::new(cx, ...)` |
-| `createMemo(asyncFn)` | `Memo::new_async(cx, ...)` |
+| `createSignal(fn)` (writable memo) | `create_derived_signal(cx, \|cx, prev\| ...)`; not a thunk value |
+| `createMemo(syncFn)` | `create_memo(cx, ...)` |
+| `createMemo(asyncFn)` | `create_async_memo(cx, ...)` |
 | `isPending(x)` | `is_pending(cx, x)` (v1 subset) |
 | `<Loading>` | `<LoadingBoundary>`; first load catches, later loads forward |
 | `<For each=...>` | `<For each=... key=...>`; key is explicit |
@@ -387,8 +390,8 @@ Notes:
 
 Rust-specific traps:
 
-- **A closure is a value.** `signal(cx, || 42)` is a signal holding a closure,
-  not a derived signal. Derivation is `derived_signal`. The macro escape hatch is
+- **A closure is a value.** `create_signal(cx, || 42)` is a signal holding a closure,
+  not a derived signal. Derivation is `create_derived_signal`. The macro escape hatch is
   `signal!(cx, (|| 42))`.
 - **No function overloads.** Solid's `createSignal(fn)` and `createSignal(value)`
   are one API by overloading; ours are different constructors by design.

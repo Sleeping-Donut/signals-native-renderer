@@ -30,8 +30,8 @@ In our model:
 
 ```rust
 #[component]
-fn Counter() -> impl View {
-    let (count, set_count) = signal(cx, 0);
+fn Counter(cx: &mut Cx) -> impl View {
+    let (count, set_count) = create_signal(cx, 0);
     view! {
         <Button on_click=move |cx, _| set_count.update(cx, |c| *c += 1)>
             {count}
@@ -48,19 +48,19 @@ fn Counter() -> impl View {
 For users, the syntax looks similar; the semantics are more like Solid's compiled
 output than its component function.
 
-**Conventions in this document.** Core primitives use their constructors:
-`signal(cx, v) -> (ReadSignal<T>, WriteSignal<T>)`,
-`derived_signal(cx, ...)`, `async_derived_signal(cx, ...)`, `Memo::new(cx, ...)`,
-`Memo::new_async(cx, ...)`, `Store::new(cx, value)`,
-`ViewSlot::new(cx, key, render)`. All reactive operations take `&Cx`. There is no
-global graph; the context resolves the runtime and owner. Code sketches sometimes
-omit `cx` where the surrounding `view!` macro
-supplies it, but the real API takes it.
+**Conventions in this document.** Reactive constructors use one `create_*` family:
+`create_signal(cx, v) -> (ReadSignal<T>, WriteSignal<T>)`,
+`create_derived_signal(cx, ...)`, `create_async_derived_signal(cx, ...)`,
+`create_memo(cx, ...)`, `create_async_memo(cx, ...)`, `create_derived(cx, ...)`.
+Types with a single, non-combinatoric constructor use `Type::new`
+(`Store::new`, `ViewSlot::new`). All reactive operations take `&Cx`. There is no
+global graph; the context resolves the runtime and owner. Every component takes
+`cx` as its first parameter; `view!` expressions use that same `cx`.
 
-Custom primitive/abstraction helpers use Solid/Leptos-style `create_*` naming:
+Custom primitive/abstraction helpers also use `create_*`:
 `create_resource`, `create_theme`, `create_counter`, `create_todo_store`. They
-are thin wrappers over the core types and take `&Cx`; the naming distinguishes
-them from the built-in constructors.
+are thin wrappers over the core types and take `&Cx`; the return type and docs
+distinguish a helper from a core constructor, not the prefix.
 
 Tags are native view components, not HTML: `Row`, `Column`, `Box`, `Text`,
 `Button`, `TextInput`. There is no `div`, `span`, or DOM `class` in the core
@@ -161,8 +161,8 @@ for a retained list; if omitted, it uses the item's index and emits a dev warnin
 
 ```rust
 #[component]
-fn Counter(initial: Prop<i32>, step: Prop<i32>) -> impl View {
-    let (count, set_count) = signal(cx, initial.get_untracked(cx));
+fn Counter(cx: &mut Cx, initial: Prop<i32>, step: Prop<i32>) -> impl View {
+    let (count, set_count) = create_signal(cx, initial.get_untracked(cx));
     view! { ... }
 }
 ```
@@ -175,7 +175,7 @@ struct CounterProps {
     step: Prop<i32>,
 }
 
-fn Counter(props: CounterProps, cx: &mut Cx) -> ViewNodeId { ... }
+fn Counter(cx: &mut Cx, props: CounterProps) -> ViewNodeId { ... }
 ```
 
 The component is a mount function. It runs once. `impl View` is erased to
@@ -190,11 +190,12 @@ function components use hooks, while its struct components take an explicit
 process can host multiple runtimes (tests, multiple windows, embedding) and so
 ownership is visible. The alternatives are to require an explicit `cx` parameter
 (honest, one extra parameter) or to adopt a scoped/thread-local runtime (clean
-authoring, hidden global). Our current leaning is the explicit parameter with the
-macro still handling props, children, and the owner scope; injection is sugar we
-may drop. Async bodies get an owned `CxHandle` instead of `&Cx` (see
-[04-async-model.md](04-async-model.md) §3.5), which is how we keep explicit
-context without Dioxus 0.4's "scope cannot escape the body" lifetime problem.
+authoring, hidden global). The decision is the explicit parameter: every
+component takes `cx: &mut Cx` first, and the macro handles props, children, and
+the owner scope without inventing a name. Async bodies get an owned `CxHandle`
+instead of `&Cx` (see [04-async-model.md](04-async-model.md) §3.5), which is how
+we keep explicit context without Dioxus 0.4's "scope cannot escape the body"
+lifetime problem.
 
 ### 3.2 Props
 
@@ -224,7 +225,7 @@ a semantic difference.
 
 ```rust
 #[component]
-fn Label(text: Prop<String>) -> impl View {
+fn Label(cx: &mut Cx, text: Prop<String>) -> impl View {
     view! { <Text>{text}</Text> }
 }
 ```
@@ -300,7 +301,7 @@ frame; they are `Prop<T>` values that live as long as the child.
 
 ```rust
 #[component]
-fn Card(children: Children) -> impl View {
+fn Card(cx: &mut Cx, children: Children) -> impl View {
     view! { <Column>{children}</Column> }
 }
 ```
@@ -311,9 +312,9 @@ once during the parent's mount. For a child that can change structurally, pass a
 
 ### 3.5 Custom primitives: `create_counter`
 
-Core primitives use `Type::new`; custom abstractions use `create_*`. A custom
-primitive is just a function that wraps core handles and exposes an ergonomic
-surface:
+Reactive constructors and custom abstractions both use `create_*`; the difference
+is the return type, not the prefix. A custom primitive is a function that wraps
+core handles and exposes an ergonomic surface:
 
 ```rust
 #[derive(Clone, Copy)]
@@ -323,7 +324,7 @@ struct CounterPrimitive {
 }
 
 fn create_counter(cx: &Cx, initial: i32) -> CounterPrimitive {
-    let (count, increment) = signal(cx, initial);
+    let (count, increment) = create_signal(cx, initial);
     CounterPrimitive { count, increment }
 }
 
@@ -345,7 +346,7 @@ With `view!`:
 
 ```rust
 #[component]
-fn Counter(label: Prop<String>) -> impl View {
+fn Counter(cx: &mut Cx, label: Prop<String>) -> impl View {
     let counter = create_counter(cx, 0);
 
     view! {
@@ -693,10 +694,10 @@ struct AppState {
 }
 
 #[component]
-fn App(state: Store<AppState>) -> impl View {
-    let (filter, _set_filter) = signal(cx, Filter::All);
+fn App(cx: &mut Cx, state: Store<AppState>) -> impl View {
+    let (filter, _set_filter) = create_signal(cx, Filter::All);
 
-    let visible = Memo::new(cx, move |cx| {
+    let visible = create_memo(cx, move |cx| {
         let f = filter.get(cx);
         state.todos().read(cx).iter()
             .filter(|t| f.matches(t))

@@ -111,11 +111,11 @@ cancellation, staged landing); sync nodes never allocate or touch it. This keeps
 the sync fast path clean while allowing any derived node to be async:
 
 ```rust
-Memo::new(cx, |cx, prev| ...)          // sync derived
-Memo::new_async(cx, |cx| ...)          // async derived
-signal(cx, value)                      // plain source, split pair
-derived_signal(cx, |cx, prev| ...)     // writable derived, split pair
-async_derived_signal(cx, |cx| ...)             // writable derived, async, split pair
+create_memo(cx, |cx, prev| ...)          // sync derived
+create_async_memo(cx, |cx| ...)          // async derived
+create_signal(cx, value)                      // plain source, split pair
+create_derived_signal(cx, |cx, prev| ...)     // writable derived, split pair
+create_async_derived_signal(cx, |cx| ...)             // writable derived, async, split pair
 ```
 
 An **effect** in the graph sense has both halves. A **render effect** has only
@@ -513,9 +513,9 @@ Default for `T: PartialEq` is `PartialEq`; for non-`PartialEq` types, use
 comparator. The default is chosen at the constructor via a trait bound:
 
 ```rust
-let (read, write) = signal(cx, value);          // requires T: PartialEq
-let (read, write) = signal_unchecked(cx, value);// no equality, always notify
-let (read, write) = signal_with(cx, value, equals); // custom
+let (read, write) = create_signal(cx, value);          // requires T: PartialEq
+let (read, write) = create_signal_unchecked(cx, value);// no equality, always notify
+let (read, write) = create_signal_with(cx, value, equals); // custom
 ```
 
 A comparator panic is a compute error: the value is replaced by the error, and
@@ -525,9 +525,9 @@ the error boundary / root error hook handles it (Solid's A3 rule).
 
 ```rust
 // Sources — split by default
-let (count, set_count) = signal(cx, v);                 // ReadSignal<T>, WriteSignal<T>
-let (value, set_value) = derived_signal(cx, |cx, prev| ...); // writable derived
-let (value, set_value) = async_derived_signal(cx, |cx| ...);         // writable derived, async
+let (count, set_count) = create_signal(cx, v);                 // ReadSignal<T>, WriteSignal<T>
+let (value, set_value) = create_derived_signal(cx, |cx, prev| ...); // writable derived
+let (value, set_value) = create_async_derived_signal(cx, |cx| ...);         // writable derived, async
 count.get(cx) / count.is_pending(cx)
 set_count.set(cx, v) / set_count.update(cx, |v| ...)
 
@@ -539,15 +539,15 @@ set_count.set(cx, v) / set_count.update(cx, |v| ...)
 // without cloning.
 
 // Derivations (read-only)
-Memo::new(cx, |cx, prev| ...) -> Memo<T>         // sync
-Memo::new_async(cx, |cx| ...) -> Memo<T>         // async
-Memo::new_lazy(cx, |cx, prev| ...) -> Memo<T>
+create_memo(cx, |cx, prev| ...) -> Memo<T>         // sync
+create_async_memo(cx, |cx| ...) -> Memo<T>         // async
+create_lazy_memo(cx, |cx, prev| ...) -> Memo<T>
 memo.get(cx) / memo.is_pending(cx)
 memo.with(cx, |v| ...)
 
-// Uncached read-only derivation (leaning)
-Derived::new(cx, |cx| ...) -> Derived<T>         // no node, no cache, sync only
-derived.read(cx)                                 // runs the closure every read
+// Uncached read-only derivation
+create_derived(cx, |cx| ...) -> Derived<T>         // no node, no cache, sync only
+derived.get(cx)                                   // runs the closure every read
 
 // Effects
 effect(cx, compute, apply) -> EffectHandle
@@ -561,12 +561,12 @@ flush(cx)
 flush(cx, f)                                 // run f, then flush synchronously
 ```
 
-There is no combined public signal handle and no `RwSignal`. `signal()`,
-`derived_signal()`, and `async_derived_signal()` return a `(ReadSignal<T>,
+There is no combined public signal handle and no `RwSignal`. `create_signal()`,
+`create_derived_signal()`, and `create_async_derived_signal()` return a `(ReadSignal<T>,
 WriteSignal<T>)` pair. `Signal<T>` in the node-model sections is the internal
 full node handle; application and library code uses the halves.
 
-**Uncached derived handles (leaning).** `Derived::new(cx, |cx| ...)` returns a
+**Uncached derived handles.** `create_derived(cx, |cx| ...)` returns a
 `Derived<T>` that runs its closure on every read. It has one constructor and no
 macro: there is no value/closure/async variant to dispatch, because an async
 body needs a memo. It allocates no graph node, keeps no edge lists, and caches
@@ -576,13 +576,23 @@ It implements the same `Read<T>` contract, so a collapsed `Prop<T>` can accept
 it. This is the Solid function-form / Leptos `Signal::derive` middle ground
 between a memo and an inline binding closure.
 
+**Constructor naming.** The reactive constructors are one family and use one
+style: `create_signal`, `create_derived_signal`, `create_async_derived_signal`,
+`create_memo`, `create_async_memo`, `create_lazy_memo`, and `create_derived`.
+They return either a split pair or a single read handle, so a free-function
+prefix is the one shape that covers both without inventing a `Signal` value
+type. `create_derived` is the uncached read-only handle; the `_signal` suffix
+means a writable pair. Types with a single, non-combinatoric constructor keep
+Rust's `Type::new` convention (`Store::new`, `ViewSlot::new`). Macros (`signal!`,
+`memo!`) sit on top of the reactive family.
+
 Every reactive operation takes `&Cx`. The context resolves the runtime and
 current owner; there is no global graph. The `view!` macro has `cx` in scope, so
 application code rarely writes it. `Prop::Static` needs no `cx`. Helper
 functions take plain values, so they do not thread `cx` through.
 
 `ReadSignal<T>` and `WriteSignal<T>` are differentiated by capability, not by
-sync/async. Async is a compute mode: `Memo::new_async` and `async_derived_signal` return
+sync/async. Async is a compute mode: `create_async_memo` and `create_async_derived_signal` return
 the same `ReadSignal`/`WriteSignal`/`Memo` types as their sync counterparts.
 `AsyncMemo<T>` is not a separate type.
 
@@ -590,7 +600,7 @@ the same `ReadSignal`/`WriteSignal`/`Memo` types as their sync counterparts.
 Every writable source is created as a pair:
 
 ```rust
-let (read, write) = signal(cx, 0);
+let (read, write) = create_signal(cx, 0);
 // read:  ReadSignal<i32>   — get/with/is_pending, no set
 // write: WriteSignal<i32>  — set/update, no get
 ```
@@ -600,7 +610,7 @@ runtime cost, no separate graph. `Memo<T>` and `Prop<T>` are read-only. Use
 `ReadSignal<T>` in a component's public API and keep `WriteSignal<T>` private to
 the primitive; the compiler then prevents downstream writes. The cost is two
 handles to thread and tuple returns; the benefit is least privilege and explicit
-API boundaries. Solid (`[get, set]`) and Leptos (`signal() ->
+API boundaries. Solid (`[get, set]`) and Leptos (`create_signal() ->
 (ReadSignal, WriteSignal)`) both default to the split shape.
 
 ```rust
@@ -611,7 +621,7 @@ struct CounterPrimitive {
 }
 
 fn create_counter(cx: &Cx, initial: i32) -> CounterPrimitive {
-    let (count, increment) = signal(cx, initial);
+    let (count, increment) = create_signal(cx, initial);
     CounterPrimitive { count, increment }
 }
 
@@ -639,7 +649,7 @@ At the consumer boundary they are equivalent accessors: both implement the same
 whether a write half exists. Props can therefore take either; `Prop<T>` uses a
 read handle, not a node kind.
 
-`Memo::new_lazy` defers the first computation until first read and disposes when
+`create_lazy_memo` defers the first computation until first read and disposes when
 unobserved, matching Solid's `lazy` option. This is useful for expensive
 derivations in branches that may never mount.
 
@@ -686,8 +696,8 @@ Property tests:
 
 ## 15. Open questions
 
-1. Should `signal()` require `T: PartialEq` by default, or should equality be
-   explicit? (Leaning: `PartialEq` default, `signal_unchecked` escape.)
+1. Should `create_signal()` require `T: PartialEq` by default, or should equality be
+   explicit? (Leaning: `PartialEq` default, `create_signal_unchecked` escape.)
 2. Do we expose `Memo<T>` values by guard or by clone? Guards are faster but can
    conflict with writes; clone is simpler for users. (Leaning: both, with guards
    for internal code and `Clone` convenience for app code.)
