@@ -267,6 +267,10 @@ test; third-party null renderer conformance suite is green.
 | M7 "Stores" | 7 | Nested app state with field-granular updates. |
 | M8 "Proof" | 8 | Benchmarks, fuzzers, and a 24-hour soak. |
 
+The reference programs for M1–M7, with the expected frames and acceptance
+checks, are in [docs/13-reference-apps.md](docs/13-reference-apps.md). The
+counter is the M1/M3 app; states and cities is the M2/M4 app.
+
 ---
 
 ## 7. Risk register

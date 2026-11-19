@@ -1104,6 +1104,18 @@ Returns false when:
 `affects()` marks are v2; v1 implements the two flight/staging causes. The
 "landed value staged" case is the txn's `staged` flag.
 
+**It must be readable during the hold.** The hold is the only window in which
+`isPending` is useful: after the commit, the new question has an answer. Solid
+shows this directly — a pending text updates while the values it describes stay
+committed (`refs/solid/packages/web/test/ispending-combined-atomic-3442.spec.tsx`).
+Our v1 rule: a Display pass that computes entirely from committed values may
+apply during a hold. Its value reads are the committed ones, so the applied
+result is value-identical; only a verdict read can differ. A pass that hits
+`NotReady` (no committed value) is still held or caught by a boundary. This is a
+**verdict-only display-ahead**, not a value lane: nothing staged becomes visible.
+The reader-class plumbing is not frozen; the states-and-cities demo in
+[13-reference-apps.md](13-reference-apps.md) is the check for it.
+
 ### 7.2 `latest` (v2)
 
 ```rust
@@ -1176,8 +1188,8 @@ not ambient thread state.
 | `F-3` reader holds while display | Partial | Display readers register per txn; disposed readers are removed. No "fallback hidden reader" edge cases. |
 | `F-4` armed boundary catches | Yes | First-load fallback; no txn for caught readers. |
 | `F-5` disarmed boundary forwards | Yes | Keeps content; reader joins txn. |
-| `F-6` display-ahead lanes | No (v2) | `latest` and lanes are deferred. |
-| `F-7` nothing reveals ahead | Yes by construction | Only txn commit reveals; there is no v1 display-ahead read. |
+| `F-6` display-ahead lanes | Subset (v1 verdict only) | `is_pending` shows its verdict during a hold; `latest` and value lanes are v2. |
+| `F-7` nothing reveals ahead | Values only | Staged values reveal at commit; the v1 `is_pending` verdict may show during a hold. |
 | `F-9` pending semantics | Subset | New question vs re-ask; basic `isPending`; no `affects`/store-wide marks. |
 | `F-10` flush visibility | Yes | Staged writes. |
 | `F-11` optimistic | No (v2) | Deferred with actions/affects. |

@@ -770,6 +770,7 @@ or a measurement.
 | 2 | Colorless suspension implementation | Private panic payload vs custom unwinder; `panic = "abort"` | Prototype Path A/B; measure |
 | 2 | Transaction merge criterion | Sharing a reader vs sharing a node | Fuzz independent-widget shapes |
 | 2 | Re-ask detection | Explicit `refresh()` vs hashing tracked inputs | Decide with async rule tests |
+| 2 | `is_pending` in a held frame | Verdict-only display-ahead: allow value-identical Display applies, or build a verdict lane | Prototype with the states demo (13-reference-apps.md) |
 | 2 | `on` full semantics | Needs full boundary/txn/lane model | v2; keyed remount in v1 |
 | 3 | Stable renderer `NodeId` contract | `u64` opaque; `0` invalid; backend pointer option | Freeze in `renderer-api` |
 | 3 | Event model richness | Generic `Event` vs typed pointer/key/IME | Prototype with real input |

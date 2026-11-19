@@ -83,6 +83,14 @@ F-12 tests/rules/f12_error.rs
 A CI check fails if a rule in the v1 subset has no test. This prevents the
 "documented but unverified" drift that the reference docs warn about.
 
+### 2.3 App-level reference demos
+
+The rule suite checks the graph in isolation. The app-level suite checks that the
+graph, bounds, and retained tree agree on a whole frame. The programs to port
+and the exact frames to assert are in
+[13-reference-apps.md](13-reference-apps.md). Port them in milestone order:
+counter (M1/M3), states and cities (M2/M4), then the later candidates.
+
 ## 3. Differential tests
 
 Two implementations of the same observable:

@@ -21,6 +21,7 @@ just once.
 | [10-macros-and-authoring.md](10-macros-and-authoring.md) | `view!`, components, props, diagnostics. |
 | [11-testing-and-performance.md](11-testing-and-performance.md) | Conformance suites, fuzzers, benchmarks. |
 | [12-decisions-and-risks.md](12-decisions-and-risks.md) | ADR log, risk detail, unresolved questions. |
+| [13-reference-apps.md](13-reference-apps.md) | Solid demo programs to port as end-to-end sanity checks. |
 
 ## Conventions
 
