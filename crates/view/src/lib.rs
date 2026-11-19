@@ -684,7 +684,12 @@ pub struct ViewTree {
 }
 
 impl ViewTree {
-    /// Create a tree over a renderer and runtime.
+    /// Create a tree over a renderer and runtime with the deterministic
+    /// monospace test shaper.
+    ///
+    /// Use [`ViewTree::new_with_shaper`] with `text::CosmicShaper` for real
+    /// platform text; the default shaper emits no glyph images and the native
+    /// backend falls back to placeholder rectangles.
     #[must_use]
     pub fn new(renderer: Box<dyn Renderer>, runtime: RuntimeHandle) -> Self {
         Self::new_with_shaper(renderer, runtime, Box::new(MonospaceShaper::default()))

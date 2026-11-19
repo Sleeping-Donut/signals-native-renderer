@@ -14,6 +14,7 @@ use renderer_api::{
 };
 use renderer_native::{run_windowed, BackendMetrics, FrameOutput, WindowApp};
 use renderer_null::{NullRenderer, SharedNullRenderer};
+use text::CosmicShaper;
 use view::{button, column, text_fn, StateStyle, View, ViewTree};
 
 struct CounterApp {
@@ -98,9 +99,10 @@ impl CounterApp {
     fn new() -> Self {
         let runtime = Runtime::new().into_handle();
         let renderer = Rc::new(RefCell::new(NullRenderer::new()));
-        let tree = ViewTree::new(
+        let tree = ViewTree::new_with_shaper(
             Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
             runtime.clone(),
+            Box::new(CosmicShaper::new()),
         );
         let cx = runtime.cx();
         let (shared, bump) = create_signal(&cx, 0_u32);
