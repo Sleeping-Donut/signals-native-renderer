@@ -111,6 +111,7 @@ fn reclaimed_slots_never_resurrect_old_handles() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "timing is meaningless under Miri")]
 fn ten_thousand_nodes_allocate_and_free_in_bounded_time() {
     const N: usize = 10_000;
 

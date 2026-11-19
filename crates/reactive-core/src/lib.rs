@@ -10,7 +10,14 @@
 //! crate will be allowed to use it.
 
 mod arena;
+mod graph;
 mod id;
 
 pub use arena::Arena;
+pub use graph::{
+    create_derived, create_derived_signal, create_memo, create_memo_unchecked, create_memo_with,
+    create_signal, create_signal_unchecked, create_signal_with, effect, render_effect,
+    CleanupHandle, Cx, Derived, DirtyState, EffectHandle, FlushError, Memo, OwnerHandle, OwnerId,
+    ReadSignal, Runtime, WriteSignal,
+};
 pub use id::{AccessError, Handle, NodeId};

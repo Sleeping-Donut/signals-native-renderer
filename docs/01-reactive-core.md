@@ -155,6 +155,12 @@ an O(n) membership scan; we use the same idea with `Edge::validated_gen` and
 list becomes empty and the node has `AUTO_DISPOSE`, it is queued for teardown at
 the end of the pass (never during iteration).
 
+**Phase 1 implementation note.** The first implementation uses `Vec<NodeId>`
+adjacency lists on each node. Link is a deduplicated push; unlink is an
+`O(degree)` retain. Insertion order and observable behavior match the intrusive
+design; the linked-edge arena is a measured optimization, not a semantic
+requirement.
+
 ## 5. Write path
 
 ### 5.1 Signal writes stage

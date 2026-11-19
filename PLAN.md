@@ -177,6 +177,13 @@ context, owners, cleanup, disposal.
   dirty-visit counter).
 - No `unsafe` outside the arena; Miri passes on the core test suite.
 
+**Status (2026-11-19): implemented.** The graph lives in
+[`crates/reactive-core/src/graph.rs`](crates/reactive-core/src/graph.rs) with
+integration tests in
+[`crates/reactive-core/tests/reactive_graph.rs`](crates/reactive-core/tests/reactive_graph.rs).
+The graph uses `#![forbid(unsafe_code)]`. Miri passes the core tests; the two
+scale/timing tests are ignored under Miri because they measure wall-clock time.
+
 ### Phase 2 — Async and holds (3–5 weeks)
 
 **Build:** `Spawner`/`BackgroundSpawner` traits, continuation queue, flight
