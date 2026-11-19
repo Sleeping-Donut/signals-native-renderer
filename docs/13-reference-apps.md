@@ -140,11 +140,10 @@ Notes:
   component re-runs.
 - `local_double` is a `memo!`, so it is cached and notifies only when the value
   changes. The Solid original used an uncached getter; this port deliberately
-  exercises the separate-derived-value authoring. If we want the uncached
-  shape, keep a plain function and read it in a binding:
-  `{move |cx| local_double(cx, local)}`. A first-class uncached derived handle
-  (Solid's function form, Leptos's `Signal::derive`) is an open question in
-  [12-decisions-and-risks.md](12-decisions-and-risks.md) Part F.
+  exercises the separate-derived-value authoring. For the uncached shape, use
+  `derived!(cx, |cx| local.get(cx) * 2)` (no node, every read runs) or a plain
+  function read in a binding. `Derived<T>` is sync-only; async or `is_pending`
+  needs a memo node.
 - Passing a `Copy` bundle of handles as a prop avoids context plumbing and makes
   ownership obvious: both counters receive the same handles, and each owns its
   `local`. A `SharedCount` context or a small `create_counter` helper is equally
@@ -330,6 +329,9 @@ Notes:
 - `derived_signal` is the right constructor for `state` and `city`: they are
   writable, their compute is synchronous, and pending comes from the async read.
   `async_derived_signal` would also work but would misrepresent the compute.
+  This is the no-color rule in practice: `state` reads an async memo, but its
+  constructor and type do not change. Only a compute body that itself `await`s
+  uses the async constructor.
 - `cities`'s closure must read `state` **before** returning the future. A `&Cx`
   cannot cross an `await`; the owned `String` is what the future needs.
 - `set_state` and `set_city` are the write halves. The demo never calls them from

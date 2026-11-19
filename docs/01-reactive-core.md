@@ -82,7 +82,7 @@ Node kinds:
 ```rust
 pub enum Compute<T> {
     Sync(Box<dyn FnMut(&Cx, Option<&T>) -> T>),
-    Async(Box<dyn FnMut(&Cx) -> LocalBoxFuture<'static, Result<T, Error>>>),
+    Async(Box<dyn FnMut(CxHandle) -> LocalBoxFuture<'static, Result<T, Error>>>),
 }
 
 pub enum NodeKind {
@@ -545,6 +545,10 @@ Memo::new_lazy(cx, |cx, prev| ...) -> Memo<T>
 memo.get(cx) / memo.is_pending(cx)
 memo.with(cx, |v| ...)
 
+// Uncached read-only derivation (leaning)
+derived!(cx, |cx| ...) -> Derived<T>             // no node, no cache, sync only
+derived.read(cx)                                 // runs the closure every read
+
 // Effects
 effect(cx, compute, apply) -> EffectHandle
 render_effect(cx, compute, apply) -> EffectHandle
@@ -561,6 +565,15 @@ There is no combined public signal handle and no `RwSignal`. `signal()`,
 `derived_signal()`, and `async_derived_signal()` return a `(ReadSignal<T>,
 WriteSignal<T>)` pair. `Signal<T>` in the node-model sections is the internal
 full node handle; application and library code uses the halves.
+
+**Uncached derived handles (leaning).** `derived!` returns a `Derived<T>` that
+runs its closure on every read. It allocates no graph node, keeps no edge lists,
+and caches nothing; reads inside it are tracked directly by the caller. It is
+sync-only: an async body needs a memo because flight state, cancellation, and
+staging need a node. `is_pending` is not exposed on `Derived<T>`; use a memo when
+you need a verdict. It implements the same `Read<T>` contract, so a collapsed
+`Prop<T>` can accept it. This is the Solid function-form / Leptos
+`Signal::derive` middle ground between a memo and an inline binding closure.
 
 Every reactive operation takes `&Cx`. The context resolves the runtime and
 current owner; there is no global graph. The `view!` macro has `cx` in scope, so

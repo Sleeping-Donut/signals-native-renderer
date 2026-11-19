@@ -733,6 +733,12 @@ or a measurement.
 - Frame batching is the write batch; `flush(fn)` is the imperative escape hatch.
 - License is GPL-2.0-or-later; GPUI is reference-only for v1.
 - `DynamicStore` is v2 with a Leptos-style fallback.
+- Async code uses owned context capabilities: `&Cx` for sync, read-only
+  `CxHandle` for async compute, `ActionCx` for action writes, `TaskCx` for
+  detached mainline work. Reads after `await` are tracked.
+- `Derived<T>`/`derived!` is the uncached read-only derivation (Solid function
+  form, Leptos `Signal::derive`). It is sync-only; async and `is_pending` need a
+  memo node.
 
 ### Leaning, needs confirmation (recommendation exists)
 
@@ -766,7 +772,6 @@ or a measurement.
 | Phase | Question | Why it is still open | Next step |
 |---|---|---|---|
 | 1 | Equality default and comparator API | Affects every constructor and generic bound | Decide before core API freeze |
-| 1 | Uncached derived read handle | Memo-only forces a node for cheap derivations; Solid functions and Leptos `Signal::derive` do not | Prototype with the counter; decide before props freeze |
 | 1 | Memo read representation (guard vs clone vs both) | Borrow conflicts vs ergonomics | Prototype both on the demo |
 | 1 | EffectHandle visibility | Public API surface vs binding lifetime | Decide before prelude freeze |
 | 2 | Colorless suspension implementation | Private panic payload vs custom unwinder; `panic = "abort"` | Prototype Path A/B; measure |

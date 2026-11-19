@@ -185,13 +185,30 @@ signal whose compute happens to be async**, and it returns the same
 a read-only async derivation, use `Memo::new_async` instead; there is no write
 half.
 
+**Dependencies do not color the node.** Choose the async constructor only when
+the compute body itself has work to `await`. A synchronous compute may read an
+async memo; the read suspends (or serves the committed value and replays), the
+derived node becomes pending, and no `_async` constructor is involved:
+
+```rust
+let states = memo!(cx, async |_cx| get_states().await);    // body awaits
+let first  = memo!(cx, |cx| states.get(cx).first().cloned()); // body does not
+```
+
+Both `states` and `first` are `Memo<T>`. `first` is pending while `states` is
+loading, then recomputes. Downstream code never switches constructors because an
+input is async. The `async` keyword describes this computation's body, not the
+node's type or its dependencies.
+
 **Async lifecycle.** The constructor stores the compute closure and returns
 immediately with the handles; it does not block or `.await`.
 
-1. The derive run calls the closure under the node's owner/observer to get a
-   future. The synchronous prefix records tracked reads.
-2. The runtime wraps the future in `ScopedFuture` (owner/observer restored on
-   each poll) and hands it to the host's UI-local `Spawner`.
+1. `create_async_memo` / `create_async_derived_signal` calls the closure to get
+   the future, wraps it in `ScopedFuture`, and **polls it once immediately**
+   under the node's owner/observer. The first poll runs the synchronous prefix
+   and records its tracked reads.
+2. If that poll is `Ready`, the value stages without a spawn. If it is `Pending`,
+   the future goes to the host's UI-local `Spawner`.
 3. The future is polled by the local executor. A read of the signal before the
    result is ready suspends to a `LoadingBoundary` or holds the mounting change.
 4. On completion, the result is posted as a continuation. At the next frame's
@@ -203,10 +220,40 @@ immediately with the handles; it does not block or `.await`.
 6. An `Err` result is an error answer: `ErrorBoundary` catches it. Pending is
    not an error.
 
-The compute closure should read reactive dependencies synchronously before
-returning the future, or carry an owned context handle; a `&Cx` cannot be held
-across an `await` in a `'static` future. The example below reads nothing after
-the await, so it is fine.
+### 3.5 Context capabilities across awaits
+
+`&Cx` borrows the runtime for the duration of a call. It is the right type for
+mount bodies, event handlers, bindings, and synchronous compute. It cannot be
+captured by a `'static` future, so async code uses **owned handles** that carry
+the same capabilities:
+
+| Type | Owned? | Read/track | Write | Where |
+|---|---|---|---|---|
+| `&Cx` | No | Yes | Yes | Mount, events, sync compute |
+| `CxHandle` | Yes | Yes | No | Async compute |
+| `ActionCx` | Yes | Yes | Yes, joins the action txn | Actions (v2) |
+| `TaskCx` | Yes | Yes | Yes, mainline | Detached tasks and continuations |
+
+- `CxHandle` is cloneable and `!Send`; the runtime is UI-thread-affine. It keeps
+  the runtime alive and lets `ScopedFuture` restore owner/observer on each poll.
+- **Reads after `await` are tracked**, matching Solid. A dependency discovered
+  after the first poll adds an edge mid-flight; if it changes, the flight is
+  superseded and a new run starts. The node must accept edges added mid-flight.
+- Compute gets a **read-only** handle: a derive cannot write. Actions get
+  `ActionCx`, which carries the txn id; a write through it joins the action.
+  A detached task gets `TaskCx`; its writes are mainline, not part of an action.
+- `async |cx|` binds `cx: CxHandle` (owned); a sync closure binds `&Cx`. The
+  macro injects the right one from the closure form. The node type is unchanged.
+
+Do not hold a read guard across an `await`:
+
+```rust
+let name = state.get(cx).to_string();  // own the value, drop the guard
+fetch(name).await;
+```
+
+A guard pins a borrow across the suspension and can conflict with writes even
+when the context itself is owned.
 
 **Rejected: one `SignalFactory<T>` trait for all constructors.** A trait with
 impls for `T`, `FnOnce() -> T`, and `FnOnce() -> Future<Output = T>` cannot be
@@ -214,8 +261,8 @@ written as stated:
 
 - the impls overlap (`T` can itself be a closure or a future);
 - `FnOnce` consumes the factory, so it cannot recompute when dependencies
-  change; a reactive compute must be `FnMut(&Cx, Option<&T>)` (or `FnMut(&Cx)`
-  for async);
+  change; a reactive compute must be `FnMut(&Cx, Option<&T>)` (or
+  `FnMut(CxHandle)` for async);
 - it conflates a plain source, a derived writable signal, and an async derived
   signal, which have different write/recompute/pending semantics;
 - it has no `&Cx`, owner, flight, cancellation, or equality, so it cannot
@@ -228,7 +275,7 @@ call shape work, but the wrapper is still visible and the constructors are still
 semantically distinct. Keep the explicit constructors.
 
 **No internal `Source` enum.** An enum with
-`Box<dyn FnMut(&Cx, Option<&T>) -> T>` / `Box<dyn FnMut(&Cx) -> LocalBoxFuture>`
+`Box<dyn FnMut(&Cx, Option<&T>) -> T>` / `Box<dyn FnMut(CxHandle) -> LocalBoxFuture>`
 would centralize setup but introduce type erasure and dynamic dispatch on every
 recompute. Instead, each explicit constructor stores its own compute type and
 shares private generic setup helpers where useful. A `signal!`/`memo!` macro can
@@ -254,13 +301,15 @@ signal!(cx, async |cx| { ... })
 create_async_derived_signal(cx, move |cx| async move { ... })
 ```
 
-Why lower it? The constructor stores `FnMut(&Cx) -> LocalBoxFuture<'static,
+Why lower it? The constructor stores `FnMut(CxHandle) -> LocalBoxFuture<'static,
 Result<T, Error>>`; `async |...|` implements `AsyncFnMut`, not that bound
 directly. The `move`/`async move` pair makes captures owned and `'static`, which
-is required to store the compute. If the constructor instead took an
-`AsyncFnMut` bound, the async closure could be passed directly, but storing and
-calling it repeatedly (associated future, object safety, HRTB) is harder. The
-lowering is an implementation detail; users write `async |cx| ...`.
+is required to store the compute. The `cx` bound inside an async body is the
+owned `CxHandle`, so reads after an `await` are possible. If the constructor
+instead took an `AsyncFnMut` bound, the async closure could be passed directly,
+but storing and calling it repeatedly (associated future, object safety, HRTB)
+is harder. The lowering is an implementation detail; users write
+`async |cx| ...`.
 
 A `macro_rules!` front-end is enough for the common forms; a proc macro is more
 robust for typed/pattern closure arguments and async-closure syntax. The macro is
@@ -279,7 +328,7 @@ impl<T: 'static> Memo<T> {
 
     pub fn new_async(
         cx: &Cx,
-        compute: impl FnMut(&Cx) -> LocalBoxFuture<'static, Result<T, Error>> + 'static,
+        compute: impl FnMut(CxHandle) -> LocalBoxFuture<'static, Result<T, Error>> + 'static,
     ) -> Self;
 
     /// Read the value. Inside a tracked computation, a not-ready value suspends
@@ -1163,6 +1212,9 @@ where F: FnOnce(ActionCx) -> LocalBoxFuture<'static, Result<T, Error>>;
 ```
 
 - Opening an action opens a txn and sets `action_depth += 1`.
+- `ActionCx` is the owned, write-capable handle from §3.5. It carries the txn
+  id, so a write after an `await` still joins the action; the closure must not
+  capture `&Cx`. Reads after `await` are tracked like any async compute.
 - Writes inside the action (before or after awaits) stage into the txn if the
   target node is already in it; new nodes join on first write.
 - The txn commits when the future resolves and all flights it started have

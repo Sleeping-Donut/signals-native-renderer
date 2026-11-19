@@ -182,6 +182,17 @@ The component is a mount function. It runs once. `impl View` is erased to
 `ViewNodeId` by the macro; a component that returns an element or a fragment is
 also valid.
 
+**Why `cx` instead of an ambient runtime?** Leptos's `#[component]` has no `cx`;
+reactive functions find the runtime through thread-local owner context. We keep
+an explicit context so a process can host multiple runtimes (tests, multiple
+windows, embedding) and so ownership is visible. The macro injects `cx` as sugar:
+the generated function is `fn Counter(props, cx: &mut Cx) -> ViewNodeId`. Async
+bodies get an owned `CxHandle` instead of `&Cx`; see
+[04-async-model.md](04-async-model.md) §3.5. The alternatives are to require an
+explicit `cx` parameter (honest, noisy) or to adopt a scoped/thread-local runtime
+(clean authoring, hidden global). We keep the explicit form and pay the macro
+complexity.
+
 ### 3.2 Props
 
 Props are uniform `Prop<T>` values. There is no bare `T` prop if the value may
