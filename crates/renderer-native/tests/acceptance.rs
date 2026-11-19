@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use reactive_core::{create_signal, Runtime, RuntimeHandle, WriteSignal};
-use renderer_api::{Color, Length, ResolvedStyle, Size, TextStyle};
+use renderer_api::{Color, Length, ResolvedStyle, Size, TextStyle, Transform};
 use renderer_native::{
     BackendError, BackendMetrics, FrameOutput, HeadlessBackend, PaintBackend, WgpuBackend,
     WindowApp, WindowDriver,
@@ -217,6 +217,7 @@ fn wgpu_headless_backend_draws_a_red_rect() {
         rect: Rect::new(0.0, 0.0, 32.0, 32.0),
         color: Color::new(1.0, 0.0, 0.0, 1.0),
         radius: Default::default(),
+        clip: None,
     });
     let stats = backend
         .render(&scene, &[Rect::new(0.0, 0.0, 32.0, 32.0)])
@@ -255,6 +256,34 @@ fn clean_headless_frames_fit_a_60hz_budget() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "wgpu uses platform graphics drivers")]
+fn wgpu_clips_fills_to_the_content_mask() {
+    let mut backend = match WgpuBackend::new_headless(64, 64, 1.0) {
+        Ok(backend) => backend,
+        Err(BackendError::NoAdapter) => {
+            eprintln!("skipping wgpu clip test: no adapter");
+            return;
+        }
+        Err(error) => panic!("wgpu init failed: {error}"),
+    };
+    let mut scene = Scene::new();
+    scene.push(Primitive::Fill {
+        node: 1,
+        rect: Rect::new(0.0, 0.0, 64.0, 64.0),
+        color: Color::new(1.0, 0.0, 0.0, 1.0),
+        radius: Default::default(),
+        clip: Some(Rect::new(0.0, 0.0, 32.0, 64.0)),
+    });
+    backend.render(&scene, &[]).expect("clip render");
+    backend.present().expect("present");
+
+    let visible = backend.read_pixel(16, 32).expect("visible pixel");
+    let clipped = backend.read_pixel(48, 32).expect("clipped pixel");
+    assert!(visible[0] > 200, "visible {visible:?}");
+    assert!(clipped[0] < 100, "clipped {clipped:?}");
+}
+
+#[test]
 #[cfg_attr(miri, ignore = "wgpu and system fonts are not available under Miri")]
 fn wgpu_glyph_atlas_renders_platform_text() {
     let mut text = text::TextSystem::new(Box::new(text::CosmicShaper::new()));
@@ -288,6 +317,8 @@ fn wgpu_glyph_atlas_renders_platform_text() {
         rect: Rect::new(8.0, 8.0, 80.0, 48.0),
         layout,
         color: style.color,
+        clip: None,
+        transform: Transform::IDENTITY,
     });
     backend.render(&scene, &[]).expect("glyph render");
     backend.present().expect("present");

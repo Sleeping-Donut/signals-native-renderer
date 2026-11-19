@@ -87,9 +87,10 @@ rasterized glyphs, a retained scene builder with paint replay and damage, a
 sampled glyph atlas, and a wgpu backend with a winit window loop (behind the
 `window` feature). A release smoke run measured 16.672 ms steady frame time
 (60.0 fps) on an M3 Pro at 2×; the 2019 target laptop and visible 1×/1.5× runs
-remain. Phase 6 has started with retained hit testing, pointer/click dispatch,
-focus and tab order, key bindings, accessibility snapshots/actions, native
-winit input routing, and a native two-instance counter example.
+remain. Phase 6 has retained hit testing, pointer/click dispatch, focus and tab
+order, key bindings, accessibility snapshots/actions, native winit input
+routing, content-mask clipping, translation/scale transforms, and a native
+two-instance counter example.
 
 CI is path-filtered: changes to prose, docs, plans, and the README do not run the
 Rust gate. Code, dependency, flake, toolchain, and workflow changes do.

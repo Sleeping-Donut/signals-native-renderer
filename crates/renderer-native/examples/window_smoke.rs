@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use renderer_api::{Color, Edges, TextStyle};
+use renderer_api::{Color, Edges, TextStyle, Transform};
 use renderer_native::{PaintBackend, WgpuBackend};
 use scene::{Primitive, Rect, Scene};
 use text::{CosmicShaper, ShapeRequest, ShapedLayout, Shaper};
@@ -37,12 +37,15 @@ impl Smoke {
             rect: Rect::new(0.0, 0.0, metrics.logical_width(), metrics.logical_height()),
             color: Color::new(0.08, 0.09, 0.12, 1.0),
             radius: Edges::default(),
+            clip: None,
         });
         scene.push(Primitive::Text {
             node: 2,
             rect: Rect::new(24.0, 24.0, metrics.logical_width() - 48.0, 48.0),
             layout: Arc::clone(&self.layout),
             color: Color::new(0.92, 0.92, 0.95, 1.0),
+            clip: None,
+            transform: Transform::IDENTITY,
         });
         scene
     }

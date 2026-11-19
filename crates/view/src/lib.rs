@@ -17,8 +17,8 @@ use reactive_core::{
 };
 use renderer_api::{
     A11yRole, Display, Edges, ElementTag, FlexDirection, FrameInfo, Key, KeyEvent, Modifiers,
-    NamedKey, NodeId as RendererNodeId, PointerEvent, Renderer, ResolvedStyle, Size,
-    TextMeasureRequest, TextMetrics, TextStyle,
+    NamedKey, NodeId as RendererNodeId, Overflow, PointerEvent, Renderer, ResolvedStyle, Size,
+    TextMeasureRequest, TextMetrics, TextStyle, Transform,
 };
 use scene::{PaintTree, Primitive, Scene, SceneBuilder, SceneStats};
 use text::{MonospaceShaper, TextSystem};
@@ -291,6 +291,63 @@ impl ViewTree {
         self.inner.layout.borrow().geometry(layout_id)
     }
 
+    /// The world transform for a node, composed from its ancestors.
+    #[must_use]
+    pub fn world_transform(&self, id: ViewNodeId) -> Transform {
+        let nodes = self.inner.nodes.borrow();
+        let mut chain = Vec::new();
+        let mut current = Some(id);
+        while let Some(node) = current {
+            let Some(data) = nodes.get(node) else {
+                break;
+            };
+            chain.push(node);
+            current = data.parent;
+        }
+        chain.reverse();
+        let mut world = Transform::IDENTITY;
+        for node in chain {
+            let Some(data) = nodes.get(node) else {
+                continue;
+            };
+            let origin = self
+                .inner
+                .layout
+                .borrow()
+                .geometry(data.layout_id)
+                .unwrap_or_default();
+            world = world.compose(
+                data.style.transform,
+                renderer_api::Point {
+                    x: origin.x,
+                    y: origin.y,
+                },
+            );
+        }
+        world
+    }
+
+    /// The intersection of all ancestor clips, in screen coordinates.
+    #[must_use]
+    pub fn content_mask(&self, id: ViewNodeId) -> Option<Rect> {
+        let nodes = self.inner.nodes.borrow();
+        let mut current = nodes.get(id).and_then(|data| data.parent);
+        let mut mask: Option<Rect> = None;
+        while let Some(node) = current {
+            let Some(data) = nodes.get(node) else {
+                break;
+            };
+            if data.style.overflow == Overflow::Hidden {
+                if let Some(rect) = self.inner.layout.borrow().geometry(data.layout_id) {
+                    let clip = transform_rect(self.world_transform(node), rect);
+                    mask = Some(mask.map_or(clip, |existing| intersect_rect(existing, clip)));
+                }
+            }
+            current = data.parent;
+        }
+        mask
+    }
+
     /// Apply a resolved style to a mounted node.
     pub fn set_style(&self, id: ViewNodeId, style: ResolvedStyle) {
         let (renderer_id, layout_id) = {
@@ -421,7 +478,16 @@ impl ViewTree {
         }
         if interactive && !disabled {
             if let Some(rect) = self.layout_rect(node) {
-                if x >= rect.x && x <= rect.right() && y >= rect.y && y <= rect.bottom() {
+                let world = self.world_transform(node);
+                let local = world.inverse_point(renderer_api::Point { x, y })?;
+                let inside = local.x >= rect.x
+                    && local.x <= rect.right()
+                    && local.y >= rect.y
+                    && local.y <= rect.bottom();
+                let unmasked = self
+                    .content_mask(node)
+                    .is_none_or(|mask| contains_point(mask, x, y));
+                if inside && unmasked {
                     return Some(node);
                 }
             }
@@ -1293,6 +1359,42 @@ impl ViewTree {
     }
 }
 
+fn contains_point(rect: Rect, x: f32, y: f32) -> bool {
+    x >= rect.x && x <= rect.right() && y >= rect.y && y <= rect.bottom()
+}
+
+fn intersect_rect(a: Rect, b: Rect) -> Rect {
+    let x = a.x.max(b.x);
+    let y = a.y.max(b.y);
+    let right = a.right().min(b.right());
+    let bottom = a.bottom().min(b.bottom());
+    Rect {
+        x,
+        y,
+        width: (right - x).max(0.0),
+        height: (bottom - y).max(0.0),
+    }
+}
+
+fn transform_rect(transform: Transform, rect: Rect) -> Rect {
+    let a = transform.apply_point(renderer_api::Point {
+        x: rect.x,
+        y: rect.y,
+    });
+    let b = transform.apply_point(renderer_api::Point {
+        x: rect.right(),
+        y: rect.bottom(),
+    });
+    let x = a.x.min(b.x);
+    let y = a.y.min(b.y);
+    Rect {
+        x,
+        y,
+        width: (a.x.max(b.x) - x).abs(),
+        height: (a.y.max(b.y) - y).abs(),
+    }
+}
+
 fn default_style(tag: &str) -> ResolvedStyle {
     let mut style = ResolvedStyle {
         display: Display::Flex,
@@ -1712,10 +1814,11 @@ impl PaintTree for ViewPaintTree<'_> {
     }
 
     fn bounds(&self, node: Self::Node) -> scene::Rect {
-        self.tree
-            .layout_rect(node)
-            .map(|rect| scene::Rect::new(rect.x, rect.y, rect.width, rect.height))
-            .unwrap_or_default()
+        let Some(rect) = self.tree.layout_rect(node) else {
+            return scene::Rect::default();
+        };
+        let rect = scene::Rect::new(rect.x, rect.y, rect.width, rect.height);
+        rect.transformed(self.tree.world_transform(node))
     }
 
     fn paint(&self, node: Self::Node, out: &mut Vec<Primitive>) {
@@ -1732,23 +1835,31 @@ impl PaintTree for ViewPaintTree<'_> {
         }) else {
             return;
         };
-        let rect = scene::Rect::new(rect.x, rect.y, rect.width, rect.height);
+        let layout_rect = scene::Rect::new(rect.x, rect.y, rect.width, rect.height);
+        let transform = self.tree.world_transform(node);
+        let paint_rect = layout_rect.transformed(transform);
+        let clip = self
+            .tree
+            .content_mask(node)
+            .map(|mask| scene::Rect::new(mask.x, mask.y, mask.width, mask.height));
         if let Some(color) = style.background {
             out.push(Primitive::Fill {
                 node: renderer_id,
-                rect,
+                rect: paint_rect,
                 color,
                 radius: style.radius,
+                clip,
             });
         }
         if style.border != Edges::default() {
             if let Some(color) = style.border_color {
                 out.push(Primitive::Border {
                     node: renderer_id,
-                    rect,
+                    rect: paint_rect,
                     width: style.border,
                     color,
                     radius: style.radius,
+                    clip,
                 });
             }
         }
@@ -1763,9 +1874,11 @@ impl PaintTree for ViewPaintTree<'_> {
                 );
                 out.push(Primitive::Text {
                     node: renderer_id,
-                    rect,
+                    rect: layout_rect,
                     layout,
                     color: style.text.color,
+                    clip,
+                    transform,
                 });
             }
         }

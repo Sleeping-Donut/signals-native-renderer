@@ -5,8 +5,8 @@ use std::rc::Rc;
 
 use reactive_core::{create_signal, Runtime, RuntimeHandle};
 use renderer_api::{
-    A11yRole, Key, KeyEvent, Length, Modifiers, NamedKey, PointerButton, PointerEvent, Position,
-    ResolvedStyle, Size, TextStyle,
+    A11yRole, Key, KeyEvent, Length, Modifiers, NamedKey, Overflow, PointerButton, PointerEvent,
+    Position, ResolvedStyle, Size, TextStyle, Transform,
 };
 use renderer_null::{NullRenderer, SharedNullRenderer};
 use view::{button_text, column, keyed_list, text_fn, FocusHandle, KeyStroke, ViewTree};
@@ -30,6 +30,18 @@ fn px(width: f32, height: f32) -> ResolvedStyle {
 fn absolute(width: f32, height: f32) -> ResolvedStyle {
     let mut style = px(width, height);
     style.position = Position::Absolute;
+    style
+}
+
+fn clipped(width: f32, height: f32) -> ResolvedStyle {
+    let mut style = px(width, height);
+    style.overflow = Overflow::Hidden;
+    style
+}
+
+fn transformed(transform: Transform) -> ResolvedStyle {
+    let mut style = px(100.0, 100.0);
+    style.transform = transform;
     style
 }
 
@@ -242,6 +254,93 @@ fn removing_focused_row_moves_focus_to_previous_focusable_sibling() {
     tree.frame(&cx, 1);
 
     assert_eq!(tree.focused(), Some(rows[0]));
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn clipped_hitboxes_ignore_points_outside_the_content_mask() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let (count, set_count) = create_signal(&cx, 0_u32);
+    let container = {
+        let mut style = clipped(100.0, 100.0);
+        style.background = Some(renderer_api::Color::new(0.2, 0.2, 0.2, 1.0));
+        view::column(vec![button_text("inside", move |cx| {
+            set_count.update_with(cx, |value| value + 1);
+        })
+        .style({
+            let mut style = absolute(150.0, 150.0);
+            style.background = Some(renderer_api::Color::new(1.0, 0.0, 0.0, 1.0));
+            style
+        })])
+        .style(style)
+    };
+    let root = tree.mount(&cx, view::column(vec![container]).style(px(200.0, 200.0)));
+    tree.set_viewport(200.0, 200.0);
+    tree.frame(&cx, 0);
+
+    let button = tree.children(tree.children(root)[0])[0];
+    assert_eq!(tree.hit_test(50.0, 50.0), Some(button));
+    assert_eq!(tree.hit_test(120.0, 80.0), None);
+    tree.pointer_down(&pointer(120.0, 80.0));
+    tree.pointer_up(&pointer(120.0, 80.0));
+    tree.frame(&cx, 1);
+    assert_eq!(count.get(&cx), 0);
+
+    let scene = tree.build_scene();
+    let button_renderer = tree.renderer_id(button).unwrap();
+    let fill = scene
+        .ops()
+        .iter()
+        .find_map(|primitive| match primitive {
+            scene::Primitive::Fill {
+                node, rect, clip, ..
+            } if *node == button_renderer => Some((*rect, *clip)),
+            _ => None,
+        })
+        .expect("button fill");
+    assert_eq!(fill.0, scene::Rect::new(0.0, 0.0, 150.0, 150.0));
+    assert_eq!(fill.1, Some(scene::Rect::new(0.0, 0.0, 100.0, 100.0)));
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn transformed_pointer_coordinates_hit_and_paint_in_world_space() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let (count, set_count) = create_signal(&cx, 0_u32);
+    let mut button_style = px(50.0, 50.0);
+    button_style.background = Some(renderer_api::Color::new(0.0, 1.0, 0.0, 1.0));
+    let container = view::column(vec![button_text("scaled", move |cx| {
+        set_count.update_with(cx, |value| value + 1);
+    })
+    .style(button_style)])
+    .style(transformed(Transform::new(10.0, 10.0, 2.0, 2.0)));
+    let root = tree.mount(&cx, view::column(vec![container]).style(px(300.0, 300.0)));
+    tree.set_viewport(300.0, 300.0);
+    tree.frame(&cx, 0);
+
+    let button = tree.children(tree.children(root)[0])[0];
+    assert_eq!(tree.hit_test(5.0, 5.0), None);
+    assert_eq!(tree.hit_test(60.0, 60.0), Some(button));
+    tree.pointer_down(&pointer(60.0, 60.0));
+    tree.pointer_up(&pointer(60.0, 60.0));
+    tree.frame(&cx, 1);
+    assert_eq!(count.get(&cx), 1);
+
+    let scene = tree.build_scene();
+    let button_renderer = tree.renderer_id(button).unwrap();
+    let rect = scene
+        .ops()
+        .iter()
+        .find_map(|primitive| match primitive {
+            scene::Primitive::Fill { node, rect, .. } if *node == button_renderer => Some(*rect),
+            _ => None,
+        })
+        .expect("button fill");
+    assert_eq!(rect, scene::Rect::new(10.0, 10.0, 100.0, 100.0));
 
     tree.unmount(&cx, root);
 }

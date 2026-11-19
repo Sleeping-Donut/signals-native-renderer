@@ -12,9 +12,10 @@ bindings, focus fallback on removal, and an accessibility snapshot with
 stable ids and press/focus actions. [`renderer-api`](../crates/renderer-api/src/lib.rs)
 owns `Key`, `KeyEvent`, `Modifiers`, and `PointerEvent`;
 [`renderer-native`](../crates/renderer-native/src/lib.rs) maps winit pointer and
-keyboard events into `WindowDriver`. Content masks/transforms, capture/stop
-results, drag/drop, scroll, IME, AccessKit protocol wiring, and cursor/tooltip
-layers remain.
+keyboard events into `WindowDriver`. Hit testing inverses translation/scale transforms and honors
+ancestor content masks; scene building emits transformed primitives with clip
+rectangles. Capture/stop results, drag/drop, scroll, IME, AccessKit protocol
+wiring, richer hover/focus styling, and cursor/tooltip layers remain.
 
 ---
 

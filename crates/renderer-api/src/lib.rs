@@ -466,6 +466,120 @@ impl Default for TextStyle {
     }
 }
 
+/// A 2D translation and axis-aligned scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Transform {
+    /// X translation.
+    pub translate_x: f32,
+    /// Y translation.
+    pub translate_y: f32,
+    /// X scale.
+    pub scale_x: f32,
+    /// Y scale.
+    pub scale_y: f32,
+}
+
+impl Transform {
+    /// Identity transform.
+    pub const IDENTITY: Self = Self {
+        translate_x: 0.0,
+        translate_y: 0.0,
+        scale_x: 1.0,
+        scale_y: 1.0,
+    };
+
+    /// Construct a transform.
+    #[must_use]
+    pub const fn new(translate_x: f32, translate_y: f32, scale_x: f32, scale_y: f32) -> Self {
+        Self {
+            translate_x,
+            translate_y,
+            scale_x,
+            scale_y,
+        }
+    }
+
+    /// A pure translation.
+    #[must_use]
+    pub const fn translation(x: f32, y: f32) -> Self {
+        Self::new(x, y, 1.0, 1.0)
+    }
+
+    /// A uniform scale.
+    #[must_use]
+    pub const fn scale(scale: f32) -> Self {
+        Self::new(0.0, 0.0, scale, scale)
+    }
+
+    /// Whether this is the identity transform.
+    #[must_use]
+    pub fn is_identity(self) -> bool {
+        self == Self::IDENTITY
+    }
+
+    /// Apply to a point.
+    #[must_use]
+    pub fn apply_point(self, point: Point<f32>) -> Point<f32> {
+        Point {
+            x: point.x * self.scale_x + self.translate_x,
+            y: point.y * self.scale_y + self.translate_y,
+        }
+    }
+
+    /// Apply to an X coordinate.
+    #[must_use]
+    pub fn apply_x(self, x: f32) -> f32 {
+        x * self.scale_x + self.translate_x
+    }
+
+    /// Apply to a Y coordinate.
+    #[must_use]
+    pub fn apply_y(self, y: f32) -> f32 {
+        y * self.scale_y + self.translate_y
+    }
+
+    /// Compose a local transform around `origin` after this parent transform.
+    #[must_use]
+    pub fn compose(self, local: Self, origin: Point<f32>) -> Self {
+        Self {
+            translate_x: (origin.x - origin.x * local.scale_x + local.translate_x) * self.scale_x
+                + self.translate_x,
+            translate_y: (origin.y - origin.y * local.scale_y + local.translate_y) * self.scale_y
+                + self.translate_y,
+            scale_x: local.scale_x * self.scale_x,
+            scale_y: local.scale_y * self.scale_y,
+        }
+    }
+
+    /// Inverse-map a screen point into local coordinates.
+    #[must_use]
+    pub fn inverse_point(self, point: Point<f32>) -> Option<Point<f32>> {
+        if self.scale_x == 0.0 || self.scale_y == 0.0 {
+            return None;
+        }
+        Some(Point {
+            x: (point.x - self.translate_x) / self.scale_x,
+            y: (point.y - self.translate_y) / self.scale_y,
+        })
+    }
+}
+
+impl Default for Transform {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+/// Content overflow behavior.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Overflow {
+    /// Content paints outside the node.
+    #[default]
+    Visible,
+    /// Content is clipped to the node's bounds.
+    Hidden,
+}
+
 /// The resolved style sent to a backend.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ResolvedStyle {
@@ -493,6 +607,10 @@ pub struct ResolvedStyle {
     pub opacity: f32,
     /// Text properties.
     pub text: TextStyle,
+    /// Paint/hit transform applied to this node's subtree.
+    pub transform: Transform,
+    /// Whether children are clipped to this node's bounds.
+    pub overflow: Overflow,
 }
 
 /// A logical point.

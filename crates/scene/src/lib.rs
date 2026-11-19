@@ -12,7 +12,7 @@ use std::hash::Hash;
 use std::ops::Range;
 use std::sync::Arc;
 
-use renderer_api::{Color, Edges};
+use renderer_api::{Color, Edges, Transform};
 use text::ShapedLayout;
 
 /// Scene node identity.
@@ -70,6 +70,36 @@ impl Rect {
             && other.y < self.bottom()
     }
 
+    /// Whether a point lies inside the rectangle.
+    #[must_use]
+    pub fn contains(self, x: f32, y: f32) -> bool {
+        x >= self.x && x <= self.right() && y >= self.y && y <= self.bottom()
+    }
+
+    /// The overlap of two rectangles, if any.
+    #[must_use]
+    pub fn intersect(self, other: Self) -> Option<Self> {
+        let x = self.x.max(other.x);
+        let y = self.y.max(other.y);
+        let right = self.right().min(other.right());
+        let bottom = self.bottom().min(other.bottom());
+        if right <= x || bottom <= y {
+            None
+        } else {
+            Some(Self::new(x, y, right - x, bottom - y))
+        }
+    }
+
+    /// Apply a translation/scale transform.
+    #[must_use]
+    pub fn transformed(self, transform: Transform) -> Self {
+        let x0 = transform.apply_x(self.x);
+        let y0 = transform.apply_y(self.y);
+        let x1 = transform.apply_x(self.right());
+        let y1 = transform.apply_y(self.bottom());
+        Self::new(x0.min(x1), y0.min(y1), (x1 - x0).abs(), (y1 - y0).abs())
+    }
+
     /// The smallest rectangle containing both inputs.
     #[must_use]
     pub fn union(self, other: Self) -> Self {
@@ -94,6 +124,8 @@ pub enum Primitive {
         color: Color,
         /// Corner radii.
         radius: Edges<f32>,
+        /// Ancestor clip in screen coordinates.
+        clip: Option<Rect>,
     },
     /// A border.
     Border {
@@ -107,6 +139,8 @@ pub enum Primitive {
         color: Color,
         /// Corner radii.
         radius: Edges<f32>,
+        /// Ancestor clip in screen coordinates.
+        clip: Option<Rect>,
     },
     /// A shaped text run.
     Text {
@@ -118,6 +152,10 @@ pub enum Primitive {
         layout: Arc<ShapedLayout>,
         /// Text color.
         color: Color,
+        /// Ancestor clip in screen coordinates.
+        clip: Option<Rect>,
+        /// Paint transform. Text glyph positions are transformed by this.
+        transform: Transform,
     },
 }
 

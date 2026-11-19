@@ -672,68 +672,54 @@ fn collect_vertices(
     let white = atlas.white_uv();
     for primitive in scene.ops() {
         match primitive {
-            Primitive::Fill { rect, color, .. } => {
-                push_quad(vertices, metrics, *rect, *color, white);
-                stats.fill_quads += 1;
+            Primitive::Fill {
+                rect, color, clip, ..
+            } => {
+                if let Some(rect) = apply_clip(*rect, *clip) {
+                    push_quad(vertices, metrics, rect, *color, white);
+                    stats.fill_quads += 1;
+                }
             }
             Primitive::Border {
-                rect, width, color, ..
+                rect,
+                width,
+                color,
+                clip,
+                ..
             } => {
                 let mut edges = 0;
+                let mut edge = |edge_rect: Rect| {
+                    if let Some(edge_rect) = apply_clip(edge_rect, *clip) {
+                        push_quad(vertices, metrics, edge_rect, *color, white);
+                        edges += 1;
+                    }
+                };
                 if width.top > 0.0 {
-                    push_quad(
-                        vertices,
-                        metrics,
-                        Rect::new(rect.x, rect.y, rect.width, width.top),
-                        *color,
-                        white,
-                    );
-                    edges += 1;
+                    edge(Rect::new(rect.x, rect.y, rect.width, width.top));
                 }
                 if width.bottom > 0.0 {
-                    push_quad(
-                        vertices,
-                        metrics,
-                        Rect::new(
-                            rect.x,
-                            rect.y + rect.height - width.bottom,
-                            rect.width,
-                            width.bottom,
-                        ),
-                        *color,
-                        white,
-                    );
-                    edges += 1;
+                    edge(Rect::new(
+                        rect.x,
+                        rect.y + rect.height - width.bottom,
+                        rect.width,
+                        width.bottom,
+                    ));
                 }
                 if width.left > 0.0 {
-                    push_quad(
-                        vertices,
-                        metrics,
-                        Rect::new(
-                            rect.x,
-                            rect.y + width.top,
-                            width.left,
-                            (rect.height - width.top - width.bottom).max(0.0),
-                        ),
-                        *color,
-                        white,
-                    );
-                    edges += 1;
+                    edge(Rect::new(
+                        rect.x,
+                        rect.y + width.top,
+                        width.left,
+                        (rect.height - width.top - width.bottom).max(0.0),
+                    ));
                 }
                 if width.right > 0.0 {
-                    push_quad(
-                        vertices,
-                        metrics,
-                        Rect::new(
-                            rect.x + rect.width - width.right,
-                            rect.y + width.top,
-                            width.right,
-                            (rect.height - width.top - width.bottom).max(0.0),
-                        ),
-                        *color,
-                        white,
-                    );
-                    edges += 1;
+                    edge(Rect::new(
+                        rect.x + rect.width - width.right,
+                        rect.y + width.top,
+                        width.right,
+                        (rect.height - width.top - width.bottom).max(0.0),
+                    ));
                 }
                 stats.border_quads += edges;
             }
@@ -741,6 +727,8 @@ fn collect_vertices(
                 rect,
                 layout,
                 color,
+                clip,
+                transform,
                 ..
             } => {
                 for line in &layout.lines {
@@ -748,19 +736,23 @@ fn collect_vertices(
                     for glyph in &line.glyphs {
                         if let Some(image) = &glyph.image {
                             if let Some(entry) = atlas.ensure(image) {
-                                draw_glyph(vertices, metrics, rect, line_y, glyph, *color, entry);
-                                stats.atlas_glyphs += 1;
+                                let glyph_rect = draw_glyph(
+                                    vertices, metrics, rect, line_y, glyph, *color, entry, *clip,
+                                    *transform,
+                                );
+                                if glyph_rect {
+                                    stats.atlas_glyphs += 1;
+                                }
                                 continue;
                             }
                         }
-                        push_quad(
-                            vertices,
-                            metrics,
-                            placeholder_glyph(rect, line_y, glyph, layout.ascent),
-                            *color,
-                            white,
-                        );
-                        stats.placeholder_glyphs += 1;
+                        let placeholder = placeholder_glyph(rect, line_y, glyph, layout.ascent);
+                        if let Some(placeholder) =
+                            apply_clip(placeholder.transformed(*transform), *clip)
+                        {
+                            push_quad(vertices, metrics, placeholder, *color, white);
+                            stats.placeholder_glyphs += 1;
+                        }
                     }
                 }
                 stats.glyph_quads += layout
@@ -782,6 +774,7 @@ fn placeholder_glyph(rect: &Rect, line_y: f32, glyph: &Glyph, ascent: f32) -> Re
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_glyph(
     vertices: &mut Vec<u8>,
     metrics: BackendMetrics,
@@ -790,19 +783,28 @@ fn draw_glyph(
     glyph: &Glyph,
     color: renderer_api::Color,
     entry: crate::atlas::AtlasEntry,
-) {
-    push_textured_quad(
-        vertices,
-        metrics,
-        Rect::new(
-            rect.x + glyph.x + entry.left,
-            line_y + glyph.y - entry.top,
-            entry.width,
-            entry.height,
-        ),
-        color,
-        entry.uv,
-    );
+    clip: Option<Rect>,
+    transform: renderer_api::Transform,
+) -> bool {
+    let glyph_rect = Rect::new(
+        rect.x + glyph.x + entry.left,
+        line_y + glyph.y - entry.top,
+        entry.width,
+        entry.height,
+    )
+    .transformed(transform);
+    let Some(glyph_rect) = apply_clip(glyph_rect, clip) else {
+        return false;
+    };
+    push_textured_quad(vertices, metrics, glyph_rect, color, entry.uv);
+    true
+}
+
+fn apply_clip(rect: Rect, clip: Option<Rect>) -> Option<Rect> {
+    match clip {
+        Some(clip) => rect.intersect(clip),
+        None => Some(rect),
+    }
 }
 
 fn push_quad(

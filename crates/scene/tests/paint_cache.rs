@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use renderer_api::{Color, Edges, TextStyle};
+use renderer_api::{Color, Edges, TextStyle, Transform};
 use scene::{PaintTree, Primitive, Rect, SceneBuilder};
 use text::{MonospaceShaper, ShapedLayout, TextSystem};
 
@@ -84,6 +84,7 @@ impl PaintTree for Tree {
             rect: data.bounds,
             color: data.color,
             radius: Edges::default(),
+            clip: None,
         });
         if let Some(layout) = &data.layout {
             out.push(Primitive::Text {
@@ -91,6 +92,8 @@ impl PaintTree for Tree {
                 rect: data.bounds,
                 layout: Arc::clone(layout),
                 color: data.text_color,
+                clip: None,
+                transform: Transform::IDENTITY,
             });
         }
     }
