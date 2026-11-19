@@ -20,7 +20,8 @@ pub use graph::{
     create_memo, create_memo_unchecked, create_memo_with, create_signal, create_signal_unchecked,
     create_signal_with, effect, error_boundary, loading_boundary, render_effect, AsyncError,
     CleanupHandle, Cx, Derived, DirtyState, EffectHandle, ErrorBoundary, FlushError,
-    LoadingBoundary, Memo, OwnerHandle, OwnerId, ReadSignal, ReaderClass, Runtime, WriteSignal,
+    LoadingBoundary, Memo, OwnerHandle, OwnerId, ReadSignal, ReaderClass, Runtime, RuntimeHandle,
+    WriteSignal,
 };
 pub use id::{AccessError, Handle, NodeId};
 pub use spawner::{LocalBoxFuture, ManualSpawner, Spawner};

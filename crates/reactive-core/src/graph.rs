@@ -20,6 +20,7 @@ use std::error::Error;
 use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
+use std::ops::Deref;
 use std::panic::{catch_unwind, panic_any, resume_unwind, AssertUnwindSafe};
 use std::pin::Pin;
 use std::rc::Rc;
@@ -510,6 +511,49 @@ impl EffectHandle {
     #[must_use]
     pub fn is_disposed(self, cx: &Cx<'_>) -> bool {
         cx.rt.is_disposed(self.id)
+    }
+}
+
+/// An owned graph runtime handle. Cloning is cheap and keeps the runtime
+/// alive; use it in `'static` event handlers and detached tasks.
+#[derive(Clone)]
+pub struct RuntimeHandle {
+    rt: Rc<Runtime>,
+}
+
+impl Runtime {
+    /// Convert the runtime into an owned, clonable handle.
+    #[must_use]
+    pub fn into_handle(self) -> RuntimeHandle {
+        RuntimeHandle { rt: Rc::new(self) }
+    }
+}
+
+impl RuntimeHandle {
+    /// Borrow the graph through a context.
+    #[must_use]
+    pub fn cx(&self) -> Cx<'_> {
+        Cx { rt: &self.rt }
+    }
+
+    /// The underlying runtime.
+    #[must_use]
+    pub fn runtime(&self) -> &Runtime {
+        &self.rt
+    }
+}
+
+impl Deref for RuntimeHandle {
+    type Target = Runtime;
+
+    fn deref(&self) -> &Self::Target {
+        &self.rt
+    }
+}
+
+impl std::fmt::Debug for RuntimeHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeHandle").finish_non_exhaustive()
     }
 }
 

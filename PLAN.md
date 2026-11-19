@@ -222,6 +222,16 @@ recording, frame begin/end, conformance tests, binding adapters.
 operation, and produces a deterministic operation log; the same app runs on the
 in-process scene recorder.
 
+**Status (2026-11-19): implemented.** [`renderer-api`](crates/renderer-api/src/lib.rs)
+defines the object-safe contract and capability traits;
+[`renderer-null`](crates/renderer-null/src/lib.rs) maintains a shadow tree and
+deterministic operation log. Conformance tests cover structure, text,
+attributes, style, events, errors, frame hooks, and the log
+([conformance.rs](crates/renderer-null/tests/conformance.rs)). The headless
+counter renders two instances, updates only the changed text operations, and
+preserves per-instance state
+([headless_counter.rs](crates/renderer-null/tests/headless_counter.rs)).
+
 ### Phase 4 — Retained native renderer: structure (4–6 weeks)
 
 **Build:** `ViewNode` arena, child lists, keyed lists, conditionals, dynamic view

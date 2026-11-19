@@ -5,6 +5,12 @@
 **Owns:** the object-safe contract third-party renderers implement, capability
 traits, the null renderer's interface, and the conformance suite.
 
+**Implementation status (2026-11-19).** The contract is implemented in
+[`renderer-api`](../crates/renderer-api/src/lib.rs) and the recording backend in
+[`renderer-null`](../crates/renderer-null/src/lib.rs). The conformance suite and
+headless counter live in
+[`renderer-null/tests`](../crates/renderer-null/tests/conformance.rs).
+
 ---
 
 ## 1. Purpose and non-purpose

@@ -79,9 +79,9 @@ nix develop -c cargo bench -p reactive-core
 ```
 
 Phase 0 covers the generational arena, `NodeId`/`Handle`, the runtime shell, the
-manual spawner, and the benchmark harness. Phase 1 (the reactive graph) and
-Phase 2 (async holds and boundaries) are implemented; Phase 3 adds the renderer
-contract.
+manual spawner, and the benchmark harness. Phase 1 (the reactive graph), Phase 2
+(async holds and boundaries), and Phase 3 (the renderer contract and null
+renderer) are implemented; Phase 4 adds the retained view tree.
 
 CI is path-filtered: changes to prose, docs, plans, and the README do not run the
 Rust gate. Code, dependency, flake, toolchain, and workflow changes do.
