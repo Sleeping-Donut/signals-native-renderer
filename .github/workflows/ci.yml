@@ -1,11 +1,47 @@
 name: CI
 
+# Only code, dependency, toolchain, and workflow changes need the Rust gate.
+# Docs, plans, README, license, and other prose changes do not trigger a run.
 on:
   push:
+    branches:
+      - main
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "flake.nix"
+      - "flake.lock"
+      - ".cargo/**"
+      - "rust-toolchain*"
+      - "rustfmt.toml"
+      - "clippy.toml"
+      - ".github/workflows/ci.yml"
   pull_request:
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "flake.nix"
+      - "flake.lock"
+      - ".cargo/**"
+      - "rust-toolchain*"
+      - "rustfmt.toml"
+      - "clippy.toml"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same ref cancels the older run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
+    name: check (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -14,6 +50,11 @@ jobs:
           - macos-latest
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
 
     steps:
       - uses: actions/checkout@v4
@@ -23,10 +64,20 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
+      # Restore the Cargo registry and target directory. PRs read the main
+      # cache; only main writes it, so feature branches do not thrash storage.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Formatting and lints are platform-independent; run them once.
       - name: Format
+        if: matrix.os == 'ubuntu-latest'
         run: nix develop -c cargo fmt --all --check
 
       - name: Clippy
+        if: matrix.os == 'ubuntu-latest'
         run: nix develop -c cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test
