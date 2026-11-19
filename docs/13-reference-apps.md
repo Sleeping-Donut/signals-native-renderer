@@ -372,6 +372,32 @@ Notes:
 **Milestone:** M2 headless (holds, boundaries, pending), M4 on the null renderer
 (lists and bindings), M5–M6 natively (controls and keyboard).
 
+### 3.5 M5 native acceptance checks
+
+The native acceptance harness in
+[`renderer-native/tests/acceptance.rs`](../crates/renderer-native/tests/acceptance.rs)
+drives the same `WindowDriver` used by winit:
+
+1. `window_resize_is_correct_at_one_one_and_a_half_and_two_x` — 300×200 logical
+   stays 300×200 logical while the window is 300×200@1×, 450×300@1.5×, and
+   600×400@2×; layout, scene, and backend metrics agree at every scale.
+2. `paint_only_recolor_is_zero_layout_and_replays_through_the_backend` — a text
+   color change reports `last_layout().ran == false`, produces damage, replays
+   the clean sibling, and does not add a text-cache miss.
+3. `layout_change_updates_the_scene_through_the_backend` — a label change runs
+   layout, widens the text primitive, and produces damage.
+4. `wgpu_headless_backend_draws_a_red_rect` — reads back a real wgpu pixel from
+   an offscreen target (Metal on the development machine; skipped when no
+   adapter exists).
+5. `wgpu_backend_drives_resizes_through_the_window_loop` — the wgpu backend
+   renders through the driver at 1×/1.5×/2× and readback confirms the expected
+   background color.
+6. `clean_headless_frames_fit_a_60hz_budget` — a CPU frame-budget check, not a
+   substitute for the target-hardware 60 fps run.
+
+A real displayed-window smoke run and target-hardware fps measurement still need
+a graphical session.
+
 ## 4. Porting notes
 
 | Solid 2.0 | Ours |

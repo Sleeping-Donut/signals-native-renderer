@@ -264,7 +264,7 @@ window loop, scale factor and pixel snapping.
 (color/text) does zero layout; a layout change repaints only dirty subtrees;
 resize is correct at 1×/1.5×/2×.
 
-**Status (2026-11-19): layout, text, and scene slices implemented.** The
+**Status (2026-11-19): layout, text, scene, and native backend slices implemented.** The
 [`layout`](crates/layout/src/lib.rs) crate owns a persistent
 [`taffy`](https://crates.io/crates/taffy) tree, maps logical styles to taffy
 styles, tracks layout-dirty nodes, and copies snapped geometry (1×/1.5×/2×)
@@ -286,8 +286,23 @@ eviction, paint replay versus full rebuild, damage, and scene construction
 [shaping.rs](crates/text/tests/shaping.rs),
 [paint_cache.rs](crates/scene/tests/paint_cache.rs),
 [layout_integration.rs](crates/view/tests/layout_integration.rs),
-[scene_integration.rs](crates/view/tests/scene_integration.rs)). A platform
-shaping backend, the wgpu backend, and the window loop remain.
+[scene_integration.rs](crates/view/tests/scene_integration.rs)).
+
+The [`renderer-native`](crates/renderer-native/src/lib.rs) crate adds the
+`PaintBackend`/`WindowDriver` contract, a recording `HeadlessBackend`, a wgpu
+offscreen and surface backend, and a winit window loop behind the `window`
+feature. Fills, borders, and text glyph placeholders are batched into one vertex
+stream; the offscreen backend supports pixel readback. Tests in
+[acceptance.rs](crates/renderer-native/tests/acceptance.rs) drive the real window
+driver at 1×/1.5×/2×, assert paint-only zero layout and dirty-subtree replay
+through the backend, check a 60 Hz CPU frame budget, and verify a wgpu-drawn red
+pixel (`Metal Apple M3 Pro` locally). The `window` feature and
+[`examples/window.rs`](crates/renderer-native/examples/window.rs) compile.
+
+Remaining Phase 5 work: a real glyph atlas (text currently renders as placeholder
+quads), a platform shaping backend, a smoke run on an actual display, hardware
+60 fps acceptance on the target laptop, and optional damage scissoring/partial
+present. The window loop and offscreen wgpu path are implemented.
 
 ### Phase 6 — Input, focus, accessibility (3–4 weeks)
 

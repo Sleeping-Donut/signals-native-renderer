@@ -7,6 +7,7 @@ members = [
     "crates/layout",
     "crates/text",
     "crates/scene",
+    "crates/renderer-native",
     "crates/runtime",
     "crates/view",
     "crates/macros",

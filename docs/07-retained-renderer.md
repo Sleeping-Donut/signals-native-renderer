@@ -19,8 +19,12 @@ fill/border/text primitives, per-node paint ranges, clean-subtree replay,
 dirty-path rebuild, damage rectangles, and a full-rebuild differential test.
 [`view`](../crates/view/src/lib.rs) exposes `build_scene`, `scene_stats`, and
 `take_scene_damage`; text is shaped through the bounded cache in
-[`crates/text`](../crates/text/src/lib.rs). The wgpu backend and window loop are
-still outstanding.
+[`crates/text`](../crates/text/src/lib.rs). The native backend lives in
+[`crates/renderer-native`](../crates/renderer-native/src/lib.rs): a
+`PaintBackend`/`WindowDriver` contract, a recording headless backend, a wgpu
+offscreen/surface renderer with pixel readback, and a winit window loop behind
+the `window` feature. Text is currently painted as glyph placeholder quads; a
+glyph atlas and platform shaping backend remain.
 
 ---
 

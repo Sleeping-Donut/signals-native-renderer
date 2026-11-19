@@ -82,8 +82,10 @@ Phase 0 covers the generational arena, `NodeId`/`Handle`, the runtime shell, the
 manual spawner, and the benchmark harness. Phase 1 (the reactive graph), Phase 2
 (async holds and boundaries), Phase 3 (the renderer contract and null renderer),
 and Phase 4 (the retained view tree and first `view!`) are implemented. Phase 5
-has the persistent taffy layout tree, cached text shaping, and a retained scene
-builder with paint replay and damage; the wgpu backend and native window remain.
+has the persistent taffy layout tree, cached text shaping, a retained scene
+builder with paint replay and damage, and a wgpu backend with a winit window loop
+(behind the `window` feature). A real glyph atlas, platform shaping, and the
+target-hardware 60 fps acceptance run remain.
 
 CI is path-filtered: changes to prose, docs, plans, and the README do not run the
 Rust gate. Code, dependency, flake, toolchain, and workflow changes do.

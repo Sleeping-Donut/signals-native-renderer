@@ -5,6 +5,13 @@
 **Owns:** the frame loop, queues, clock, frame phases, wake sources, idle
 behavior, and the host boundary.
 
+**Implementation status (2026-11-19).** The view/layout/text/scene frame phases
+are implemented. The host boundary now has a `WindowDriver` and `PaintBackend`
+contract in [`renderer-native`](../crates/renderer-native/src/lib.rs), with a
+recording headless backend, a wgpu offscreen/surface backend, and a winit window
+loop behind the `window` feature. Runtime async pumps and the host event queue
+remain in the existing `runtime` crate; input dispatch is Phase 6.
+
 ---
 
 ## 1. Runtime responsibilities

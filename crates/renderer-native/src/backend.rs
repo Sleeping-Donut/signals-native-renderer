@@ -1,0 +1,227 @@
+use std::fmt;
+
+use scene::{Rect, Scene};
+
+/// Physical and logical window metrics.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BackendMetrics {
+    /// Physical pixel width.
+    pub physical_width: u32,
+    /// Physical pixel height.
+    pub physical_height: u32,
+    /// Device scale factor.
+    pub scale: f32,
+}
+
+impl BackendMetrics {
+    /// Construct metrics.
+    #[must_use]
+    pub const fn new(physical_width: u32, physical_height: u32, scale: f32) -> Self {
+        Self {
+            physical_width,
+            physical_height,
+            scale,
+        }
+    }
+
+    /// Logical width in points.
+    #[must_use]
+    pub fn logical_width(self) -> f32 {
+        self.physical_width as f32 / self.scale
+    }
+
+    /// Logical height in points.
+    #[must_use]
+    pub fn logical_height(self) -> f32 {
+        self.physical_height as f32 / self.scale
+    }
+}
+
+/// A backend failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BackendError {
+    /// No suitable GPU adapter is available.
+    NoAdapter,
+    /// Device creation failed.
+    Device(String),
+    /// Surface creation or configuration failed.
+    Surface(String),
+    /// Surface acquisition timed out.
+    Timeout,
+    /// The surface needs reconfiguration.
+    Outdated,
+    /// The surface was lost.
+    Lost,
+    /// Out of memory.
+    OutOfMemory,
+    /// Another backend-specific failure.
+    Other(String),
+}
+
+impl fmt::Display for BackendError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoAdapter => f.write_str("no suitable GPU adapter"),
+            Self::Device(message) => write!(f, "device creation failed: {message}"),
+            Self::Surface(message) => write!(f, "surface failure: {message}"),
+            Self::Timeout => f.write_str("surface acquisition timed out"),
+            Self::Outdated => f.write_str("surface is outdated"),
+            Self::Lost => f.write_str("surface was lost"),
+            Self::OutOfMemory => f.write_str("out of memory"),
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for BackendError {}
+
+/// Counters from one backend frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameStats {
+    /// Scene primitives submitted.
+    pub primitives: usize,
+    /// Fill rectangles.
+    pub fill_quads: usize,
+    /// Border edge rectangles.
+    pub border_quads: usize,
+    /// Glyph placeholder rectangles.
+    pub glyph_quads: usize,
+    /// Damage rectangles supplied by the scene builder.
+    pub damage_rects: usize,
+    /// Whether a surface present happened.
+    pub presented: bool,
+}
+
+/// A native paint backend.
+pub trait PaintBackend {
+    /// Reconfigure for a physical size and scale.
+    fn resize(&mut self, width: u32, height: u32, scale: f32);
+    /// Render a scene. Presentation is separate so a surface frame can be held
+    /// until [`PaintBackend::present`].
+    fn render(&mut self, scene: &Scene, damage: &[Rect]) -> Result<FrameStats, BackendError>;
+    /// Present the rendered frame.
+    fn present(&mut self) -> Result<(), BackendError>;
+    /// Current metrics.
+    fn metrics(&self) -> BackendMetrics;
+    /// Read a rendered pixel for headless verification.
+    fn read_pixel(&self, _x: u32, _y: u32) -> Option<[u8; 4]> {
+        None
+    }
+    /// Backend name.
+    fn name(&self) -> &'static str;
+}
+
+/// One app frame: a scene and its damage.
+#[derive(Clone, Debug, Default)]
+pub struct FrameOutput {
+    /// Scene to paint.
+    pub scene: Scene,
+    /// Damage rectangles.
+    pub damage: Vec<Rect>,
+}
+
+impl FrameOutput {
+    /// Construct a frame.
+    #[must_use]
+    pub fn new(scene: Scene, damage: Vec<Rect>) -> Self {
+        Self { scene, damage }
+    }
+}
+
+/// An application driven by a window loop.
+pub trait WindowApp {
+    /// The window was resized or its scale changed.
+    fn resize(&mut self, metrics: BackendMetrics);
+    /// Produce one frame.
+    fn frame(&mut self, metrics: BackendMetrics) -> FrameOutput;
+}
+
+/// Drives an application and a backend through resize and redraw steps.
+pub struct WindowDriver<A, B> {
+    app: A,
+    backend: B,
+    metrics: BackendMetrics,
+    frames: u64,
+    last_stats: FrameStats,
+    last_scene_len: usize,
+}
+
+impl<A: WindowApp, B: PaintBackend> WindowDriver<A, B> {
+    /// Create a driver and deliver the initial metrics to the app.
+    pub fn new(mut app: A, backend: B) -> Self {
+        let metrics = backend.metrics();
+        app.resize(metrics);
+        Self {
+            app,
+            backend,
+            metrics,
+            frames: 0,
+            last_stats: FrameStats::default(),
+            last_scene_len: 0,
+        }
+    }
+
+    /// Current window metrics.
+    #[must_use]
+    pub fn metrics(&self) -> BackendMetrics {
+        self.metrics
+    }
+
+    /// Number of completed frames.
+    #[must_use]
+    pub fn frames(&self) -> u64 {
+        self.frames
+    }
+
+    /// Statistics from the last frame.
+    #[must_use]
+    pub fn last_stats(&self) -> FrameStats {
+        self.last_stats
+    }
+
+    /// Primitive count from the last frame.
+    #[must_use]
+    pub fn last_scene_len(&self) -> usize {
+        self.last_scene_len
+    }
+
+    /// Resize the backend and notify the app.
+    pub fn resize(&mut self, width: u32, height: u32, scale: f32) {
+        self.metrics = BackendMetrics::new(width, height, scale);
+        self.backend.resize(width, height, scale);
+        self.app.resize(self.metrics);
+    }
+
+    /// Run one app frame and present it.
+    pub fn redraw(&mut self) -> Result<FrameStats, BackendError> {
+        let output = self.app.frame(self.metrics);
+        self.last_scene_len = output.scene.len();
+        self.last_stats = self.backend.render(&output.scene, &output.damage)?;
+        self.backend.present()?;
+        self.last_stats.presented = true;
+        self.frames += 1;
+        Ok(self.last_stats)
+    }
+
+    /// The application.
+    #[must_use]
+    pub fn app(&self) -> &A {
+        &self.app
+    }
+
+    /// The application, mutably.
+    pub fn app_mut(&mut self) -> &mut A {
+        &mut self.app
+    }
+
+    /// The backend.
+    #[must_use]
+    pub fn backend(&self) -> &B {
+        &self.backend
+    }
+
+    /// The backend, mutably.
+    pub fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+}
