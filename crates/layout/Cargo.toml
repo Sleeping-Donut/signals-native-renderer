@@ -1,0 +1,12 @@
+[package]
+name = "layout"
+description = "Persistent taffy layout tree, style resolution, and pixel snapping"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+renderer-api = { path = "../renderer-api" }
+taffy = { version = "0.15", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "content_size"] }

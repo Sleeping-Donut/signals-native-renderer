@@ -5,6 +5,14 @@
 **Owns:** style resolution, layout computation, text measurement/shaping,
 text caching, images, and scroll geometry.
 
+**Implementation status (2026-11-19).** The layout slice is in
+[`crates/layout`](../crates/layout/src/lib.rs): a persistent taffy tree keyed by
+`LayoutId`, `ResolvedStyle` translation, a `TextMeasure` trait, layout-dirty
+tracking, pixel snapping at the device scale, and per-node geometry changes.
+[`view`](../crates/view/src/lib.rs) mounts layout nodes and runs the pass after
+bindings flush. Text shaping/caching, the scene builder, paint cache, wgpu
+backend, and window loop are not implemented yet.
+
 ---
 
 ## 1. Layout model

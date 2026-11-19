@@ -4,6 +4,7 @@ members = [
     "crates/reactive-core",
     "crates/renderer-api",
     "crates/renderer-null",
+    "crates/layout",
     "crates/runtime",
     "crates/view",
     "crates/macros",

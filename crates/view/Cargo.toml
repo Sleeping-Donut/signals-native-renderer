@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 reactive-core = { path = "../reactive-core" }
 renderer-api = { path = "../renderer-api" }
+layout = { path = "../layout" }
 
 [dev-dependencies]
 macros = { path = "../macros" }

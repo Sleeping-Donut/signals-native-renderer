@@ -11,17 +11,21 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::rc::Rc;
 
+use layout::{LayoutEngine, LayoutId, LayoutStats, MonospaceText, Rect, TextContent};
 use reactive_core::{
     render_effect, EffectHandle, NodeId as ViewNodeId, OwnerHandle, ReadSignal, RuntimeHandle,
 };
 use renderer_api::{
-    ElementTag, EventKind, FrameInfo, ListenerId, NodeId as RendererNodeId, Renderer,
+    Display, ElementTag, EventKind, FlexDirection, FrameInfo, ListenerId, NodeId as RendererNodeId,
+    Renderer, ResolvedStyle, Size, TextStyle,
 };
 
 /// A mounted view node.
 #[derive(Debug)]
 struct ViewNode {
     renderer_id: RendererNodeId,
+    layout_id: LayoutId,
+    style: ResolvedStyle,
     parent: Option<ViewNodeId>,
     children: Vec<ViewNodeId>,
     bindings: Vec<EffectHandle>,
@@ -30,10 +34,13 @@ struct ViewNode {
     dirty: Cell<bool>,
 }
 
-#[derive(Clone)]
 struct ViewTreeInner {
     renderer: Rc<RefCell<Box<dyn Renderer>>>,
     nodes: Rc<RefCell<reactive_core::Arena<ViewNode>>>,
+    layout: RefCell<LayoutEngine>,
+    pending_layout_children: RefCell<HashSet<ViewNodeId>>,
+    viewport: Cell<Size<f32>>,
+    last_layout: Cell<LayoutStats>,
     focused: RefCell<Option<ViewNodeId>>,
     last_dirty: Cell<usize>,
     runtime: RuntimeHandle,
@@ -53,6 +60,13 @@ impl ViewTree {
             inner: Rc::new(ViewTreeInner {
                 renderer: Rc::new(RefCell::new(renderer)),
                 nodes: Rc::new(RefCell::new(reactive_core::Arena::new())),
+                layout: RefCell::new(LayoutEngine::new(1.0, Box::new(MonospaceText::default()))),
+                pending_layout_children: RefCell::new(HashSet::new()),
+                viewport: Cell::new(Size {
+                    width: 800.0,
+                    height: 600.0,
+                }),
+                last_layout: Cell::new(LayoutStats::default()),
                 focused: RefCell::new(None),
                 last_dirty: Cell::new(0),
                 runtime,
@@ -64,6 +78,70 @@ impl ViewTree {
     #[must_use]
     pub fn runtime(&self) -> &RuntimeHandle {
         &self.inner.runtime
+    }
+
+    /// Set the logical viewport used by the next frame's layout pass.
+    pub fn set_viewport(&self, width: f32, height: f32) {
+        self.inner.viewport.set(Size { width, height });
+    }
+
+    /// Set the device scale factor used for layout pixel snapping.
+    pub fn set_scale(&self, scale: f32) {
+        self.inner.layout.borrow_mut().set_scale(scale);
+    }
+
+    /// Layout statistics from the last frame.
+    #[must_use]
+    pub fn last_layout(&self) -> LayoutStats {
+        self.inner.last_layout.get()
+    }
+
+    /// Snapped geometry for a view node, in logical pixels.
+    #[must_use]
+    pub fn layout_rect(&self, id: ViewNodeId) -> Option<Rect> {
+        let layout_id = self
+            .inner
+            .nodes
+            .borrow()
+            .get(id)
+            .map(|node| node.layout_id)?;
+        self.inner.layout.borrow().geometry(layout_id)
+    }
+
+    /// Apply a resolved style to a mounted node.
+    pub fn set_style(&self, id: ViewNodeId, style: ResolvedStyle) {
+        let (renderer_id, layout_id) = {
+            let nodes = self.inner.nodes.borrow();
+            let Some(node) = nodes.get(id) else {
+                return;
+            };
+            (node.renderer_id, node.layout_id)
+        };
+        self.inner
+            .renderer
+            .borrow_mut()
+            .set_style(renderer_id, &style)
+            .expect("set style");
+        self.inner.layout.borrow_mut().set_style(layout_id, style);
+        if let Some(node) = self.inner.nodes.borrow_mut().get_mut(id) {
+            node.style = style;
+        }
+        self.mark_dirty(id);
+    }
+
+    /// Replace the text of a text node.
+    pub fn set_view_text(&self, id: ViewNodeId, text: String) {
+        let (layout_id, style) = {
+            let nodes = self.inner.nodes.borrow();
+            let Some(node) = nodes.get(id) else {
+                return;
+            };
+            (node.layout_id, node.style.text)
+        };
+        self.inner
+            .layout
+            .borrow_mut()
+            .set_text(layout_id, Some(TextContent { text, style }));
     }
 
     /// Set the retained focus identity. The renderer focus system arrives in
@@ -95,9 +173,13 @@ impl ViewTree {
         false
     }
 
-    /// Mount a view and return its node.
+    /// Mount a view as a window root and return its node.
     pub fn mount(&self, cx: &reactive_core::Cx<'_>, view: View) -> ViewNodeId {
-        view.mount(cx, self)
+        let id = view.mount(cx, self);
+        if let Some(layout_id) = self.inner.nodes.borrow().get(id).map(|node| node.layout_id) {
+            self.inner.layout.borrow_mut().add_root(layout_id);
+        }
+        id
     }
 
     /// Remove a mounted subtree, its listeners, bindings, and owner.
@@ -114,6 +196,13 @@ impl ViewTree {
                 .expect("begin frame");
         }
         cx.flush().expect("flush");
+        self.flush_layout_children();
+        let stats = self
+            .inner
+            .layout
+            .borrow_mut()
+            .compute(self.inner.viewport.get());
+        self.inner.last_layout.set(stats);
         self.clear_dirty();
         self.inner
             .renderer
@@ -182,7 +271,7 @@ impl ViewTree {
             .borrow_mut()
             .create_element(ElementTag::new(tag))
             .expect("create element");
-        self.alloc_node(renderer_id)
+        self.alloc_node(renderer_id, default_style(tag), None)
     }
 
     fn create_text(&self, text: &str) -> ViewNodeId {
@@ -192,7 +281,15 @@ impl ViewTree {
             .borrow_mut()
             .create_text(text)
             .expect("create text");
-        self.alloc_node(renderer_id)
+        let style = default_text_style();
+        self.alloc_node(
+            renderer_id,
+            style,
+            Some(TextContent {
+                text: text.to_string(),
+                style: style.text,
+            }),
+        )
     }
 
     fn create_fragment(&self) -> ViewNodeId {
@@ -202,15 +299,23 @@ impl ViewTree {
             .borrow_mut()
             .create_fragment()
             .expect("create fragment");
-        self.alloc_node(renderer_id)
+        self.alloc_node(renderer_id, default_style("Fragment"), None)
     }
 
-    fn alloc_node(&self, renderer_id: RendererNodeId) -> ViewNodeId {
+    fn alloc_node(
+        &self,
+        renderer_id: RendererNodeId,
+        style: ResolvedStyle,
+        text: Option<TextContent>,
+    ) -> ViewNodeId {
+        let layout_id = self.inner.layout.borrow_mut().create_node(style, text);
         self.inner
             .nodes
             .borrow_mut()
             .insert(ViewNode {
                 renderer_id,
+                layout_id,
+                style,
                 parent: None,
                 children: Vec::new(),
                 bindings: Vec::new(),
@@ -277,7 +382,45 @@ impl ViewTree {
                 child_node.parent = Some(parent);
             }
         }
+        self.inner
+            .pending_layout_children
+            .borrow_mut()
+            .insert(parent);
+        if let Some(old_parent) = old_parent {
+            if old_parent != parent {
+                self.inner
+                    .pending_layout_children
+                    .borrow_mut()
+                    .insert(old_parent);
+            }
+        }
         self.mark_dirty(parent);
+    }
+
+    fn flush_layout_children(&self) {
+        let pending = std::mem::take(&mut *self.inner.pending_layout_children.borrow_mut());
+        for parent in pending {
+            self.sync_layout_children(parent);
+        }
+    }
+
+    fn sync_layout_children(&self, parent: ViewNodeId) {
+        let (layout_id, children) = {
+            let nodes = self.inner.nodes.borrow();
+            let Some(node) = nodes.get(parent) else {
+                return;
+            };
+            let children = node
+                .children
+                .iter()
+                .filter_map(|child| nodes.get(*child).map(|child| child.layout_id))
+                .collect::<Vec<_>>();
+            (node.layout_id, children)
+        };
+        self.inner
+            .layout
+            .borrow_mut()
+            .set_children(layout_id, &children);
     }
 
     fn add_binding(&self, view: ViewNodeId, binding: EffectHandle) {
@@ -309,13 +452,18 @@ impl ViewTree {
         }
         let Some(node_data) = ({
             let nodes = self.inner.nodes.borrow();
-            nodes
-                .get(id)
-                .map(|node| (node.children.clone(), node.renderer_id, node.parent))
+            nodes.get(id).map(|node| {
+                (
+                    node.children.clone(),
+                    node.renderer_id,
+                    node.layout_id,
+                    node.parent,
+                )
+            })
         }) else {
             return;
         };
-        let (children, renderer_id, parent) = node_data;
+        let (children, renderer_id, layout_id, parent) = node_data;
         if let Some(parent) = parent {
             self.mark_dirty(parent);
         }
@@ -333,9 +481,14 @@ impl ViewTree {
                     .renderer
                     .borrow_mut()
                     .remove(parent_renderer, renderer_id);
+                self.inner
+                    .pending_layout_children
+                    .borrow_mut()
+                    .insert(parent);
             }
         }
 
+        self.inner.layout.borrow_mut().remove_node(layout_id);
         let node = self.inner.nodes.borrow_mut().remove(id);
         if let Some(node) = node {
             for listener in node.listeners {
@@ -365,6 +518,26 @@ impl ViewTree {
     }
 }
 
+fn default_style(tag: &str) -> ResolvedStyle {
+    let mut style = ResolvedStyle {
+        display: Display::Flex,
+        ..ResolvedStyle::default()
+    };
+    style.flex.direction = match tag {
+        "Row" | "Button" => FlexDirection::Row,
+        _ => FlexDirection::Column,
+    };
+    style
+}
+
+fn default_text_style() -> ResolvedStyle {
+    ResolvedStyle {
+        display: Display::Flex,
+        text: TextStyle::default(),
+        ..ResolvedStyle::default()
+    }
+}
+
 /// A mountable view.
 pub struct View {
     mount: MountFn,
@@ -376,6 +549,17 @@ impl View {
     /// Mount once into a tree.
     pub fn mount(self, cx: &reactive_core::Cx<'_>, tree: &ViewTree) -> ViewNodeId {
         (self.mount)(cx, tree)
+    }
+
+    /// Apply a resolved style to the mounted root of this view.
+    #[must_use]
+    pub fn style(self, style: ResolvedStyle) -> Self {
+        let mount = self.mount;
+        view(move |cx, tree| {
+            let id = mount(cx, tree);
+            tree.set_style(id, style);
+            id
+        })
     }
 }
 
@@ -417,14 +601,17 @@ pub fn text(source: impl Into<TextSource>) -> View {
         let id = tree.create_text("");
         let renderer_id = tree.renderer_id(id).expect("text node");
         let renderer = Rc::clone(&tree.inner.renderer);
+        let tree_for_layout = tree.clone();
         let binding = render_effect(
             cx,
             move |cx| source.get(cx),
             move |_cx, value| {
+                let text = value.clone();
                 renderer
                     .borrow_mut()
-                    .set_text(renderer_id, value)
+                    .set_text(renderer_id, text.as_str())
                     .expect("set text");
+                tree_for_layout.set_view_text(id, text);
             },
         );
         tree.add_binding(id, binding);
