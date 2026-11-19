@@ -306,10 +306,19 @@ compile. The smoke run opened a Metal surface window, rendered real glyphs
 (atlas populated with 12 glyphs), resized the surface 800×600 → 600×450 →
 800×600 at the display's 2× scale, and exited cleanly.
 
-Remaining Phase 5 work: a windowed run on displays/scale factors other than the
-development machine's 2× panel, hardware 60 fps acceptance on the target laptop,
-and optional damage scissoring/partial present. The glyph atlas, platform shaping,
-window loop, and offscreen/surface wgpu paths are implemented.
+The smoke example now reports per-frame timings. On the development MacBook Pro
+(M3 Pro, built-in Retina display at 2×, Metal) a release run of 300 frames gave:
+mean 16.798 ms / 59.5 fps with startup included, and a steady mean of
+16.672 ms / 60.0 fps after skipping the first ten frames (p95 17.309 ms, steady max
+20.629 ms). This is hardware evidence on an M3 Pro, not the 2019 target laptop.
+
+Remaining Phase 5 work: a visible-window run on displays configured at 1×/1.5×,
+hardware 60 fps acceptance on the target laptop, and optional damage
+scissoring/partial present. The development machine exposes only a 2× Retina
+display (`backingScaleFactor=2.0` for every available display mode), so the
+visible 1×/1.5× run needs different hardware or a manual display configuration.
+The glyph atlas, platform shaping, window loop, and offscreen/surface wgpu paths
+are implemented.
 
 ### Phase 6 — Input, focus, accessibility (3–4 weeks)
 

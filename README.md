@@ -85,8 +85,9 @@ and Phase 4 (the retained view tree and first `view!`) are implemented. Phase 5
 has the persistent taffy layout tree, cosmic-text platform shaping with cached
 rasterized glyphs, a retained scene builder with paint replay and damage, a
 sampled glyph atlas, and a wgpu backend with a winit window loop (behind the
-`window` feature). The target-hardware 60 fps acceptance run and non-2× windowed
-scale runs remain.
+`window` feature). A release smoke run measured 16.672 ms steady frame time
+(60.0 fps) on an M3 Pro at 2×; the 2019 target laptop and visible 1×/1.5× runs
+remain.
 
 CI is path-filtered: changes to prose, docs, plans, and the README do not run the
 Rust gate. Code, dependency, flake, toolchain, and workflow changes do.

@@ -26,7 +26,9 @@ offscreen/surface renderer with pixel readback, and a winit window loop behind
 the `window` feature. Platform text uses cosmic-text shaping and a shelf-packed
 alpha glyph atlas sampled by the wgpu pipeline; the deterministic monospace
 shaper keeps a placeholder fallback for headless tests. A visible-window smoke
-run exercises the Metal surface path and real glyphs.
+run exercises the Metal surface path and real glyphs; the release frame-time
+harness reports 16.672 ms steady mean (60.0 fps) on the development M3 Pro at
+2×.
 
 ---
 
