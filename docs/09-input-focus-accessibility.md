@@ -32,8 +32,10 @@ tooltip primitive rendered by the native backend and mapped to
 `set_cursor_icon` by the window loop. Hover and focus paint styles override
 background, border, and text colors with focus taking precedence, wheel deltas
 chain to scrollable ancestors when the deepest target reaches an edge, and
-scrollable nodes paint track/thumb primitives that track the scroll offset. A
-concrete OS AccessKit adapter remains.
+scrollable nodes paint track/thumb primitives that track the scroll offset. The
+winit window path uses `accesskit_winit` to bridge OS accessibility: initial
+tree requests trigger a redraw, action requests route through `WindowDriver`,
+and each redraw publishes the latest `TreeUpdate` to the platform adapter.
 
 ---
 
@@ -354,8 +356,11 @@ construction:
 
 ### 8.3 Actions
 
-AccessKit actions (press, focus, set value, scroll) map to the same commands as
-input:
+`accesskit_winit` delivers platform activation and action events. Initial tree
+requests schedule a redraw; the redraw pushes the current `TreeUpdate` through
+`Adapter::update_if_active`. Action requests go to
+`ViewTree::dispatch_accesskit_action`. AccessKit actions (press, focus, set
+value, selection) map to the same commands as input:
 
 - `press` → the node's `on_click`/action;
 - `focus` → focus the node's `FocusHandle`;

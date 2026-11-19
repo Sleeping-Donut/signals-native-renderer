@@ -14,7 +14,8 @@ text = { path = "../text" }
 accesskit = "0.25"
 pollster = "0.3"
 wgpu = "0.19.4"
-winit = { version = "0.29.15", optional = true }
+winit = { version = "0.30.5", optional = true }
+accesskit_winit = { version = "0.34.2", optional = true }
 
 [dev-dependencies]
 layout = { path = "../layout" }
@@ -37,4 +38,4 @@ required-features = ["window"]
 
 [features]
 default = []
-window = ["dep:winit"]
+window = ["dep:winit", "dep:accesskit_winit"]

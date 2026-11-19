@@ -368,8 +368,12 @@ primitive that the native backend renders and the window loop applies through
 `set_cursor_icon`. Hover and focus state styles override background, border
 colors, and text colors with focus winning over hover, wheel deltas chain from
 the deepest scrollable to scrollable ancestors at an edge, and scrollable nodes
-paint track/thumb primitives that move with the scroll offset. Remaining Phase 6
-work: a concrete OS AccessKit adapter.
+paint track/thumb primitives that move with the scroll offset. The winit window
+path now uses `accesskit_winit` (winit 0.30) to deliver AccessKit platform
+events: initial-tree requests trigger a redraw, action requests route through
+`WindowDriver`, and each redraw feeds the latest `TreeUpdate` back to the OS
+adapter. Phase 6's feature scope is complete; only the hardware-dependent
+Phase 5 evidence remains.
 
 ### Phase 7 — Stores and authoring (3–4 weeks)
 

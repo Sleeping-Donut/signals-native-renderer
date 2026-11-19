@@ -26,6 +26,15 @@
               rustfmt
               clippy
               rust-analyzer
+            ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+              pkg-config
+              libxkbcommon
+              wayland
+              libx11
+              libxcursor
+              libxi
+              libxrandr
+              libxcb
             ];
 
             shellHook = ''
