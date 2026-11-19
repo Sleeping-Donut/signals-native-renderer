@@ -16,8 +16,11 @@ keyboard events into `WindowDriver`. Hit testing inverses translation/scale tran
 ancestor content masks; scene building emits transformed primitives with clip
 rectangles. Pointer and key dispatch run capture then bubble and support
 `Continue`/`Stop`/`Handled`, with `Handled` suppressing defaults such as Tab
-focus traversal. Drag/drop, scroll, IME, AccessKit protocol wiring, richer
-hover/focus styling, and cursor/tooltip layers remain.
+focus traversal. Wheel routing finds the deepest scrollable ancestor, dispatches
+through capture/bubble, and applies a clamped `ScrollState`; scroll offsets
+translate painted children and hit testing while clipping to the viewport.
+Drag/drop, IME, AccessKit protocol wiring, richer hover/focus styling, and
+cursor/tooltip layers remain.
 
 ---
 

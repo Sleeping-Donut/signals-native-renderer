@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use renderer_api::{KeyEvent, Modifiers, NamedKey, PointerButton, PointerEvent};
+use renderer_api::{KeyEvent, Modifiers, NamedKey, PointerButton, PointerEvent, WheelEvent};
 use winit::{
     dpi::LogicalSize,
     event::{ElementState, Event, MouseButton, WindowEvent},
@@ -87,6 +87,15 @@ pub fn run_windowed<A: WindowApp + 'static>(
                                 ElementState::Released => driver.pointer_up(&event),
                             }
                         }
+                    }
+                    WindowEvent::MouseWheel { delta, .. } => {
+                        let (delta_x, delta_y) = match delta {
+                            winit::event::MouseScrollDelta::LineDelta(x, y) => (x * 20.0, y * 20.0),
+                            winit::event::MouseScrollDelta::PixelDelta(position) => {
+                                (position.x as f32, position.y as f32)
+                            }
+                        };
+                        driver.wheel(&WheelEvent::new(cursor.0, cursor.1, delta_x, delta_y));
                     }
                     WindowEvent::ModifiersChanged(state) => {
                         let state = state.state();

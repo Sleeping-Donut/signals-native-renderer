@@ -5,7 +5,8 @@ use std::rc::Rc;
 
 use reactive_core::{create_signal, ReadSignal, Runtime, RuntimeHandle};
 use renderer_api::{
-    Key, KeyEvent, Length, Modifiers, PointerButton, PointerEvent, ResolvedStyle, Size, TextStyle,
+    Key, KeyEvent, Length, Modifiers, Overflow, PointerButton, PointerEvent, ResolvedStyle, Size,
+    TextStyle, WheelEvent,
 };
 use renderer_native::{BackendMetrics, FrameOutput, HeadlessBackend, WindowApp, WindowDriver};
 use renderer_null::{NullRenderer, SharedNullRenderer};
@@ -102,6 +103,84 @@ impl WindowApp for InputApp {
     fn key_down(&mut self, event: &KeyEvent) -> bool {
         self.tree.key_down(event)
     }
+
+    fn wheel(&mut self, event: &WheelEvent) -> bool {
+        self.tree.wheel(event)
+    }
+}
+
+struct ScrollApp {
+    runtime: RuntimeHandle,
+    tree: ViewTree,
+    root: reactive_core::NodeId,
+    frames: u64,
+}
+
+impl ScrollApp {
+    fn new() -> Self {
+        let runtime = Runtime::new().into_handle();
+        let renderer = Rc::new(RefCell::new(NullRenderer::new()));
+        let tree = ViewTree::new(
+            Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
+            runtime.clone(),
+        );
+        let cx = runtime.cx();
+        let mut style = px(100.0, 100.0);
+        style.overflow = Overflow::Scroll;
+        let root = tree.mount(
+            &cx,
+            column(vec![column(vec![]).style(px(100.0, 300.0))]).style(style),
+        );
+        Self {
+            runtime,
+            tree,
+            root,
+            frames: 0,
+        }
+    }
+}
+
+impl Drop for ScrollApp {
+    fn drop(&mut self) {
+        let cx = self.runtime.cx();
+        self.tree.unmount(&cx, self.root);
+    }
+}
+
+impl WindowApp for ScrollApp {
+    fn resize(&mut self, metrics: BackendMetrics) {
+        self.tree
+            .set_viewport(metrics.logical_width(), metrics.logical_height());
+        self.tree.set_scale(metrics.scale);
+    }
+
+    fn frame(&mut self, _metrics: BackendMetrics) -> FrameOutput {
+        let cx = self.runtime.cx();
+        self.frames += 1;
+        self.tree.frame(&cx, self.frames);
+        let scene = self.tree.build_scene();
+        let damage = self.tree.take_scene_damage();
+        FrameOutput::new(scene, damage)
+    }
+
+    fn wheel(&mut self, event: &WheelEvent) -> bool {
+        self.tree.wheel(event)
+    }
+}
+
+#[test]
+fn window_driver_routes_wheel_to_scroll_state() {
+    let backend = HeadlessBackend::new(200, 200, 1.0);
+    let mut driver = WindowDriver::new(ScrollApp::new(), backend);
+    driver.redraw().expect("initial frame");
+
+    assert!(driver.wheel(&WheelEvent::new(50.0, 50.0, 0.0, 40.0)));
+    let state = driver
+        .app()
+        .tree
+        .scroll_state(driver.app().root)
+        .expect("scroll state");
+    assert_eq!(state.offset_y, 40.0);
 }
 
 #[test]

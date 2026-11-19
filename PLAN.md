@@ -347,13 +347,14 @@ focused/global key bindings, a11y roles/labels/focus, a11y press/focus actions,
 stable a11y ids across keyed reorder, focus preservation across reorder, focus
 fallback on row removal, native window-driver pointer/key routing,
 content-mask clipping and translation/scale transforms in hit testing and scene
-building, and capture/bubble dispatch with `Continue`/`Stop`/`Handled` results
-and default-action suppression ([input.rs](crates/view/tests/input.rs),
+building, capture/bubble dispatch with `Continue`/`Stop`/`Handled` results and
+default-action suppression, and scroll state with clipped viewports, clamped
+offsets, deepest-scrollable wheel routing, and painted/hit-test translation
+([input.rs](crates/view/tests/input.rs),
 [renderer-native/tests/input.rs](crates/renderer-native/tests/input.rs),
 [acceptance.rs](crates/renderer-native/tests/acceptance.rs)). Remaining Phase 6
-work: drag/drop, scroll state and wheel routing, IME/text-input handlers,
-AccessKit protocol integration, richer hover/focus styling, and cursor/tooltip
-layers.
+work: drag/drop, IME/text-input handlers, AccessKit protocol integration,
+richer hover/focus styling, and cursor/tooltip layers.
 
 ### Phase 7 — Stores and authoring (3–4 weeks)
 

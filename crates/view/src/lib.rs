@@ -18,7 +18,7 @@ use reactive_core::{
 use renderer_api::{
     A11yRole, Display, Edges, ElementTag, FlexDirection, FrameInfo, Key, KeyEvent, Modifiers,
     NamedKey, NodeId as RendererNodeId, Overflow, PointerEvent, Renderer, ResolvedStyle, Size,
-    TextMeasureRequest, TextMetrics, TextStyle, Transform,
+    TextMeasureRequest, TextMetrics, TextStyle, Transform, WheelEvent,
 };
 use scene::{PaintTree, Primitive, Scene, SceneBuilder, SceneStats};
 use text::{MonospaceShaper, TextSystem};
@@ -34,6 +34,7 @@ struct ViewNode {
     bindings: Vec<EffectHandle>,
     owner: Option<OwnerHandle>,
     dirty: Cell<bool>,
+    scroll_offset: Cell<(f32, f32)>,
     interactive: bool,
     focusable: bool,
     tab_index: Option<i32>,
@@ -52,6 +53,7 @@ enum ViewEvent {
     PointerLeave,
     Focus,
     Blur,
+    Wheel,
 }
 
 /// Dispatch phase for listeners.
@@ -140,6 +142,63 @@ pub struct A11yTree {
     pub roots: Vec<u64>,
     /// Nodes with child ids referencing this list.
     pub nodes: Vec<A11yNode>,
+}
+
+/// Scroll viewport, content, and clamped offset in logical pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ScrollState {
+    /// Horizontal offset.
+    pub offset_x: f32,
+    /// Vertical offset.
+    pub offset_y: f32,
+    /// Viewport width.
+    pub viewport_width: f32,
+    /// Viewport height.
+    pub viewport_height: f32,
+    /// Content width.
+    pub content_width: f32,
+    /// Content height.
+    pub content_height: f32,
+}
+
+impl ScrollState {
+    /// Maximum horizontal offset.
+    #[must_use]
+    pub fn max_x(self) -> f32 {
+        (self.content_width - self.viewport_width).max(0.0)
+    }
+
+    /// Maximum vertical offset.
+    #[must_use]
+    pub fn max_y(self) -> f32 {
+        (self.content_height - self.viewport_height).max(0.0)
+    }
+
+    /// Whether any content can scroll.
+    #[must_use]
+    pub fn is_scrollable(self) -> bool {
+        self.max_x() > 0.0 || self.max_y() > 0.0
+    }
+
+    /// Clamp both offsets into range.
+    #[must_use]
+    pub fn clamped(mut self) -> Self {
+        self.offset_x = self.offset_x.clamp(0.0, self.max_x());
+        self.offset_y = self.offset_y.clamp(0.0, self.max_y());
+        self
+    }
+
+    /// Set a clamped offset.
+    pub fn set_offset(&mut self, x: f32, y: f32) {
+        self.offset_x = x;
+        self.offset_y = y;
+        *self = self.clamped();
+    }
+
+    /// Add a clamped delta.
+    pub fn scroll_by(&mut self, x: f32, y: f32) {
+        self.set_offset(self.offset_x + x, self.offset_y + y);
+    }
 }
 
 impl KeyStroke {
@@ -338,8 +397,15 @@ impl ViewTree {
                 .borrow()
                 .geometry(data.layout_id)
                 .unwrap_or_default();
+            let mut local = data.style.transform;
+            if node != id && is_scrollable(data.style.overflow) {
+                if let Some(scroll) = self.scroll_state(node) {
+                    local.translate_x -= scroll.offset_x * local.scale_x;
+                    local.translate_y -= scroll.offset_y * local.scale_y;
+                }
+            }
             world = world.compose(
-                data.style.transform,
+                local,
                 renderer_api::Point {
                     x: origin.x,
                     y: origin.y,
@@ -359,7 +425,7 @@ impl ViewTree {
             let Some(data) = nodes.get(node) else {
                 break;
             };
-            if data.style.overflow == Overflow::Hidden {
+            if data.style.overflow != Overflow::Visible {
                 if let Some(rect) = self.inner.layout.borrow().geometry(data.layout_id) {
                     let clip = transform_rect(self.world_transform(node), rect);
                     mask = Some(mask.map_or(clip, |existing| intersect_rect(existing, clip)));
@@ -368,6 +434,121 @@ impl ViewTree {
             current = data.parent;
         }
         mask
+    }
+
+    /// The scroll state for a scrollable node.
+    #[must_use]
+    pub fn scroll_state(&self, id: ViewNodeId) -> Option<ScrollState> {
+        let (overflow, rect, offset) = {
+            let nodes = self.inner.nodes.borrow();
+            let node = nodes.get(id)?;
+            (
+                node.style.overflow,
+                self.layout_rect(id)?,
+                node.scroll_offset.get(),
+            )
+        };
+        if !is_scrollable(overflow) {
+            return None;
+        }
+        let (content_width, content_height) = self.scroll_content_size(id, rect);
+        Some(
+            ScrollState {
+                offset_x: offset.0,
+                offset_y: offset.1,
+                viewport_width: rect.width,
+                viewport_height: rect.height,
+                content_width,
+                content_height,
+            }
+            .clamped(),
+        )
+    }
+
+    /// Set a clamped scroll offset.
+    pub fn set_scroll_offset(&self, id: ViewNodeId, x: f32, y: f32) -> Option<ScrollState> {
+        let mut state = self.scroll_state(id)?;
+        state.set_offset(x, y);
+        if let Some(node) = self.inner.nodes.borrow().get(id) {
+            node.scroll_offset.set((state.offset_x, state.offset_y));
+        }
+        self.mark_paint_dirty(id);
+        Some(state)
+    }
+
+    /// Scroll a node by a clamped delta.
+    pub fn scroll_by(&self, id: ViewNodeId, x: f32, y: f32) -> Option<ScrollState> {
+        let mut state = self.scroll_state(id)?;
+        state.scroll_by(x, y);
+        if let Some(node) = self.inner.nodes.borrow().get(id) {
+            node.scroll_offset.set((state.offset_x, state.offset_y));
+        }
+        self.mark_paint_dirty(id);
+        Some(state)
+    }
+
+    /// The deepest scrollable node under a point.
+    #[must_use]
+    pub fn deepest_scrollable(&self, x: f32, y: f32) -> Option<ViewNodeId> {
+        let roots = self.inner.roots.borrow().clone();
+        for root in roots.iter().rev() {
+            if let Some(hit) = self.scrollable_node(*root, x, y) {
+                return Some(hit);
+            }
+        }
+        None
+    }
+
+    fn scrollable_node(&self, node: ViewNodeId, x: f32, y: f32) -> Option<ViewNodeId> {
+        let (children, scrollable) = {
+            let nodes = self.inner.nodes.borrow();
+            let data = nodes.get(node)?;
+            (data.children.clone(), is_scrollable(data.style.overflow))
+        };
+        for child in children.iter().rev() {
+            if let Some(hit) = self.scrollable_node(*child, x, y) {
+                return Some(hit);
+            }
+        }
+        if scrollable {
+            if let Some(rect) = self.layout_rect(node) {
+                let world = self.world_transform(node);
+                let local = world.inverse_point(renderer_api::Point { x, y })?;
+                let inside = contains_point(rect, local.x, local.y);
+                let unmasked = self
+                    .content_mask(node)
+                    .is_none_or(|mask| contains_point(mask, x, y));
+                if inside && unmasked {
+                    return Some(node);
+                }
+            }
+        }
+        None
+    }
+
+    fn scroll_content_size(&self, id: ViewNodeId, viewport: Rect) -> (f32, f32) {
+        let mut width = viewport.width;
+        let mut height = viewport.height;
+        for child in self.children(id) {
+            if let Some(rect) = self.layout_rect(child) {
+                width = width.max(rect.right() - viewport.x);
+                height = height.max(rect.bottom() - viewport.y);
+            }
+        }
+        (width, height)
+    }
+
+    /// Route a wheel event to the deepest scrollable ancestor and then either a
+    /// listener or the default scroll action.
+    pub fn wheel(&self, event: &WheelEvent) -> bool {
+        let Some(target) = self.deepest_scrollable(event.x, event.y) else {
+            return false;
+        };
+        let handled = self.dispatch_view_event(target, ViewEvent::Wheel);
+        if !handled {
+            self.scroll_by(target, event.delta_x, event.delta_y);
+        }
+        true
     }
 
     /// Apply a resolved style to a mounted node.
@@ -1158,6 +1339,7 @@ impl ViewTree {
                 bindings: Vec::new(),
                 owner: None,
                 dirty: Cell::new(false),
+                scroll_offset: Cell::new((0.0, 0.0)),
                 interactive: false,
                 focusable: false,
                 tab_index: None,
@@ -1444,6 +1626,10 @@ impl ViewTree {
     }
 }
 
+fn is_scrollable(overflow: Overflow) -> bool {
+    matches!(overflow, Overflow::Scroll | Overflow::Auto)
+}
+
 fn contains_point(rect: Rect, x: f32, y: f32) -> bool {
     x >= rect.x && x <= rect.right() && y >= rect.y && y <= rect.bottom()
 }
@@ -1599,6 +1785,39 @@ impl View {
         self.on_click_filter(DispatchPhase::Bubble, move |cx| {
             handler(cx);
             DispatchResult::Continue
+        })
+    }
+
+    /// Add a wheel listener to the mounted root.
+    #[must_use]
+    pub fn on_wheel(self, handler: impl Fn(&reactive_core::Cx<'_>) + 'static) -> Self {
+        self.on_wheel_filter(DispatchPhase::Bubble, move |cx| {
+            handler(cx);
+            DispatchResult::Continue
+        })
+    }
+
+    /// Add a capture-phase wheel listener.
+    #[must_use]
+    pub fn on_wheel_capture(self, handler: impl Fn(&reactive_core::Cx<'_>) + 'static) -> Self {
+        self.on_wheel_filter(DispatchPhase::Capture, move |cx| {
+            handler(cx);
+            DispatchResult::Continue
+        })
+    }
+
+    /// Add a wheel listener with an explicit phase and result.
+    #[must_use]
+    pub fn on_wheel_filter(
+        self,
+        phase: DispatchPhase,
+        handler: impl Fn(&reactive_core::Cx<'_>) -> DispatchResult + 'static,
+    ) -> Self {
+        let mount = self.mount;
+        view(move |cx, tree| {
+            let id = mount(cx, tree);
+            tree.add_view_listener(id, ViewEvent::Wheel, phase, Box::new(move |cx| handler(cx)));
+            id
         })
     }
 

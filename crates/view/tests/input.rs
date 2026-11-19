@@ -6,7 +6,7 @@ use std::rc::Rc;
 use reactive_core::{create_signal, Runtime, RuntimeHandle};
 use renderer_api::{
     A11yRole, Key, KeyEvent, Length, Modifiers, NamedKey, Overflow, PointerButton, PointerEvent,
-    Position, ResolvedStyle, Size, TextStyle, Transform,
+    Position, ResolvedStyle, Size, TextStyle, Transform, WheelEvent,
 };
 use renderer_null::{NullRenderer, SharedNullRenderer};
 use view::{
@@ -45,6 +45,12 @@ fn clipped(width: f32, height: f32) -> ResolvedStyle {
 fn transformed(transform: Transform) -> ResolvedStyle {
     let mut style = px(100.0, 100.0);
     style.transform = transform;
+    style
+}
+
+fn scrollable(width: f32, height: f32) -> ResolvedStyle {
+    let mut style = px(width, height);
+    style.overflow = Overflow::Scroll;
     style
 }
 
@@ -412,6 +418,124 @@ fn key_dispatch_runs_capture_then_bubble() {
     assert_eq!(&*order.borrow(), &["capture", "bubble"]);
 
     tree.unmount(&cx, root);
+}
+
+#[test]
+fn scroll_state_clamps_to_content_bounds() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let scroll = tree.mount(
+        &cx,
+        column(vec![column(vec![]).style(px(100.0, 300.0))]).style(scrollable(100.0, 100.0)),
+    );
+    tree.set_viewport(200.0, 200.0);
+    tree.frame(&cx, 0);
+
+    let state = tree.scroll_state(scroll).expect("scroll state");
+    assert_eq!(state.viewport_height, 100.0);
+    assert_eq!(state.content_height, 300.0);
+    assert_eq!(state.max_y(), 200.0);
+
+    let state = tree.set_scroll_offset(scroll, 0.0, 250.0).expect("set");
+    assert_eq!(state.offset_y, 200.0);
+    let state = tree.scroll_by(scroll, 0.0, 100.0).expect("scroll");
+    assert_eq!(state.offset_y, 200.0);
+    let state = tree.set_scroll_offset(scroll, -10.0, -10.0).expect("set");
+    assert_eq!(state.offset_x, 0.0);
+    assert_eq!(state.offset_y, 0.0);
+
+    tree.unmount(&cx, scroll);
+}
+
+#[test]
+fn wheel_targets_deepest_scrollable_and_runs_capture_then_bubble() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let order = Rc::new(RefCell::new(Vec::new()));
+    let outer_capture = Rc::clone(&order);
+    let inner_capture = Rc::clone(&order);
+    let inner_bubble = Rc::clone(&order);
+    let outer_bubble = Rc::clone(&order);
+    let inner = column(vec![column(vec![]).style(px(100.0, 300.0))])
+        .style(scrollable(100.0, 100.0))
+        .on_wheel_capture(move |_| inner_capture.borrow_mut().push("inner-capture"))
+        .on_wheel(move |_| inner_bubble.borrow_mut().push("inner-bubble"));
+    let outer = column(vec![inner])
+        .style(scrollable(200.0, 200.0))
+        .on_wheel_capture(move |_| outer_capture.borrow_mut().push("outer-capture"))
+        .on_wheel(move |_| outer_bubble.borrow_mut().push("outer-bubble"));
+    let root = tree.mount(&cx, outer);
+    tree.set_viewport(200.0, 200.0);
+    tree.frame(&cx, 0);
+
+    let outer = root;
+    let inner = tree.children(outer)[0];
+    assert_eq!(tree.deepest_scrollable(50.0, 50.0), Some(inner));
+    assert!(tree.wheel(&WheelEvent::new(50.0, 50.0, 0.0, 40.0)));
+    assert_eq!(
+        &*order.borrow(),
+        &[
+            "outer-capture",
+            "inner-capture",
+            "inner-bubble",
+            "outer-bubble"
+        ]
+    );
+    assert_eq!(tree.scroll_state(inner).unwrap().offset_y, 40.0);
+    assert_eq!(tree.scroll_state(outer).unwrap().offset_y, 0.0);
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn handled_wheel_suppresses_default_scroll() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let inner = column(vec![column(vec![]).style(px(100.0, 300.0))])
+        .style(scrollable(100.0, 100.0))
+        .on_wheel_filter(DispatchPhase::Capture, |_| DispatchResult::Handled);
+    let scroll = tree.mount(&cx, inner);
+    tree.set_viewport(200.0, 200.0);
+    tree.frame(&cx, 0);
+
+    assert!(tree.wheel(&WheelEvent::new(50.0, 50.0, 0.0, 40.0)));
+    assert_eq!(tree.scroll_state(scroll).unwrap().offset_y, 0.0);
+
+    tree.unmount(&cx, scroll);
+}
+
+#[test]
+fn scroll_translates_painted_children_and_hit_testing() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let mut button_style = px(50.0, 200.0);
+    button_style.background = Some(renderer_api::Color::new(1.0, 0.0, 0.0, 1.0));
+    let scroll = tree.mount(
+        &cx,
+        column(vec![button_text("tall", |_| {}).style(button_style)])
+            .style(scrollable(100.0, 100.0)),
+    );
+    tree.set_viewport(200.0, 200.0);
+    tree.frame(&cx, 0);
+    let button = tree.children(scroll)[0];
+    tree.set_scroll_offset(scroll, 0.0, 50.0).expect("scroll");
+
+    assert_eq!(tree.hit_test(25.0, 75.0), Some(button));
+    assert_eq!(tree.hit_test(25.0, 175.0), None);
+
+    let scene = tree.build_scene();
+    let button_renderer = tree.renderer_id(button).unwrap();
+    let fill = scene
+        .ops()
+        .iter()
+        .find_map(|primitive| match primitive {
+            scene::Primitive::Fill { node, rect, .. } if *node == button_renderer => Some(*rect),
+            _ => None,
+        })
+        .expect("button fill");
+    assert_eq!(fill, scene::Rect::new(0.0, -50.0, 50.0, 200.0));
+
+    tree.unmount(&cx, scroll);
 }
 
 #[test]

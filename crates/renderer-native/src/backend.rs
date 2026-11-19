@@ -1,6 +1,6 @@
 use std::fmt;
 
-use renderer_api::{KeyEvent, PointerEvent};
+use renderer_api::{KeyEvent, PointerEvent, WheelEvent};
 use scene::{Rect, Scene};
 
 /// Physical and logical window metrics.
@@ -149,6 +149,10 @@ pub trait WindowApp {
     fn key_down(&mut self, _event: &KeyEvent) -> bool {
         false
     }
+    /// Wheel/scroll. Return `true` when consumed or scrolled.
+    fn wheel(&mut self, _event: &WheelEvent) -> bool {
+        false
+    }
 }
 
 /// Drives an application and a backend through resize and redraw steps.
@@ -225,6 +229,11 @@ impl<A: WindowApp, B: PaintBackend> WindowDriver<A, B> {
     /// Route a key press to the app.
     pub fn key_down(&mut self, event: &KeyEvent) -> bool {
         self.app.key_down(event)
+    }
+
+    /// Route a wheel event to the app.
+    pub fn wheel(&mut self, event: &WheelEvent) -> bool {
+        self.app.wheel(event)
     }
 
     /// Run one app frame and present it.

@@ -290,6 +290,32 @@ impl PointerEvent {
     }
 }
 
+/// A wheel/scroll event in logical window coordinates.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WheelEvent {
+    /// Logical x.
+    pub x: f32,
+    /// Logical y.
+    pub y: f32,
+    /// Horizontal delta.
+    pub delta_x: f32,
+    /// Vertical delta.
+    pub delta_y: f32,
+}
+
+impl WheelEvent {
+    /// Construct a wheel event.
+    #[must_use]
+    pub const fn new(x: f32, y: f32, delta_x: f32, delta_y: f32) -> Self {
+        Self {
+            x,
+            y,
+            delta_x,
+            delta_y,
+        }
+    }
+}
+
 /// Frame metadata passed to a backend.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameInfo {
@@ -578,6 +604,10 @@ pub enum Overflow {
     Visible,
     /// Content is clipped to the node's bounds.
     Hidden,
+    /// Content is clipped and scrollable.
+    Scroll,
+    /// Content is clipped and scrollable when it overflows.
+    Auto,
 }
 
 /// The resolved style sent to a backend.
