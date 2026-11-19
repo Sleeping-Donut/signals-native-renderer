@@ -736,9 +736,9 @@ or a measurement.
 - Async code uses owned context capabilities: `&Cx` for sync, read-only
   `CxHandle` for async compute, `ActionCx` for action writes, `TaskCx` for
   detached mainline work. Reads after `await` are tracked.
-- `Derived<T>`/`derived!` is the uncached read-only derivation (Solid function
-  form, Leptos `Signal::derive`). It is sync-only; async and `is_pending` need a
-  memo node.
+- `Derived<T>` (no macro; `Derived::new`) is the uncached read-only derivation
+  (Solid function form, Leptos `Signal::derive`). It is sync-only; async and
+  `is_pending` need a memo node.
 
 ### Leaning, needs confirmation (recommendation exists)
 
@@ -800,6 +800,7 @@ or a measurement.
 | 8 | `view!` syntax strictness | Tree syntax vs builder vs both | Macro prototype |
 | 8 | Reactive attribute detection | Macro type inference vs explicit syntax | `trybuild` prototype |
 | 8 | Optional props | `Prop<Option<T>>` vs `MaybeProp<T>` | Decide with props macro |
+| 8 | Component `cx` | Macro-injected local vs explicit first parameter | Prototype both on the counter; explicit removes the hidden name |
 | 8 | `For` key inference | Explicit key vs `Keyed` trait | Prototype macro |
 | 8 | Macro error spans | Proc-macro diagnostics quality | Budget time; `trybuild` |
 | 8 | `view_builder!` | Fluent macro front-end | Stretch only; not scheduled |

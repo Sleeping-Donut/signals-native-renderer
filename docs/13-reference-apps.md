@@ -141,9 +141,9 @@ Notes:
 - `local_double` is a `memo!`, so it is cached and notifies only when the value
   changes. The Solid original used an uncached getter; this port deliberately
   exercises the separate-derived-value authoring. For the uncached shape, use
-  `derived!(cx, |cx| local.get(cx) * 2)` (no node, every read runs) or a plain
-  function read in a binding. `Derived<T>` is sync-only; async or `is_pending`
-  needs a memo node.
+  `Derived::new(cx, |cx| local.get(cx) * 2)` (no node, every read runs) or a
+  plain function read in a binding. `Derived<T>` is sync-only; async or
+  `is_pending` needs a memo node.
 - Passing a `Copy` bundle of handles as a prop avoids context plumbing and makes
   ownership obvious: both counters receive the same handles, and each owns its
   `local`. A `SharedCount` context or a small `create_counter` helper is equally
