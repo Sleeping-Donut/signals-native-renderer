@@ -745,6 +745,7 @@ or a measurement.
 | Ownership | Public `OwnerId`? | No; opaque `Scope`, IDs for diagnostics |
 | Cleanup panic | Halt or report/continue? | Report and continue; halt only for uncaught compute/apply errors |
 | Boundary content | Dispose on fallback or keep alive? | Dispose in v1; `KeepAlive` opt-in |
+| First load | Write while a first load is out | Held behind the load; a memo in between changes nothing |
 | Store draft | Clone-modify-swap or `Draft` guard? | Clone-modify-swap v1; draft v2 |
 | Store patch | Require `PartialEq`? | Yes; manual `Patch` trait for other types |
 | Renderer style | Full `ResolvedStyle` or property diffs? | Full struct v1; diff adapter later |

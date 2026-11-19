@@ -788,6 +788,14 @@ already-visible frame without a boundary is a documented limitation. The full
 Solid model treats this as "born held" and ties the mount to the hold
 (`A29`); we defer that until the lane model exists.
 
+**A write during a first load.** The leaning is that the write is held behind the
+first load, and the screen keeps showing the pre-load world: a direct read and a
+read through a memo must agree (`F-1`). This mirrors Solid's open question `Q-9`:
+it leans held, but its memo path currently shows the write and is pinned as a
+failing test. Our single-txn model has no memo/direct split, so the rule is
+simpler to state than to prove; add a first-load supersession test before
+freezing the txn rules.
+
 ## 5. Holds and transactions
 
 ### 5.1 Opening a hold
