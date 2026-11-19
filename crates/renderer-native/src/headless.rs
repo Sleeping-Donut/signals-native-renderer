@@ -78,6 +78,7 @@ impl PaintBackend for HeadlessBackend {
                 Primitive::Fill { .. } => stats.fill_quads += 1,
                 Primitive::Border { .. } => stats.border_quads += 1,
                 Primitive::Caret { .. } => stats.caret_quads += 1,
+                Primitive::Scrollbar { .. } => stats.scrollbar_quads += 2,
                 Primitive::Tooltip { layout, .. } => {
                     stats.tooltip_quads += 1;
                     let glyphs = layout

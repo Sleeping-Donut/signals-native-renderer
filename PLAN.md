@@ -365,8 +365,11 @@ arrow/Home/End movement supports Shift selection extension, and the caret
 rectangle feeds the winit IME cursor area. Hovered nodes request pointer cursors
 with ancestor inheritance, and delayed tooltips paint through a scene tooltip
 primitive that the native backend renders and the window loop applies through
-`set_cursor_icon`. Remaining Phase 6 work: a concrete OS AccessKit adapter,
-richer hover/focus styling, and scroll-edge chaining/scrollbars.
+`set_cursor_icon`. Hover and focus state styles override background, border
+colors, and text colors with focus winning over hover, wheel deltas chain from
+the deepest scrollable to scrollable ancestors at an edge, and scrollable nodes
+paint track/thumb primitives that move with the scroll offset. Remaining Phase 6
+work: a concrete OS AccessKit adapter.
 
 ### Phase 7 — Stores and authoring (3–4 weeks)
 

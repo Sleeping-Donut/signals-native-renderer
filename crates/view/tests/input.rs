@@ -12,7 +12,8 @@ use renderer_api::{
 use renderer_null::{NullRenderer, SharedNullRenderer};
 use view::{
     button_text, column, keyed_list, row, text_fn, DispatchPhase, DispatchResult, DragEnd,
-    DragEvent, DragPayload, FocusHandle, KeyStroke, TextInput, TextInputHandler, ViewTree,
+    DragEvent, DragPayload, FocusHandle, KeyStroke, StateStyle, TextInput, TextInputHandler,
+    ViewTree,
 };
 
 fn px(width: f32, height: f32) -> ResolvedStyle {
@@ -904,6 +905,82 @@ fn drag_does_not_start_below_the_threshold() {
 }
 
 #[test]
+fn hover_and_focus_styles_override_paint_colors() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let base = renderer_api::Color::new(0.0, 0.0, 1.0, 1.0);
+    let hover = renderer_api::Color::new(0.0, 1.0, 0.0, 1.0);
+    let focus = renderer_api::Color::new(1.0, 0.0, 0.0, 1.0);
+    let mut style = px(100.0, 60.0);
+    style.background = Some(base);
+    let root = tree.mount(
+        &cx,
+        button_text("style", |_| {})
+            .style(style)
+            .hover_style(StateStyle::new().background(hover))
+            .focus_style(StateStyle::new().background(focus)),
+    );
+    tree.set_viewport(200.0, 120.0);
+    tree.frame(&cx, 0);
+    let renderer_id = tree.renderer_id(root).unwrap();
+    let fill = |tree: &ViewTree| {
+        tree.build_scene()
+            .ops()
+            .iter()
+            .find_map(|primitive| match primitive {
+                scene::Primitive::Fill { node, color, .. } if *node == renderer_id => Some(*color),
+                _ => None,
+            })
+            .expect("fill")
+    };
+    assert_eq!(fill(&tree), base);
+
+    let now = Instant::now();
+    tree.pointer_move_at(&PointerEvent::new(10.0, 10.0, None), now);
+    assert_eq!(fill(&tree), hover);
+
+    tree.set_focus(Some(root));
+    assert_eq!(fill(&tree), focus);
+
+    tree.set_focus(None);
+    assert_eq!(fill(&tree), hover);
+
+    tree.pointer_move_at(&PointerEvent::new(500.0, 500.0, None), now);
+    assert_eq!(fill(&tree), base);
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn focus_style_changes_text_color() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let focus = renderer_api::Color::new(0.9, 0.2, 0.1, 1.0);
+    let root = tree.mount(
+        &cx,
+        text_fn(|_| "focused".to_string())
+            .focusable(true)
+            .focus_style(StateStyle::new().text_color(focus))
+            .style(px(120.0, 30.0)),
+    );
+    tree.set_viewport(200.0, 100.0);
+    tree.frame(&cx, 0);
+    tree.set_focus(Some(root));
+    let scene = tree.build_scene();
+    let color = scene
+        .ops()
+        .iter()
+        .find_map(|primitive| match primitive {
+            scene::Primitive::Text { color, .. } => Some(*color),
+            _ => None,
+        })
+        .expect("text");
+    assert_eq!(color, focus);
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
 fn scroll_state_clamps_to_content_bounds() {
     let (runtime, tree, _renderer) = setup();
     let cx = runtime.cx();
@@ -968,6 +1045,70 @@ fn wheel_targets_deepest_scrollable_and_runs_capture_then_bubble() {
     assert_eq!(tree.scroll_state(outer).unwrap().offset_y, 0.0);
 
     tree.unmount(&cx, root);
+}
+
+#[test]
+fn wheel_chains_remaining_delta_to_scrollable_ancestor() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let inner =
+        column(vec![column(vec![]).style(px(100.0, 300.0))]).style(scrollable(100.0, 100.0));
+    let spacer = column(vec![]).style(px(100.0, 300.0));
+    let root = tree.mount(
+        &cx,
+        column(vec![inner, spacer]).style(scrollable(200.0, 200.0)),
+    );
+    tree.set_viewport(300.0, 300.0);
+    tree.frame(&cx, 0);
+    let inner = tree.children(root)[0];
+    tree.set_scroll_offset(inner, 0.0, 200.0)
+        .expect("inner max");
+
+    assert!(tree.wheel(&WheelEvent::new(50.0, 50.0, 0.0, 100.0)));
+    assert_eq!(tree.scroll_state(inner).unwrap().offset_y, 200.0);
+    let outer = tree.scroll_state(root).expect("outer state");
+    assert_eq!(outer.offset_y, 100.0);
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn scrollbars_paint_track_and_thumb_for_scrollable_content() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let scroll = tree.mount(
+        &cx,
+        column(vec![column(vec![]).style(px(100.0, 300.0))]).style(scrollable(100.0, 100.0)),
+    );
+    tree.set_viewport(200.0, 200.0);
+    tree.frame(&cx, 0);
+    let scene = tree.build_scene();
+    let (track, thumb) = scene
+        .ops()
+        .iter()
+        .find_map(|primitive| match primitive {
+            scene::Primitive::Scrollbar { track, thumb, .. } => Some((*track, *thumb)),
+            _ => None,
+        })
+        .expect("vertical scrollbar");
+    assert_eq!(track.x, 92.0);
+    assert!(track.width > 0.0 && track.height > 0.0);
+    assert!(thumb.height >= 16.0 && thumb.height < track.height);
+    let start_y = thumb.y;
+
+    tree.set_scroll_offset(scroll, 0.0, 200.0).expect("scroll");
+    let scene = tree.build_scene();
+    let (_, thumb) = scene
+        .ops()
+        .iter()
+        .find_map(|primitive| match primitive {
+            scene::Primitive::Scrollbar { track, thumb, .. } => Some((*track, *thumb)),
+            _ => None,
+        })
+        .expect("vertical scrollbar after scroll");
+    assert!(thumb.y > start_y);
+
+    tree.unmount(&cx, scroll);
 }
 
 #[test]

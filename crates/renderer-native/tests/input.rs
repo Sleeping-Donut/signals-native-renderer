@@ -462,6 +462,13 @@ fn window_driver_routes_wheel_to_scroll_state() {
     let backend = HeadlessBackend::new(200, 200, 1.0);
     let mut driver = WindowDriver::new(ScrollApp::new(), backend);
     driver.redraw().expect("initial frame");
+    let frame = driver.backend().last().expect("scrollbar frame");
+    assert!(frame.stats.scrollbar_quads >= 2);
+    assert!(frame
+        .scene
+        .ops()
+        .iter()
+        .any(|primitive| matches!(primitive, scene::Primitive::Scrollbar { .. })));
 
     assert!(driver.wheel(&WheelEvent::new(50.0, 50.0, 0.0, 40.0)));
     let state = driver

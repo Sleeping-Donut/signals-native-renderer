@@ -731,6 +731,21 @@ fn collect_vertices(
                     stats.caret_quads += 1;
                 }
             }
+            Primitive::Scrollbar {
+                track,
+                thumb,
+                track_color,
+                thumb_color,
+                ..
+            } => {
+                if let Some(track) = apply_clip(*track, None) {
+                    push_quad(vertices, metrics, track, *track_color, white);
+                    if let Some(thumb) = apply_clip(*thumb, None) {
+                        push_quad(vertices, metrics, thumb, *thumb_color, white);
+                    }
+                    stats.scrollbar_quads += 2;
+                }
+            }
             Primitive::Tooltip {
                 rect,
                 layout,

@@ -97,6 +97,8 @@ pub struct FrameStats {
     pub underline_quads: usize,
     /// Tooltip backgrounds.
     pub tooltip_quads: usize,
+    /// Scrollbar tracks and thumbs.
+    pub scrollbar_quads: usize,
     /// Glyph rectangles sourced from the atlas.
     pub atlas_glyphs: usize,
     /// Glyph rectangles rendered as placeholders.

@@ -29,8 +29,11 @@ primitive, and the caret rectangle feeds winit's IME cursor area. AccessKit
 tree generation and action routing are implemented. Hovered nodes request
 pointer cursors with ancestor inheritance, and delayed tooltips paint as a scene
 tooltip primitive rendered by the native backend and mapped to
-`set_cursor_icon` by the window loop. A concrete OS AccessKit adapter, richer
-hover/focus styling, and scroll-edge chaining/scrollbars remain.
+`set_cursor_icon` by the window loop. Hover and focus paint styles override
+background, border, and text colors with focus taking precedence, wheel deltas
+chain to scrollable ancestors when the deepest target reaches an edge, and
+scrollable nodes paint track/thumb primitives that track the scroll offset. A
+concrete OS AccessKit adapter remains.
 
 ---
 
@@ -373,6 +376,9 @@ Handlers receive an `A11yAction` and stage writes like any other event.
   extension.
 - Hover a node and assert cursor requests, inherited cursor selection, tooltip
   delay behavior, and tooltip scene emission.
+- Hover and focus styled nodes; assert paint colors and focus precedence.
+- Wheel an inner scroller at its edge; assert the remainder scrolls its
+  ancestor. Assert scrollbar track/thumb primitives and thumb movement.
 
 ## 9. Cursors and tooltips
 

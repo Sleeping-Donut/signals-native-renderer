@@ -20,12 +20,64 @@ use reactive_core::{
     render_effect, EffectHandle, NodeId as ViewNodeId, OwnerHandle, ReadSignal, RuntimeHandle,
 };
 use renderer_api::{
-    A11yRole, CursorIcon, Display, Edges, ElementTag, FlexDirection, FrameInfo, Key, KeyEvent,
-    Modifiers, NamedKey, NodeId as RendererNodeId, Overflow, PointerEvent, Renderer, ResolvedStyle,
-    Size, TextMeasureRequest, TextMetrics, TextStyle, Transform, WheelEvent,
+    A11yRole, Color, CursorIcon, Display, Edges, ElementTag, FlexDirection, FrameInfo, Key,
+    KeyEvent, Modifiers, NamedKey, NodeId as RendererNodeId, Overflow, PointerEvent, Renderer,
+    ResolvedStyle, Size, TextMeasureRequest, TextMetrics, TextStyle, Transform, WheelEvent,
 };
 use scene::{PaintTree, Primitive, Scene, SceneBuilder, SceneStats};
 use text::{MonospaceShaper, ShapedLayout, TextSystem};
+
+/// Paint-only style overrides for hover and focus states.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StateStyle {
+    /// Replacement background.
+    pub background: Option<Color>,
+    /// Replacement border color.
+    pub border_color: Option<Color>,
+    /// Replacement text color.
+    pub text_color: Option<Color>,
+}
+
+impl StateStyle {
+    /// An empty override set.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            background: None,
+            border_color: None,
+            text_color: None,
+        }
+    }
+
+    /// Override the background.
+    #[must_use]
+    pub const fn background(mut self, color: Color) -> Self {
+        self.background = Some(color);
+        self
+    }
+
+    /// Override the border color.
+    #[must_use]
+    pub const fn border_color(mut self, color: Color) -> Self {
+        self.border_color = Some(color);
+        self
+    }
+
+    /// Override the text color.
+    #[must_use]
+    pub const fn text_color(mut self, color: Color) -> Self {
+        self.text_color = Some(color);
+        self
+    }
+
+    fn merge(self, other: Self) -> Self {
+        Self {
+            background: other.background.or(self.background),
+            border_color: other.border_color.or(self.border_color),
+            text_color: other.text_color.or(self.text_color),
+        }
+    }
+}
 
 /// A mounted view node.
 struct ViewNode {
@@ -48,6 +100,8 @@ struct ViewNode {
     a11y_value: Option<String>,
     cursor: Option<CursorIcon>,
     tooltip: Option<String>,
+    hover_style: Option<StateStyle>,
+    focus_style: Option<StateStyle>,
     view_listeners: Vec<ViewListener>,
     key_bindings: Vec<KeyBinding>,
     drag_start: Option<Rc<RefCell<DragStartFn>>>,
@@ -737,8 +791,105 @@ impl ViewTree {
         };
         self.inner.paint_dirty.borrow_mut().clear();
         let mut scene = scene;
+        self.paint_scrollbars(&mut scene);
         self.paint_tooltip(&mut scene);
         scene
+    }
+
+    fn paint_scrollbars(&self, out: &mut Scene) {
+        let scrollables = {
+            let nodes = self.inner.nodes.borrow();
+            nodes
+                .iter()
+                .filter(|(_, node)| is_scrollable(node.style.overflow))
+                .map(|(id, _)| id.id())
+                .collect::<Vec<_>>()
+        };
+        for id in scrollables {
+            let Some(state) = self.scroll_state(id) else {
+                continue;
+            };
+            let (Some(renderer_id), Some(rect)) = (self.renderer_id(id), self.layout_rect(id))
+            else {
+                continue;
+            };
+            let viewport = scene::Rect::new(rect.x, rect.y, rect.width, rect.height)
+                .transformed(self.world_transform(id));
+            let max_y = state.max_y();
+            let max_x = state.max_x();
+            if max_y > 0.5 {
+                let thickness = 6.0;
+                let margin = 2.0;
+                let track = scene::Rect::new(
+                    viewport.x + viewport.width - thickness - margin,
+                    viewport.y + margin,
+                    thickness,
+                    (viewport.height - margin * 2.0).max(1.0),
+                );
+                let ratio = (state.viewport_height / state.content_height).clamp(0.0, 1.0);
+                let thumb_height = (track.height * ratio).clamp(16.0, track.height);
+                let travel = track.height - thumb_height;
+                let position = if max_y > 0.0 {
+                    state.offset_y / max_y
+                } else {
+                    0.0
+                };
+                out.push(Primitive::Scrollbar {
+                    node: renderer_id,
+                    track,
+                    thumb: scene::Rect::new(
+                        track.x,
+                        track.y + travel * position,
+                        track.width,
+                        thumb_height,
+                    ),
+                    track_color: Color::new(0.0, 0.0, 0.0, 0.18),
+                    thumb_color: Color::new(0.45, 0.45, 0.5, 0.7),
+                    radius: Edges {
+                        top: 3.0,
+                        right: 3.0,
+                        bottom: 3.0,
+                        left: 3.0,
+                    },
+                });
+            }
+            if max_x > 0.5 {
+                let thickness = 6.0;
+                let margin = 2.0;
+                let track = scene::Rect::new(
+                    viewport.x + margin,
+                    viewport.y + viewport.height - thickness - margin,
+                    (viewport.width - margin * 2.0).max(1.0),
+                    thickness,
+                );
+                let ratio = (state.viewport_width / state.content_width).clamp(0.0, 1.0);
+                let thumb_width = (track.width * ratio).clamp(16.0, track.width);
+                let travel = track.width - thumb_width;
+                let position = if max_x > 0.0 {
+                    state.offset_x / max_x
+                } else {
+                    0.0
+                };
+                out.push(Primitive::Scrollbar {
+                    node: renderer_id,
+                    track,
+                    thumb: scene::Rect::new(
+                        track.x + travel * position,
+                        track.y,
+                        thumb_width,
+                        track.height,
+                    ),
+                    track_color: Color::new(0.0, 0.0, 0.0, 0.18),
+                    thumb_color: Color::new(0.45, 0.45, 0.5, 0.7),
+                    radius: Edges {
+                        top: 3.0,
+                        right: 3.0,
+                        bottom: 3.0,
+                        left: 3.0,
+                    },
+                });
+            }
+        }
     }
 
     fn paint_tooltip(&self, out: &mut Scene) {
@@ -999,14 +1150,51 @@ impl ViewTree {
     /// Route a wheel event to the deepest scrollable ancestor and then either a
     /// listener or the default scroll action.
     pub fn wheel(&self, event: &WheelEvent) -> bool {
-        let Some(target) = self.deepest_scrollable(event.x, event.y) else {
-            return false;
-        };
-        let handled = self.dispatch_view_event(target, ViewEvent::Wheel);
-        if !handled {
-            self.scroll_by(target, event.delta_x, event.delta_y);
+        let mut target = self.deepest_scrollable(event.x, event.y);
+        let mut delta_x = event.delta_x;
+        let mut delta_y = event.delta_y;
+        let mut scrolled = false;
+        let mut hops = 0;
+        while let Some(node) = target {
+            if self.dispatch_view_event(node, ViewEvent::Wheel) {
+                return true;
+            }
+            if let (Some(before), Some(after)) = (
+                self.scroll_state(node),
+                self.scroll_by(node, delta_x, delta_y),
+            ) {
+                delta_x -= after.offset_x - before.offset_x;
+                delta_y -= after.offset_y - before.offset_y;
+                scrolled = true;
+            }
+            if delta_x.abs() < 0.01 && delta_y.abs() < 0.01 {
+                break;
+            }
+            hops += 1;
+            if hops > 64 {
+                break;
+            }
+            target = self.scrollable_ancestor(node);
         }
-        true
+        scrolled
+    }
+
+    fn scrollable_ancestor(&self, id: ViewNodeId) -> Option<ViewNodeId> {
+        let mut current = self
+            .inner
+            .nodes
+            .borrow()
+            .get(id)
+            .and_then(|node| node.parent);
+        while let Some(node) = current {
+            let nodes = self.inner.nodes.borrow();
+            let data = nodes.get(node)?;
+            if is_scrollable(data.style.overflow) {
+                return Some(node);
+            }
+            current = data.parent;
+        }
+        None
     }
 
     /// Apply a resolved style to a mounted node.
@@ -1061,6 +1249,12 @@ impl ViewTree {
             return;
         }
         *self.inner.focused.borrow_mut() = focus;
+        if let Some(previous) = previous {
+            self.mark_paint_dirty(previous);
+        }
+        if let Some(focus) = focus {
+            self.mark_paint_dirty(focus);
+        }
         if let Some(previous) = previous {
             self.dispatch_view_event(previous, ViewEvent::Blur);
         }
@@ -1334,11 +1528,67 @@ impl ViewTree {
             *self.inner.hovered.borrow_mut() = hit;
             *self.inner.tooltip.borrow_mut() = None;
             self.inner.hover_started.set(hit.map(|_| now));
+            if let Some(previous) = previous {
+                self.mark_paint_dirty(previous);
+            }
+            if let Some(hit) = hit {
+                self.mark_paint_dirty(hit);
+            }
         } else if hit.is_some() && self.inner.hover_started.get().is_none() {
             self.inner.hover_started.set(Some(now));
         }
         self.update_drag(event);
         hit
+    }
+
+    /// Whether `id` is the hovered node or an ancestor of it.
+    #[must_use]
+    pub fn is_hovered_within(&self, id: ViewNodeId) -> bool {
+        self.is_within(self.hovered(), id)
+    }
+
+    /// Whether `id` is the focused node or an ancestor of it.
+    #[must_use]
+    pub fn is_focused_within(&self, id: ViewNodeId) -> bool {
+        self.is_within(self.focused(), id)
+    }
+
+    fn is_within(&self, target: Option<ViewNodeId>, ancestor: ViewNodeId) -> bool {
+        let mut current = target;
+        while let Some(node) = current {
+            if node == ancestor {
+                return true;
+            }
+            current = self
+                .inner
+                .nodes
+                .borrow()
+                .get(node)
+                .and_then(|node| node.parent);
+        }
+        false
+    }
+
+    fn state_style(&self, id: ViewNodeId) -> StateStyle {
+        let (hover_style, focus_style) = {
+            let nodes = self.inner.nodes.borrow();
+            let Some(node) = nodes.get(id) else {
+                return StateStyle::default();
+            };
+            (node.hover_style, node.focus_style)
+        };
+        let mut style = StateStyle::default();
+        if self.is_hovered_within(id) {
+            if let Some(hover) = hover_style {
+                style = style.merge(hover);
+            }
+        }
+        if self.is_focused_within(id) {
+            if let Some(focus) = focus_style {
+                style = style.merge(focus);
+            }
+        }
+        style
     }
 
     /// The cursor requested by the hovered node or its nearest ancestor.
@@ -2351,6 +2601,8 @@ impl ViewTree {
                 a11y_value: None,
                 cursor: None,
                 tooltip: None,
+                hover_style: None,
+                focus_style: None,
                 view_listeners: Vec::new(),
                 key_bindings: Vec::new(),
                 drag_start: None,
@@ -2533,6 +2785,20 @@ impl ViewTree {
     pub fn set_tooltip(&self, view: ViewNodeId, tooltip: Option<String>) {
         if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
             node.tooltip = tooltip;
+        }
+    }
+
+    /// Set or clear a node's hover state style.
+    pub fn set_hover_style(&self, view: ViewNodeId, style: Option<StateStyle>) {
+        if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
+            node.hover_style = style;
+        }
+    }
+
+    /// Set or clear a node's focus state style.
+    pub fn set_focus_style(&self, view: ViewNodeId, style: Option<StateStyle>) {
+        if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
+            node.focus_style = style;
         }
     }
 
@@ -2828,6 +3094,28 @@ impl View {
         view(move |cx, tree| {
             let id = mount(cx, tree);
             tree.set_tooltip(id, Some(tooltip));
+            id
+        })
+    }
+
+    /// Set paint overrides while this view or a descendant is hovered.
+    #[must_use]
+    pub fn hover_style(self, style: StateStyle) -> Self {
+        let mount = self.mount;
+        view(move |cx, tree| {
+            let id = mount(cx, tree);
+            tree.set_hover_style(id, Some(style));
+            id
+        })
+    }
+
+    /// Set paint overrides while this view or a descendant has focus.
+    #[must_use]
+    pub fn focus_style(self, style: StateStyle) -> Self {
+        let mount = self.mount;
+        view(move |cx, tree| {
+            let id = mount(cx, tree);
+            tree.set_focus_style(id, Some(style));
             id
         })
     }
@@ -3403,6 +3691,17 @@ impl PaintTree for ViewPaintTree<'_> {
             }
             None => (view_text, None, false),
         };
+        let mut style = style;
+        let state = self.tree.state_style(node);
+        if let Some(background) = state.background {
+            style.background = Some(background);
+        }
+        if let Some(border_color) = state.border_color {
+            style.border_color = Some(border_color);
+        }
+        if let Some(text_color) = state.text_color {
+            style.text.color = text_color;
+        }
         let layout_rect = scene::Rect::new(rect.x, rect.y, rect.width, rect.height);
         let transform = self.tree.world_transform(node);
         let paint_rect = layout_rect.transformed(transform);

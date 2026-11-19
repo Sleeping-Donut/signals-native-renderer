@@ -159,6 +159,21 @@ pub enum Primitive {
         /// Whether to draw a composition underline.
         underline: bool,
     },
+    /// A scrollbar track and thumb.
+    Scrollbar {
+        /// Owning scene node.
+        node: SceneNodeId,
+        /// Track rectangle.
+        track: Rect,
+        /// Thumb rectangle.
+        thumb: Rect,
+        /// Track color.
+        track_color: Color,
+        /// Thumb color.
+        thumb_color: Color,
+        /// Corner radii.
+        radius: Edges<f32>,
+    },
     /// A tooltip overlay with shaped text and a background.
     Tooltip {
         /// Owning scene node.
@@ -201,6 +216,7 @@ impl Primitive {
             Self::Fill { node, .. }
             | Self::Border { node, .. }
             | Self::Text { node, .. }
+            | Self::Scrollbar { node, .. }
             | Self::Tooltip { node, .. }
             | Self::Caret { node, .. } => *node,
         }
@@ -215,6 +231,7 @@ impl Primitive {
             | Self::Text { rect, .. }
             | Self::Tooltip { rect, .. }
             | Self::Caret { rect, .. } => *rect,
+            Self::Scrollbar { track, thumb, .. } => track.union(*thumb),
         }
     }
 }
