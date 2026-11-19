@@ -8,15 +8,19 @@
 //! crate will be allowed to use it.
 
 mod arena;
+mod clock;
 mod graph;
 mod id;
+mod spawner;
 
 pub use arena::Arena;
+pub use clock::VirtualClock;
 pub use graph::{
     create_async_derived_signal, create_async_memo, create_derived, create_derived_signal,
     create_memo, create_memo_unchecked, create_memo_with, create_signal, create_signal_unchecked,
     create_signal_with, effect, error_boundary, loading_boundary, render_effect, AsyncError,
     CleanupHandle, Cx, Derived, DirtyState, EffectHandle, ErrorBoundary, FlushError,
-    LoadingBoundary, Memo, OwnerHandle, OwnerId, ReadSignal, Runtime, WriteSignal,
+    LoadingBoundary, Memo, OwnerHandle, OwnerId, ReadSignal, ReaderClass, Runtime, WriteSignal,
 };
 pub use id::{AccessError, Handle, NodeId};
+pub use spawner::{LocalBoxFuture, ManualSpawner, Spawner};

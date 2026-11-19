@@ -5,12 +5,16 @@
 boundaries, `isPending`, and the v1 async subset of the Solid 2.0 rules.
 `latest`, actions, `affects`, and full `on` are v2.
 
-**Implementation status (2026-11-19).** The Phase 2 core is implemented in
-[`graph.rs`](../crates/reactive-core/src/graph.rs): async memos and writable
-derived signals, flight generations, cancellation by future drop, `is_pending`,
-`LoadingBoundary`, `ErrorBoundary`, and whole-content holds. `Runtime::pump` is
-the current executor boundary; a host `Spawner` wrapper and the full transaction
-model remain integration work for the host frame.
+**Implementation status (2026-11-19).** Phase 2 is implemented across
+[`graph.rs`](../crates/reactive-core/src/graph.rs),
+[`spawner.rs`](../crates/reactive-core/src/spawner.rs), and
+[`clock.rs`](../crates/reactive-core/src/clock.rs): async memos and writable
+derived signals, flight generations, cancellation, `is_pending`,
+`LoadingBoundary`, `ErrorBoundary`, whole-content holds, `ReaderClass`
+(display/derive/observe), and the deterministic virtual clock. Async flights are
+spawned through a host `Spawner`; `ManualSpawner` is the default and the runtime
+crate re-exports the contract. The full multi-node transaction model is still a
+v2 refinement; the boundary hold covers the v1 cases.
 
 ---
 

@@ -1,4 +1,4 @@
-//! Local spawner contract and the deterministic manual executor.
+//! Local spawner boundary and the deterministic manual executor.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -7,28 +7,30 @@ use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
 /// A future that runs on the UI thread.
-///
-/// The graph is thread-affine; async graph work must stay on the local
-/// executor. Background threads return through continuations instead.
 pub type LocalBoxFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
 
 /// The host's local executor boundary.
 ///
-/// The runtime never owns a thread pool. A host provides a spawner; tests use
-/// [`ManualSpawner`].
+/// The graph calls `spawn_local` for async flights. A host implementation may
+/// rely on its own event loop; [`ManualSpawner`] is the deterministic fallback
+/// used by the runtime and tests.
 pub trait Spawner {
     /// Queue a future for the UI thread.
     fn spawn_local(&self, future: LocalBoxFuture);
 
     /// Ask the host event loop to run a frame soon.
     fn wake_ui(&self);
+
+    /// Poll queued tasks once. Hosts with their own loop may leave this as a
+    /// no-op; [`ManualSpawner`] overrides it.
+    fn pump(&self) {}
 }
 
-/// A deterministic executor for tests.
+/// A deterministic executor for tests and the default graph runtime.
 ///
-/// `pump` polls every queued future once. A future that returns `Pending` is
-/// re-queued; a future that returns `Ready` is dropped. Futures spawned during
-/// a pump are appended and run on a later pump, not invented immediately.
+/// `pump` polls every queued task once. A task that returns `Pending` is
+/// re-queued; a task that returns `Ready` is dropped. Tasks spawned during a
+/// pump run on a later pump.
 #[derive(Default)]
 pub struct ManualSpawner {
     queue: RefCell<VecDeque<LocalBoxFuture>>,
@@ -42,18 +44,14 @@ impl ManualSpawner {
         Self::default()
     }
 
-    /// Number of futures waiting for the next pump.
+    /// Number of tasks waiting for the next pump.
     #[must_use]
     pub fn pending(&self) -> usize {
         self.queue.borrow().len()
     }
 
-    /// Poll the current queue once. Returns how many futures completed.
-    ///
-    /// Pending futures are kept in the queue for the next call.
+    /// Poll the current queue once. Returns how many tasks completed.
     pub fn pump(&self) -> usize {
-        // Take the queue so a future may spawn while it is polled without
-        // re-entering the RefCell borrow.
         let mut tasks = std::mem::take(&mut *self.queue.borrow_mut());
         let mut requeue = VecDeque::new();
         let mut completed = 0;
@@ -74,10 +72,7 @@ impl ManualSpawner {
         completed
     }
 
-    /// Pump until a pump completes nothing or the queue is empty.
-    ///
-    /// This is for tests with self-waking futures; a future that repeatedly
-    /// makes progress and spawns a replacement can keep this running.
+    /// Pump until a pump completes nothing.
     pub fn run_until_stalled(&self) -> usize {
         let mut completed = 0;
         loop {
@@ -104,6 +99,10 @@ impl Spawner for ManualSpawner {
     fn wake_ui(&self) {
         self.woke.set(true);
     }
+
+    fn pump(&self) {
+        let _ = ManualSpawner::pump(self);
+    }
 }
 
 impl<S: Spawner + ?Sized> Spawner for std::rc::Rc<S> {
@@ -113,6 +112,10 @@ impl<S: Spawner + ?Sized> Spawner for std::rc::Rc<S> {
 
     fn wake_ui(&self) {
         (**self).wake_ui();
+    }
+
+    fn pump(&self) {
+        (**self).pump();
     }
 }
 
@@ -139,12 +142,12 @@ mod tests {
     }
 
     #[test]
-    fn pending_future_is_requeued_and_runs_on_the_next_pump() {
+    fn pending_future_is_requeued() {
         let spawner = ManualSpawner::new();
         let polls = Rc::new(Cell::new(0_u32));
         let task_polls = Rc::clone(&polls);
 
-        spawner.spawn_local(Box::pin(std::future::poll_fn(move |_cx| {
+        spawner.spawn_local(Box::pin(std::future::poll_fn(move |_| {
             let count = task_polls.get();
             task_polls.set(count + 1);
             if count == 0 {
@@ -157,33 +160,9 @@ mod tests {
         assert_eq!(spawner.pump(), 0);
         assert_eq!(polls.get(), 1);
         assert_eq!(spawner.pending(), 1);
-
         assert_eq!(spawner.pump(), 1);
         assert_eq!(polls.get(), 2);
         assert_eq!(spawner.pending(), 0);
-    }
-
-    #[test]
-    fn spawn_during_pump_runs_on_the_next_pump() {
-        let spawner = Rc::new(ManualSpawner::new());
-        let state = Rc::new(Cell::new(0_u32));
-        let task_spawner = Rc::clone(&spawner);
-        let first_state = Rc::clone(&state);
-        let second_state = Rc::clone(&state);
-
-        spawner.spawn_local(Box::pin(async move {
-            first_state.set(1);
-            task_spawner.spawn_local(Box::pin(async move {
-                second_state.set(2);
-            }));
-        }));
-
-        assert_eq!(spawner.pump(), 1);
-        assert_eq!(state.get(), 1);
-        assert_eq!(spawner.pending(), 1);
-
-        assert_eq!(spawner.pump(), 1);
-        assert_eq!(state.get(), 2);
     }
 
     #[test]

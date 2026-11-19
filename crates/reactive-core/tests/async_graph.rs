@@ -3,13 +3,14 @@
 
 use std::cell::{Cell, RefCell};
 use std::future::{poll_fn, Future};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::Poll;
 
 use reactive_core::{
     create_async_memo, create_derived_signal, create_signal, error_boundary, loading_boundary,
-    AsyncError, Runtime,
+    AsyncError, LocalBoxFuture, ManualSpawner, ReaderClass, Runtime, Spawner,
 };
 
 type Fut<T> = Pin<Box<dyn Future<Output = Result<T, AsyncError>>>>;
@@ -334,4 +335,131 @@ fn error_boundary_renders_the_error_fallback_and_recovers() {
     set_fails.set(&cx, false);
     cx.flush().unwrap();
     assert_eq!(boundary.get(&cx), "content");
+}
+
+#[test]
+fn virtual_clock_drives_async_without_poll_counters() {
+    let runtime = Runtime::new();
+    let cx = runtime.cx();
+    let clock = cx.clock();
+    let data = create_async_memo(&cx, move |_cx, _| {
+        let clock = clock.clone();
+        Box::pin(async move {
+            clock.sleep(100).await;
+            Ok("ready".to_string())
+        })
+    });
+    let boundary = loading_boundary(
+        &cx,
+        None,
+        move |cx| data.get(cx),
+        |_cx| "loading".to_string(),
+    );
+
+    assert_eq!(boundary.get(&cx), "loading");
+    runtime.pump();
+    cx.flush().unwrap();
+    assert_eq!(boundary.get(&cx), "loading");
+
+    runtime.advance_time(99);
+    runtime.pump();
+    cx.flush().unwrap();
+    assert_eq!(boundary.get(&cx), "loading");
+
+    runtime.advance_time(1);
+    runtime.pump();
+    cx.flush().unwrap();
+    assert_eq!(boundary.get(&cx), "ready");
+}
+
+#[test]
+fn runtime_uses_the_configured_spawner_for_flights() {
+    struct CountingSpawner {
+        inner: ManualSpawner,
+        spawned: Rc<Cell<usize>>,
+    }
+
+    impl Spawner for CountingSpawner {
+        fn spawn_local(&self, future: LocalBoxFuture) {
+            self.spawned.set(self.spawned.get() + 1);
+            self.inner.spawn_local(future);
+        }
+
+        fn wake_ui(&self) {
+            self.inner.wake_ui();
+        }
+
+        fn pump(&self) {
+            self.inner.pump();
+        }
+    }
+
+    let spawned = Rc::new(Cell::new(0));
+    let runtime = Runtime::with_spawner(CountingSpawner {
+        inner: ManualSpawner::new(),
+        spawned: Rc::clone(&spawned),
+    });
+    let cx = runtime.cx();
+    let data = create_async_memo(&cx, move |_cx, _| {
+        delayed_with_counter("spawned".to_string(), Rc::new(Cell::new(0)), 0)
+    });
+    let boundary = loading_boundary(
+        &cx,
+        None,
+        move |cx| data.get(cx),
+        |_cx| "loading".to_string(),
+    );
+
+    assert_eq!(boundary.get(&cx), "loading");
+    assert_eq!(spawned.get(), 1, "the graph spawned a task on the host");
+    runtime.pump();
+    cx.flush().unwrap();
+    assert_eq!(boundary.get(&cx), "spawned");
+}
+
+#[test]
+fn reader_classes_separate_display_and_derive_reads() {
+    let runtime = Runtime::new();
+    let cx = runtime.cx();
+    let (page, set_page) = create_signal(&cx, 1_u64);
+    let data = create_async_memo(&cx, move |cx, _| {
+        let page = page.get(cx);
+        delayed_with_counter(format!("data-{page}"), Rc::new(Cell::new(0)), 1)
+    });
+
+    // Start the first flight with a display read; there is no committed value
+    // yet, so the read suspends. The boundary normally catches this.
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        cx.with_reader_class(ReaderClass::Display, || data.get(&cx))
+    }));
+    runtime.pump();
+    cx.flush().unwrap();
+    runtime.pump();
+    cx.flush().unwrap();
+    assert_eq!(
+        cx.with_reader_class(ReaderClass::Display, || data.get(&cx)),
+        "data-1"
+    );
+
+    set_page.set(&cx, 2);
+    cx.flush().unwrap();
+
+    assert_eq!(
+        cx.with_reader_class(ReaderClass::Display, || data.get(&cx)),
+        "data-1",
+        "display reads keep the committed value"
+    );
+    let derive = catch_unwind(AssertUnwindSafe(|| {
+        cx.with_reader_class(ReaderClass::Derive, || data.get(&cx))
+    }));
+    assert!(derive.is_err(), "derive reads join the hold");
+
+    runtime.pump();
+    cx.flush().unwrap();
+    runtime.pump();
+    cx.flush().unwrap();
+    assert_eq!(
+        cx.with_reader_class(ReaderClass::Derive, || data.get(&cx)),
+        "data-2"
+    );
 }

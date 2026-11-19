@@ -7,7 +7,6 @@
 //! deterministic test executor.
 
 mod runtime;
-mod spawner;
 
+pub use reactive_core::{LocalBoxFuture, ManualSpawner, Spawner, VirtualClock};
 pub use runtime::{FrameId, Runtime};
-pub use spawner::{LocalBoxFuture, ManualSpawner, Spawner};

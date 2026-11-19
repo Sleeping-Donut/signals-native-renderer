@@ -15,7 +15,7 @@
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
@@ -23,15 +23,23 @@ use std::marker::PhantomData;
 use std::panic::{catch_unwind, panic_any, resume_unwind, AssertUnwindSafe};
 use std::pin::Pin;
 use std::rc::Rc;
-use std::task::{Context, Poll, Waker};
+use std::task::Poll;
 
-use crate::{Arena, NodeId};
+use crate::{Arena, ManualSpawner, NodeId, Spawner, VirtualClock};
 
 /// A boxed async error.
 pub type AsyncError = Box<dyn Error + Send + Sync>;
 
 type LocalBoxFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
 type AsyncFuture = LocalBoxFuture<Result<Box<dyn Any>, AsyncError>>;
+type FutureSlot = Rc<RefCell<Option<AsyncFuture>>>;
+type CompletionQueue = Rc<RefCell<VecDeque<Completion>>>;
+
+struct Completion {
+    node: NodeId,
+    flight: u64,
+    result: Result<Box<dyn Any>, AsyncError>,
+}
 type AsyncComputeFn = Box<dyn for<'a> FnMut(&Cx<'a>, Option<&dyn Any>) -> AsyncFuture>;
 type NodeRc = Rc<RefCell<Node>>;
 type OwnerRc = Rc<RefCell<Owner>>;
@@ -62,6 +70,17 @@ pub enum DirtyState {
     Check,
     /// Must recompute without verification.
     Dirty,
+}
+
+/// How a read treats a node whose new answer is still in flight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReaderClass {
+    /// Return the committed value; a render effect sees the screen.
+    Display,
+    /// Join the hold: raise `NotReady` until the new answer is whole.
+    Derive,
+    /// Observe without joining the hold; used by `is_pending` probes.
+    Observe,
 }
 
 /// A flush failure.
@@ -165,7 +184,7 @@ impl<T: 'static> ReadSignal<T> {
     pub fn with<R>(self, cx: &Cx<'_>, f: impl FnOnce(&T) -> R) -> R {
         cx.rt.track(self.id);
         cx.rt.ensure_clean(self.id);
-        if cx.rt.hold_reads.get() && cx.rt.is_pending_node(self.id) {
+        if cx.rt.reader_class.get() == ReaderClass::Derive && cx.rt.is_pending_node(self.id) {
             cx.rt.raise_pending(self.id);
         }
         let node = cx.rt.node(self.id).expect("signal was disposed");
@@ -296,7 +315,7 @@ impl<T: 'static> Memo<T> {
     pub fn with<R>(self, cx: &Cx<'_>, f: impl FnOnce(&T) -> R) -> R {
         cx.rt.track(self.id);
         cx.rt.ensure_clean(self.id);
-        if cx.rt.hold_reads.get() && cx.rt.is_pending_node(self.id) {
+        if cx.rt.reader_class.get() == ReaderClass::Derive && cx.rt.is_pending_node(self.id) {
             cx.rt.raise_pending(self.id);
         }
         let node = cx.rt.node(self.id).expect("memo was disposed");
@@ -569,6 +588,35 @@ impl<'a> Cx<'a> {
         result
     }
 
+    /// The current reader class.
+    #[must_use]
+    pub fn reader_class(self) -> ReaderClass {
+        self.rt.reader_class.get()
+    }
+
+    /// Run a closure with a specific reader class. Restores on unwind.
+    pub fn with_reader_class<R>(self, class: ReaderClass, f: impl FnOnce() -> R) -> R {
+        let previous = self.rt.reader_class.replace(class);
+        let result = catch_unwind(AssertUnwindSafe(f));
+        self.rt.reader_class.set(previous);
+        match result {
+            Ok(value) => value,
+            Err(payload) => resume_unwind(payload),
+        }
+    }
+
+    /// The runtime's deterministic virtual clock.
+    #[must_use]
+    pub fn clock(self) -> VirtualClock {
+        self.rt.clock.clone()
+    }
+
+    /// Advance the virtual clock and request a pump.
+    pub fn advance_time(self, millis: u64) {
+        self.rt.clock.advance(millis);
+        self.rt.spawner.wake_ui();
+    }
+
     /// Flush staged writes and run pending computes/applies.
     pub fn flush(self) -> Result<(), FlushError> {
         self.rt.flush()
@@ -602,8 +650,11 @@ pub struct Runtime {
     render_applies: RefCell<Vec<NodeId>>,
     user_applies: RefCell<Vec<NodeId>>,
     async_ready: RefCell<Vec<NodeId>>,
+    completions: CompletionQueue,
+    spawner: Box<dyn Spawner>,
     in_flush: Cell<bool>,
-    hold_reads: Cell<bool>,
+    reader_class: Cell<ReaderClass>,
+    clock: VirtualClock,
     dirty_visits: Cell<u64>,
 }
 
@@ -643,10 +694,38 @@ impl Runtime {
             render_applies: RefCell::new(Vec::new()),
             user_applies: RefCell::new(Vec::new()),
             async_ready: RefCell::new(Vec::new()),
+            completions: Rc::new(RefCell::new(VecDeque::new())),
+            spawner: Box::new(ManualSpawner::new()),
             in_flush: Cell::new(false),
-            hold_reads: Cell::new(false),
+            reader_class: Cell::new(ReaderClass::Display),
+            clock: VirtualClock::new(),
             dirty_visits: Cell::new(0),
         }
+    }
+
+    /// Create a graph whose async flights run on `spawner`.
+    pub fn with_spawner(spawner: impl Spawner + 'static) -> Self {
+        let mut runtime = Self::new();
+        runtime.spawner = Box::new(spawner);
+        runtime
+    }
+
+    /// The host spawner.
+    #[must_use]
+    pub fn spawner(&self) -> &dyn Spawner {
+        self.spawner.as_ref()
+    }
+
+    /// The runtime's deterministic virtual clock.
+    #[must_use]
+    pub fn clock(&self) -> VirtualClock {
+        self.clock.clone()
+    }
+
+    /// Advance the virtual clock without pumping. Hosts and tests call
+    /// [`pump`](Self::pump) afterwards.
+    pub fn advance_time(&self, millis: u64) {
+        self.clock.advance(millis);
     }
 
     /// Borrow the graph through a context.
@@ -1079,10 +1158,16 @@ impl Runtime {
         node.borrow_mut().computing.set(true);
         node.borrow_mut().async_error.borrow_mut().take();
 
-        // Supersede any existing flight. Dropping the future is the
-        // cancellation path; a future's Drop guard runs exactly once.
+        // Supersede any existing flight. Cancelling the token stops the task;
+        // taking the shared slot drops the innermost future immediately, so a
+        // teardown guard runs exactly once.
         if node.borrow().in_flight.get() {
-            node.borrow_mut().future.borrow_mut().take();
+            if let Some(cancel) = node.borrow_mut().cancel.borrow_mut().take() {
+                cancel.set(true);
+            }
+            if let Some(slot) = node.borrow_mut().future_slot.borrow_mut().take() {
+                slot.borrow_mut().take();
+            }
             node.borrow_mut().in_flight.set(false);
             let flight = node.borrow().flight.get();
             node.borrow_mut().flight.set(flight + 1);
@@ -1116,18 +1201,23 @@ impl Runtime {
         match result {
             Ok(future) => {
                 let flight = node.borrow().flight.get() + 1;
-                let node = node.borrow();
-                node.flight.set(flight);
-                node.future_flight.set(flight);
-                node.future.borrow_mut().replace(future);
-                node.in_flight.set(true);
-                node.computed.set(old.is_some());
-                node.state.set(DirtyState::Clean);
-                node.last_compute_at.set(self.revision.get());
-                node.computing.set(false);
+                let slot: FutureSlot = Rc::new(RefCell::new(Some(future)));
+                let cancel = Rc::new(Cell::new(false));
+                let node_ref = node.borrow();
+                node_ref.flight.set(flight);
+                node_ref.future_flight.set(flight);
+                node_ref.future_slot.borrow_mut().replace(Rc::clone(&slot));
+                node_ref.cancel.borrow_mut().replace(Rc::clone(&cancel));
+                node_ref.in_flight.set(true);
+                node_ref.computed.set(old.is_some());
+                node_ref.state.set(DirtyState::Clean);
+                node_ref.last_compute_at.set(self.revision.get());
+                node_ref.computing.set(false);
                 if let Some(old) = old {
-                    node.value.borrow_mut().replace(old);
+                    node_ref.value.borrow_mut().replace(old);
                 }
+                drop(node_ref);
+                self.spawn_flight(id, flight, slot, cancel);
             }
             Err(payload) => {
                 node.borrow_mut().computing.set(false);
@@ -1171,7 +1261,7 @@ impl Runtime {
 
         let previous_observer = self.observer.replace(Some(id));
         let previous_tracking = self.tracking.replace(true);
-        let previous_hold = self.hold_reads.replace(true);
+        let previous_class = self.reader_class.replace(ReaderClass::Derive);
 
         let key_now = fns.key.map(|key| key.get(&self.cx()));
         let key_changed = key_now != *fns.current_key.borrow();
@@ -1190,7 +1280,7 @@ impl Runtime {
 
         let content_result = catch_unwind(AssertUnwindSafe(|| (fns.content)(&self.cx())));
 
-        self.hold_reads.set(previous_hold);
+        self.reader_class.set(previous_class);
         self.observer.set(previous_observer);
         self.tracking.set(previous_tracking);
 
@@ -1452,6 +1542,13 @@ impl Runtime {
         node.borrow_mut().disposed.set(true);
         node.borrow_mut().state.set(DirtyState::Clean);
         node.borrow_mut().in_heap.set(false);
+        if let Some(cancel) = node.borrow_mut().cancel.borrow_mut().take() {
+            cancel.set(true);
+        }
+        if let Some(slot) = node.borrow_mut().future_slot.borrow_mut().take() {
+            slot.borrow_mut().take();
+        }
+        node.borrow_mut().in_flight.set(false);
         node.borrow_mut().value.borrow_mut().take();
         node.borrow_mut().staged.borrow_mut().take();
         node.borrow_mut().compute.borrow_mut().take();
@@ -1497,44 +1594,55 @@ impl Runtime {
     /// Flush staged writes, run computes, then applies, until stable.
     /// Poll every in-flight async future once.
     ///
-    /// A ready result is held until the next [`flush`](Self::flush), where it
-    /// becomes a committed answer. This is the host frame's "pump" step.
+    /// The host spawner is pumped first; completed flights are posted to the
+    /// runtime's completion queue and drained here. A ready result is held until
+    /// the next [`flush`](Self::flush).
     pub fn pump(&self) {
-        let ids: Vec<NodeId> = self
-            .nodes
-            .borrow()
-            .iter()
-            .map(|(handle, _)| handle.id())
-            .collect();
-
-        for id in ids {
-            let Some(node) = self.node(id) else {
+        self.spawner.pump();
+        let completions = std::mem::take(&mut *self.completions.borrow_mut());
+        for completion in completions {
+            let Some(node) = self.node(completion.node) else {
                 continue;
             };
-            if !node.borrow().in_flight.get() {
+            if node.borrow().disposed.get()
+                || node.borrow().future_flight.get() != completion.flight
+                || !node.borrow().in_flight.get()
+            {
                 continue;
             }
-            let Some(mut future) = node.borrow_mut().future.borrow_mut().take() else {
-                node.borrow_mut().in_flight.set(false);
-                continue;
-            };
-            let flight = node.borrow().future_flight.get();
-            let waker = Waker::noop();
-            let mut context = Context::from_waker(waker);
-            match future.as_mut().poll(&mut context) {
-                Poll::Pending => {
-                    node.borrow_mut().future.borrow_mut().replace(future);
-                }
-                Poll::Ready(result) => {
-                    if node.borrow().future_flight.get() != flight || node.borrow().disposed.get() {
-                        continue;
-                    }
-                    node.borrow_mut().in_flight.set(false);
-                    node.borrow_mut().async_result.borrow_mut().replace(result);
-                    self.async_ready.borrow_mut().push(id);
-                }
-            }
+            node.borrow_mut().in_flight.set(false);
+            node.borrow_mut()
+                .async_result
+                .borrow_mut()
+                .replace(completion.result);
+            self.async_ready.borrow_mut().push(completion.node);
         }
+    }
+
+    fn spawn_flight(&self, id: NodeId, flight: u64, slot: FutureSlot, cancel: Rc<Cell<bool>>) {
+        let completions = Rc::clone(&self.completions);
+        let task = std::future::poll_fn(move |context| {
+            if cancel.get() {
+                return Poll::Ready(());
+            }
+            let mut slot = slot.borrow_mut();
+            let Some(future) = slot.as_mut() else {
+                return Poll::Ready(());
+            };
+            match future.as_mut().poll(context) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(result) => {
+                    slot.take();
+                    completions.borrow_mut().push_back(Completion {
+                        node: id,
+                        flight,
+                        result,
+                    });
+                    Poll::Ready(())
+                }
+            }
+        });
+        self.spawner.spawn_local(Box::pin(task));
     }
 
     fn commit_async(&self) {
@@ -2017,7 +2125,8 @@ struct Node {
     subs: RefCell<Vec<NodeId>>,
     compute: RefCell<Option<ComputeFn>>,
     async_compute: RefCell<Option<AsyncComputeFn>>,
-    future: RefCell<Option<AsyncFuture>>,
+    future_slot: RefCell<Option<FutureSlot>>,
+    cancel: RefCell<Option<Rc<Cell<bool>>>>,
     flight: Cell<u64>,
     future_flight: Cell<u64>,
     in_flight: Cell<bool>,
@@ -2059,7 +2168,8 @@ impl Node {
             subs: RefCell::new(Vec::new()),
             compute: RefCell::new(compute),
             async_compute: RefCell::new(None),
-            future: RefCell::new(None),
+            future_slot: RefCell::new(None),
+            cancel: RefCell::new(None),
             flight: Cell::new(0),
             future_flight: Cell::new(0),
             in_flight: Cell::new(false),

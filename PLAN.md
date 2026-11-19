@@ -201,14 +201,17 @@ deterministic virtual clock. Actions, `latest`, `affects`, and full `on` are v2.
 - Held async never shows a partial frame: a snapshot assertion on every frame.
 - Stale flight completions are dropped; cancellation runs teardown exactly once.
 
-**Status (2026-11-19): core implemented.** Async memos and writable derived
-signals, flight generations, cancellation, `is_pending`, `LoadingBoundary`
-(first load, disarmed hold, key remount), `ErrorBoundary`, and the navigation/
-no-partial-frame/stale-flight tests are in place in
-[`crates/reactive-core/src/graph.rs`](crates/reactive-core/src/graph.rs) and
-[`crates/reactive-core/tests/async_graph.rs`](crates/reactive-core/tests/async_graph.rs).
-The current executor boundary is `Runtime::pump`; host `Spawner` integration and
-the full transaction/reader-class model remain follow-up work for the host frame.
+**Status (2026-11-19): implemented.** Async memos and writable derived signals,
+flight generations, cancellation, `is_pending`, `LoadingBoundary` (first load,
+disarmed hold, key remount), `ErrorBoundary`, `ReaderClass`, and the
+deterministic virtual clock are implemented in
+[`crates/reactive-core`](crates/reactive-core/src/graph.rs). Flights run through
+a host `Spawner`; `ManualSpawner` is the default and the runtime crate re-exports
+the contract ([`graph_spawner.rs`](crates/runtime/tests/graph_spawner.rs)). The
+navigation, no-partial-frame, stale-flight, virtual-clock, reader-class, and
+spawner tests are in
+[`async_graph.rs`](crates/reactive-core/tests/async_graph.rs). The full multi-node
+transaction model remains a v2 refinement.
 
 ### Phase 3 — Renderer contract and null renderer (2 weeks)
 
