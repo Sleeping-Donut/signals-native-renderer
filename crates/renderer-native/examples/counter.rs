@@ -33,10 +33,22 @@ struct CounterApp {
 fn style() -> ResolvedStyle {
     ResolvedStyle {
         text: TextStyle {
+            color: Color::new(0.92, 0.92, 0.95, 1.0),
             font_size: 20.0,
             line_height: 26.0,
-            weight: 500,
-            ..TextStyle::default()
+            weight: 400,
+        },
+        ..ResolvedStyle::default()
+    }
+}
+
+fn label_style() -> ResolvedStyle {
+    ResolvedStyle {
+        text: TextStyle {
+            color: Color::new(0.92, 0.92, 0.95, 1.0),
+            font_size: 16.0,
+            line_height: 20.0,
+            weight: 400,
         },
         ..ResolvedStyle::default()
     }
@@ -87,7 +99,7 @@ fn counter(cx: &reactive_core::Cx<'_>, shared: ReadSignal<u32>, bump: WriteSigna
 
     column(vec![
         button(
-            vec![text_fn(move |cx| format!("local {}", local.get(cx)))],
+            vec![text_fn(move |cx| format!("local {}", local.get(cx))).style(label_style())],
             move |cx| set_local.update_with(cx, |value| value + 1),
         )
         .style(button_style)
@@ -95,7 +107,7 @@ fn counter(cx: &reactive_core::Cx<'_>, shared: ReadSignal<u32>, bump: WriteSigna
         .focus_style(focus_style)
         .cursor(CursorIcon::Pointer),
         button(
-            vec![text_fn(move |cx| format!("shared {}", shared.get(cx)))],
+            vec![text_fn(move |cx| format!("shared {}", shared.get(cx))).style(label_style())],
             move |cx| bump.update_with(cx, |value| value + 1),
         )
         .style(button_style)

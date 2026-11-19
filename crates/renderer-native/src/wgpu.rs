@@ -846,7 +846,8 @@ fn draw_text_run(
 ) {
     let white = atlas.white_uv();
     for line in &layout.lines {
-        let line_y = rect.y + line.baseline - layout.ascent;
+        let baseline = rect.y + line.baseline;
+        let line_top = baseline - layout.ascent;
         for glyph in &line.glyphs {
             if !crate::is_paintable_glyph(glyph) {
                 continue;
@@ -854,7 +855,7 @@ fn draw_text_run(
             if let Some(image) = &glyph.image {
                 if let Some(entry) = atlas.ensure(image) {
                     let glyph_rect = draw_glyph(
-                        vertices, metrics, &rect, line_y, glyph, color, entry, clip, transform,
+                        vertices, metrics, &rect, baseline, glyph, color, entry, clip, transform,
                     );
                     if glyph_rect {
                         stats.atlas_glyphs += 1;
@@ -862,7 +863,7 @@ fn draw_text_run(
                     continue;
                 }
             }
-            let placeholder = placeholder_glyph(&rect, line_y, glyph, layout.ascent);
+            let placeholder = placeholder_glyph(&rect, line_top, glyph, layout.ascent);
             if let Some(placeholder) = apply_clip(placeholder.transformed(transform), clip) {
                 push_quad(vertices, metrics, placeholder, color, white);
                 stats.placeholder_glyphs += 1;
@@ -877,10 +878,10 @@ fn draw_text_run(
         .count();
 }
 
-fn placeholder_glyph(rect: &Rect, line_y: f32, glyph: &Glyph, ascent: f32) -> Rect {
+fn placeholder_glyph(rect: &Rect, line_top: f32, glyph: &Glyph, ascent: f32) -> Rect {
     Rect::new(
         rect.x + glyph.x,
-        line_y,
+        line_top + glyph.y,
         (glyph.advance * 0.65).max(0.5),
         (ascent * 0.8).max(0.5),
     )
@@ -891,7 +892,7 @@ fn draw_glyph(
     vertices: &mut Vec<u8>,
     metrics: BackendMetrics,
     rect: &Rect,
-    line_y: f32,
+    baseline: f32,
     glyph: &Glyph,
     color: renderer_api::Color,
     entry: crate::atlas::AtlasEntry,
@@ -900,7 +901,7 @@ fn draw_glyph(
 ) -> bool {
     let glyph_rect = Rect::new(
         rect.x + glyph.x + entry.left,
-        line_y + glyph.y - entry.top,
+        baseline + glyph.y - entry.top,
         entry.width,
         entry.height,
     )

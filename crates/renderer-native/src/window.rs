@@ -196,6 +196,7 @@ impl<A: WindowApp> ApplicationHandler<UserEvent> for WindowRunner<A> {
                 state
                     .window
                     .set_cursor(map_cursor(state.driver.cursor_icon()));
+                state.window.request_redraw();
             }
             WindowEvent::MouseInput {
                 state: element,
@@ -215,6 +216,7 @@ impl<A: WindowApp> ApplicationHandler<UserEvent> for WindowRunner<A> {
                         ElementState::Released => state.driver.pointer_up(&event),
                     }
                 }
+                state.window.request_redraw();
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (delta_x, delta_y) = match delta {
@@ -229,19 +231,23 @@ impl<A: WindowApp> ApplicationHandler<UserEvent> for WindowRunner<A> {
                     delta_x,
                     delta_y,
                 ));
+                state.window.request_redraw();
             }
-            WindowEvent::Ime(ime) => match ime {
-                winit::event::Ime::Preedit(text, cursor) => {
-                    state
-                        .driver
-                        .ime_preedit(&text, cursor.map(|(start, end)| start..end));
+            WindowEvent::Ime(ime) => {
+                match ime {
+                    winit::event::Ime::Preedit(text, cursor) => {
+                        state
+                            .driver
+                            .ime_preedit(&text, cursor.map(|(start, end)| start..end));
+                    }
+                    winit::event::Ime::Commit(text) => {
+                        state.driver.ime_commit(&text);
+                    }
+                    winit::event::Ime::Disabled => state.driver.ime_cancel(),
+                    winit::event::Ime::Enabled => {}
                 }
-                winit::event::Ime::Commit(text) => {
-                    state.driver.ime_commit(&text);
-                }
-                winit::event::Ime::Disabled => state.driver.ime_cancel(),
-                winit::event::Ime::Enabled => {}
-            },
+                state.window.request_redraw();
+            }
             WindowEvent::ModifiersChanged(modifiers) => {
                 let modifiers = modifiers.state();
                 state.modifiers = Modifiers::new(
@@ -260,6 +266,7 @@ impl<A: WindowApp> ApplicationHandler<UserEvent> for WindowRunner<A> {
                         text: event.text.as_ref().map(ToString::to_string),
                     };
                     state.driver.key_down(&key_event);
+                    state.window.request_redraw();
                 }
             }
             WindowEvent::Resized(size) => {
