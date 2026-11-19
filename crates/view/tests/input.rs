@@ -2,11 +2,12 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use reactive_core::{create_signal, Runtime, RuntimeHandle};
 use renderer_api::{
-    A11yRole, Key, KeyEvent, Length, Modifiers, NamedKey, Overflow, PointerButton, PointerEvent,
-    Position, ResolvedStyle, Size, TextStyle, Transform, WheelEvent,
+    A11yRole, CursorIcon, Key, KeyEvent, Length, Modifiers, NamedKey, Overflow, PointerButton,
+    PointerEvent, Position, ResolvedStyle, Size, TextStyle, Transform, WheelEvent,
 };
 use renderer_null::{NullRenderer, SharedNullRenderer};
 use view::{
@@ -483,6 +484,86 @@ fn focused_text_input_receives_keys_and_ime() {
             .any(|node| node.id == tree.renderer_id(root).unwrap()
                 && node.role == A11yRole::TextInput)
     );
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn cursor_icon_follows_hovered_node_and_ancestors() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let child = button_text("hover", |_| {}).style(px(80.0, 30.0));
+    let root = tree.mount(
+        &cx,
+        column(vec![child])
+            .style(px(200.0, 100.0))
+            .cursor(CursorIcon::Text),
+    );
+    tree.set_viewport(200.0, 100.0);
+    tree.frame(&cx, 0);
+    assert_eq!(tree.cursor(), None);
+
+    let now = Instant::now();
+    tree.pointer_move_at(&PointerEvent::new(10.0, 10.0, None), now);
+    assert_eq!(tree.cursor(), Some(CursorIcon::Text));
+
+    let child = tree.children(root)[0];
+    tree.set_cursor(child, Some(CursorIcon::Pointer));
+    tree.pointer_move_at(&PointerEvent::new(20.0, 20.0, None), now);
+    assert_eq!(tree.cursor(), Some(CursorIcon::Pointer));
+
+    tree.pointer_move_at(&PointerEvent::new(500.0, 500.0, None), now);
+    assert_eq!(tree.cursor(), None);
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn tooltip_appears_after_hover_delay_and_paints() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let root = tree.mount(
+        &cx,
+        button_text("hover", |_| {})
+            .style(px(80.0, 30.0))
+            .tooltip("Save file"),
+    );
+    tree.set_viewport(200.0, 100.0);
+    tree.frame(&cx, 0);
+    tree.set_tooltip_delay(Duration::from_millis(500));
+
+    let start = Instant::now();
+    tree.pointer_move_at(&PointerEvent::new(10.0, 10.0, None), start);
+    assert!(!tree.update_tooltip_at(start + Duration::from_millis(200)));
+    assert_eq!(tree.tooltip_visible(), None);
+    assert!(tree.update_tooltip_at(start + Duration::from_millis(600)));
+    assert_eq!(tree.tooltip_visible(), Some(root));
+
+    tree.frame(&cx, 1);
+    let scene = tree.build_scene();
+    let tooltip = scene
+        .ops()
+        .iter()
+        .find_map(|primitive| match primitive {
+            scene::Primitive::Tooltip { rect, layout, .. } => {
+                Some((*rect, layout.lines[0].text.clone()))
+            }
+            _ => None,
+        })
+        .expect("tooltip primitive");
+    assert!(tooltip.0.width > 0.0 && tooltip.0.height > 0.0);
+    assert_eq!(tooltip.1, "Save file");
+
+    tree.pointer_move_at(
+        &PointerEvent::new(500.0, 500.0, None),
+        start + Duration::from_millis(700),
+    );
+    assert_eq!(tree.tooltip_visible(), None);
+    let scene = tree.build_scene();
+    assert!(!scene
+        .ops()
+        .iter()
+        .any(|primitive| matches!(primitive, scene::Primitive::Tooltip { .. })));
 
     tree.unmount(&cx, root);
 }

@@ -1,5 +1,5 @@
 use scene::{Primitive, Rect, Scene};
-use text::Glyph;
+use text::{Glyph, ShapedLayout};
 
 use crate::atlas::{GlyphAtlas, ATLAS_SIZE};
 use crate::{BackendError, BackendMetrics, FrameStats, PaintBackend};
@@ -731,6 +731,62 @@ fn collect_vertices(
                     stats.caret_quads += 1;
                 }
             }
+            Primitive::Tooltip {
+                rect,
+                layout,
+                color,
+                background,
+                border,
+                padding,
+                clip,
+                ..
+            } => {
+                if let Some(rect) = apply_clip(*rect, *clip) {
+                    push_quad(vertices, metrics, rect, *background, white);
+                    stats.tooltip_quads += 1;
+                }
+                if let Some(outer) = apply_clip(*rect, *clip) {
+                    let mut edges = 0;
+                    let mut edge = |edge_rect: Rect| {
+                        if let Some(edge_rect) = apply_clip(edge_rect, *clip) {
+                            push_quad(vertices, metrics, edge_rect, *border, white);
+                            edges += 1;
+                        }
+                    };
+                    edge(Rect::new(outer.x, outer.y, outer.width, 1.0));
+                    edge(Rect::new(
+                        outer.x,
+                        outer.y + outer.height - 1.0,
+                        outer.width,
+                        1.0,
+                    ));
+                    edge(Rect::new(outer.x, outer.y, 1.0, outer.height));
+                    edge(Rect::new(
+                        outer.x + outer.width - 1.0,
+                        outer.y,
+                        1.0,
+                        outer.height,
+                    ));
+                    stats.border_quads += edges;
+                }
+                let text_rect = Rect::new(
+                    rect.x + padding.left,
+                    rect.y + padding.top,
+                    layout.width,
+                    layout.height,
+                );
+                draw_text_run(
+                    vertices,
+                    metrics,
+                    atlas,
+                    text_rect,
+                    layout,
+                    *color,
+                    *clip,
+                    renderer_api::Transform::IDENTITY,
+                    stats,
+                );
+            }
             Primitive::Text {
                 rect,
                 layout,
@@ -740,30 +796,9 @@ fn collect_vertices(
                 underline,
                 ..
             } => {
-                for line in &layout.lines {
-                    let line_y = rect.y + line.baseline - layout.ascent;
-                    for glyph in &line.glyphs {
-                        if let Some(image) = &glyph.image {
-                            if let Some(entry) = atlas.ensure(image) {
-                                let glyph_rect = draw_glyph(
-                                    vertices, metrics, rect, line_y, glyph, *color, entry, *clip,
-                                    *transform,
-                                );
-                                if glyph_rect {
-                                    stats.atlas_glyphs += 1;
-                                }
-                                continue;
-                            }
-                        }
-                        let placeholder = placeholder_glyph(rect, line_y, glyph, layout.ascent);
-                        if let Some(placeholder) =
-                            apply_clip(placeholder.transformed(*transform), *clip)
-                        {
-                            push_quad(vertices, metrics, placeholder, *color, white);
-                            stats.placeholder_glyphs += 1;
-                        }
-                    }
-                }
+                draw_text_run(
+                    vertices, metrics, atlas, *rect, layout, *color, *clip, *transform, stats,
+                );
                 if *underline && layout.width > 0.0 {
                     let underline_rect = Rect::new(
                         rect.x,
@@ -777,14 +812,50 @@ fn collect_vertices(
                         stats.underline_quads += 1;
                     }
                 }
-                stats.glyph_quads += layout
-                    .lines
-                    .iter()
-                    .map(|line| line.glyphs.len())
-                    .sum::<usize>();
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_text_run(
+    vertices: &mut Vec<u8>,
+    metrics: BackendMetrics,
+    atlas: &mut GlyphAtlas,
+    rect: Rect,
+    layout: &ShapedLayout,
+    color: renderer_api::Color,
+    clip: Option<Rect>,
+    transform: renderer_api::Transform,
+    stats: &mut FrameStats,
+) {
+    let white = atlas.white_uv();
+    for line in &layout.lines {
+        let line_y = rect.y + line.baseline - layout.ascent;
+        for glyph in &line.glyphs {
+            if let Some(image) = &glyph.image {
+                if let Some(entry) = atlas.ensure(image) {
+                    let glyph_rect = draw_glyph(
+                        vertices, metrics, &rect, line_y, glyph, color, entry, clip, transform,
+                    );
+                    if glyph_rect {
+                        stats.atlas_glyphs += 1;
+                    }
+                    continue;
+                }
+            }
+            let placeholder = placeholder_glyph(&rect, line_y, glyph, layout.ascent);
+            if let Some(placeholder) = apply_clip(placeholder.transformed(transform), clip) {
+                push_quad(vertices, metrics, placeholder, color, white);
+                stats.placeholder_glyphs += 1;
+            }
+        }
+    }
+    stats.glyph_quads += layout
+        .lines
+        .iter()
+        .map(|line| line.glyphs.len())
+        .sum::<usize>();
 }
 
 fn placeholder_glyph(rect: &Rect, line_y: f32, glyph: &Glyph, ascent: f32) -> Rect {

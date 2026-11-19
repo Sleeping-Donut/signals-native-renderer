@@ -3,11 +3,12 @@
 use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
+use std::time::Duration;
 
 use reactive_core::{create_signal, ReadSignal, Runtime, RuntimeHandle};
 use renderer_api::{
-    Key, KeyEvent, Length, Modifiers, Overflow, PointerButton, PointerEvent, ResolvedStyle, Size,
-    TextStyle, WheelEvent,
+    CursorIcon, Key, KeyEvent, Length, Modifiers, Overflow, PointerButton, PointerEvent,
+    ResolvedStyle, Size, TextStyle, WheelEvent,
 };
 use renderer_native::{BackendMetrics, FrameOutput, HeadlessBackend, WindowApp, WindowDriver};
 use renderer_null::{NullRenderer, SharedNullRenderer};
@@ -177,6 +178,70 @@ impl WindowApp for ScrollApp {
     }
 }
 
+struct HoverApp {
+    runtime: RuntimeHandle,
+    tree: ViewTree,
+    root: reactive_core::NodeId,
+    frames: u64,
+}
+
+impl HoverApp {
+    fn new() -> Self {
+        let runtime = Runtime::new().into_handle();
+        let renderer = Rc::new(RefCell::new(NullRenderer::new()));
+        let tree = ViewTree::new(
+            Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
+            runtime.clone(),
+        );
+        let cx = runtime.cx();
+        let root = tree.mount(
+            &cx,
+            button_text("hover", |_| {})
+                .style(px(80.0, 30.0))
+                .cursor(CursorIcon::Pointer)
+                .tooltip("Save file"),
+        );
+        Self {
+            runtime,
+            tree,
+            root,
+            frames: 0,
+        }
+    }
+}
+
+impl Drop for HoverApp {
+    fn drop(&mut self) {
+        let cx = self.runtime.cx();
+        self.tree.unmount(&cx, self.root);
+    }
+}
+
+impl WindowApp for HoverApp {
+    fn resize(&mut self, metrics: BackendMetrics) {
+        self.tree
+            .set_viewport(metrics.logical_width(), metrics.logical_height());
+        self.tree.set_scale(metrics.scale);
+    }
+
+    fn frame(&mut self, _metrics: BackendMetrics) -> FrameOutput {
+        let cx = self.runtime.cx();
+        self.frames += 1;
+        self.tree.frame(&cx, self.frames);
+        let scene = self.tree.build_scene();
+        let damage = self.tree.take_scene_damage();
+        FrameOutput::new(scene, damage)
+    }
+
+    fn pointer_move(&mut self, event: &PointerEvent) {
+        self.tree.pointer_move(event);
+    }
+
+    fn cursor_icon(&self) -> CursorIcon {
+        self.tree.cursor().unwrap_or(CursorIcon::Default)
+    }
+}
+
 struct TextApp {
     runtime: RuntimeHandle,
     tree: ViewTree,
@@ -330,6 +395,43 @@ fn window_driver_routes_accesskit_press_and_focus_actions() {
         let cx = driver.app().runtime.cx();
         assert_eq!(driver.app().count.get(&cx), 1);
     }
+}
+
+#[test]
+fn window_driver_maps_hover_cursor_and_tooltip_layer() {
+    let backend = HeadlessBackend::new(200, 100, 1.0);
+    let mut driver = WindowDriver::new(HoverApp::new(), backend);
+    driver.redraw().expect("initial frame");
+    assert_eq!(driver.cursor_icon(), CursorIcon::Default);
+
+    driver.pointer_move(&PointerEvent::new(10.0, 10.0, None));
+    assert_eq!(driver.cursor_icon(), CursorIcon::Pointer);
+
+    driver
+        .app()
+        .tree
+        .set_tooltip_delay(Duration::from_millis(0));
+    driver.redraw().expect("tooltip frame");
+    let frame = driver.backend().last().expect("frame");
+    assert!(
+        frame
+            .scene
+            .ops()
+            .iter()
+            .any(|primitive| matches!(primitive, scene::Primitive::Tooltip { .. })),
+        "tooltip primitive should be in the submitted scene"
+    );
+    assert!(frame.stats.tooltip_quads >= 1);
+
+    driver.pointer_move(&PointerEvent::new(500.0, 500.0, None));
+    assert_eq!(driver.cursor_icon(), CursorIcon::Default);
+    driver.redraw().expect("cleared frame");
+    let frame = driver.backend().last().expect("frame");
+    assert!(!frame
+        .scene
+        .ops()
+        .iter()
+        .any(|primitive| matches!(primitive, scene::Primitive::Tooltip { .. })));
 }
 
 #[test]

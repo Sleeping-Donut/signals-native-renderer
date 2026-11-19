@@ -610,6 +610,32 @@ pub enum Overflow {
     Auto,
 }
 
+/// A platform pointer cursor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CursorIcon {
+    /// The platform default arrow.
+    #[default]
+    Default,
+    /// A link or clickable control.
+    Pointer,
+    /// A text insertion caret.
+    Text,
+    /// Content that can be grabbed.
+    Grab,
+    /// Content currently being dragged.
+    Grabbing,
+    /// Precise selection.
+    Crosshair,
+    /// Movable content.
+    Move,
+    /// The action is not allowed.
+    NotAllowed,
+    /// Horizontal resize.
+    ResizeHorizontal,
+    /// Vertical resize.
+    ResizeVertical,
+}
+
 /// The resolved style sent to a backend.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ResolvedStyle {

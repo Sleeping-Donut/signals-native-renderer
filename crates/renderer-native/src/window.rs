@@ -1,13 +1,15 @@
 use std::fmt;
 use std::sync::Arc;
 
-use renderer_api::{KeyEvent, Modifiers, NamedKey, PointerButton, PointerEvent, WheelEvent};
+use renderer_api::{
+    CursorIcon, KeyEvent, Modifiers, NamedKey, PointerButton, PointerEvent, WheelEvent,
+};
 use winit::{
     dpi::{LogicalPosition, LogicalSize},
     event::{ElementState, Event, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     keyboard::{Key as WinitKey, NamedKey as WinitNamedKey},
-    window::WindowBuilder,
+    window::{CursorIcon as WinitCursorIcon, WindowBuilder},
 };
 
 use crate::{BackendError, WgpuBackend, WindowApp, WindowDriver};
@@ -73,6 +75,7 @@ pub fn run_windowed<A: WindowApp + 'static>(
                         let scale = window.scale_factor() as f32;
                         cursor = (position.x as f32 / scale, position.y as f32 / scale);
                         driver.pointer_move(&PointerEvent::new(cursor.0, cursor.1, None));
+                        window.set_cursor_icon(map_cursor(driver.cursor_icon()));
                     }
                     WindowEvent::MouseInput { state, button, .. } => {
                         let button = match button {
@@ -164,6 +167,21 @@ pub fn run_windowed<A: WindowApp + 'static>(
             }
         })
         .map_err(|error| WindowError::EventLoop(error.to_string()))
+}
+
+fn map_cursor(icon: CursorIcon) -> WinitCursorIcon {
+    match icon {
+        CursorIcon::Default => WinitCursorIcon::Default,
+        CursorIcon::Pointer => WinitCursorIcon::Pointer,
+        CursorIcon::Text => WinitCursorIcon::Text,
+        CursorIcon::Grab => WinitCursorIcon::Grab,
+        CursorIcon::Grabbing => WinitCursorIcon::Grabbing,
+        CursorIcon::Crosshair => WinitCursorIcon::Crosshair,
+        CursorIcon::Move => WinitCursorIcon::Move,
+        CursorIcon::NotAllowed => WinitCursorIcon::NotAllowed,
+        CursorIcon::ResizeHorizontal => WinitCursorIcon::EwResize,
+        CursorIcon::ResizeVertical => WinitCursorIcon::NsResize,
+    }
 }
 
 fn map_key(key: &WinitKey) -> Option<renderer_api::Key> {

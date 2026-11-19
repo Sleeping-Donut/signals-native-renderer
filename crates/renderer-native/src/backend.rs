@@ -2,7 +2,7 @@ use std::fmt;
 use std::ops::Range;
 
 use accesskit::ActionRequest;
-use renderer_api::{KeyEvent, PointerEvent, WheelEvent};
+use renderer_api::{CursorIcon, KeyEvent, PointerEvent, WheelEvent};
 use scene::{Rect, Scene};
 
 use crate::AccessKitAdapter;
@@ -95,6 +95,8 @@ pub struct FrameStats {
     pub caret_quads: usize,
     /// Composition underlines.
     pub underline_quads: usize,
+    /// Tooltip backgrounds.
+    pub tooltip_quads: usize,
     /// Glyph rectangles sourced from the atlas.
     pub atlas_glyphs: usize,
     /// Glyph rectangles rendered as placeholders.
@@ -178,6 +180,10 @@ pub trait WindowApp {
     /// Caret rectangle for IME candidate window placement.
     fn ime_cursor_area(&self) -> Option<Rect> {
         None
+    }
+    /// The pointer cursor requested by the current hover state.
+    fn cursor_icon(&self) -> CursorIcon {
+        CursorIcon::Default
     }
 }
 
@@ -306,6 +312,12 @@ impl<A: WindowApp, B: PaintBackend> WindowDriver<A, B> {
     #[must_use]
     pub fn ime_cursor_area(&self) -> Option<Rect> {
         self.app.ime_cursor_area()
+    }
+
+    /// The pointer cursor requested by the current hover state.
+    #[must_use]
+    pub fn cursor_icon(&self) -> CursorIcon {
+        self.app.cursor_icon()
     }
 
     /// Run one app frame and present it.

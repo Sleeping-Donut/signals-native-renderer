@@ -26,9 +26,11 @@ state, arrow/Home/End movement with Shift selection extension, IME preedit,
 commit, and cancel, with winit IME events routed through `WindowDriver`.
 Composition text paints with an underline, a focused caret paints as a scene
 primitive, and the caret rectangle feeds winit's IME cursor area. AccessKit
-tree generation and action routing are implemented. A concrete OS AccessKit
-adapter, richer hover/focus styling, cursor/tooltip layers, and scroll-edge
-chaining/scrollbars remain.
+tree generation and action routing are implemented. Hovered nodes request
+pointer cursors with ancestor inheritance, and delayed tooltips paint as a scene
+tooltip primitive rendered by the native backend and mapped to
+`set_cursor_icon` by the window loop. A concrete OS AccessKit adapter, richer
+hover/focus styling, and scroll-edge chaining/scrollbars remain.
 
 ---
 
@@ -369,6 +371,8 @@ Handlers receive an `A11yAction` and stage writes like any other event.
 - Focus a text input; assert composition underline and caret geometry.
 - Press arrows with and without Shift; assert caret movement and selection
   extension.
+- Hover a node and assert cursor requests, inherited cursor selection, tooltip
+  delay behavior, and tooltip scene emission.
 
 ## 9. Cursors and tooltips
 

@@ -159,6 +159,27 @@ pub enum Primitive {
         /// Whether to draw a composition underline.
         underline: bool,
     },
+    /// A tooltip overlay with shaped text and a background.
+    Tooltip {
+        /// Owning scene node.
+        node: SceneNodeId,
+        /// Outer tooltip rectangle.
+        rect: Rect,
+        /// Shaped tooltip text.
+        layout: Arc<ShapedLayout>,
+        /// Text color.
+        color: Color,
+        /// Background color.
+        background: Color,
+        /// Border color.
+        border: Color,
+        /// Inner padding.
+        padding: Edges<f32>,
+        /// Corner radii.
+        radius: Edges<f32>,
+        /// Ancestor clip in screen coordinates.
+        clip: Option<Rect>,
+    },
     /// A text caret.
     Caret {
         /// Owning scene node.
@@ -180,6 +201,7 @@ impl Primitive {
             Self::Fill { node, .. }
             | Self::Border { node, .. }
             | Self::Text { node, .. }
+            | Self::Tooltip { node, .. }
             | Self::Caret { node, .. } => *node,
         }
     }
@@ -191,6 +213,7 @@ impl Primitive {
             Self::Fill { rect, .. }
             | Self::Border { rect, .. }
             | Self::Text { rect, .. }
+            | Self::Tooltip { rect, .. }
             | Self::Caret { rect, .. } => *rect,
         }
     }

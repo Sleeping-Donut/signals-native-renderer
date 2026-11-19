@@ -13,15 +13,16 @@ use std::fmt;
 use std::hash::Hash;
 use std::ops::Range;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use layout::{LayoutEngine, LayoutId, LayoutStats, Rect, TextContent};
 use reactive_core::{
     render_effect, EffectHandle, NodeId as ViewNodeId, OwnerHandle, ReadSignal, RuntimeHandle,
 };
 use renderer_api::{
-    A11yRole, Display, Edges, ElementTag, FlexDirection, FrameInfo, Key, KeyEvent, Modifiers,
-    NamedKey, NodeId as RendererNodeId, Overflow, PointerEvent, Renderer, ResolvedStyle, Size,
-    TextMeasureRequest, TextMetrics, TextStyle, Transform, WheelEvent,
+    A11yRole, CursorIcon, Display, Edges, ElementTag, FlexDirection, FrameInfo, Key, KeyEvent,
+    Modifiers, NamedKey, NodeId as RendererNodeId, Overflow, PointerEvent, Renderer, ResolvedStyle,
+    Size, TextMeasureRequest, TextMetrics, TextStyle, Transform, WheelEvent,
 };
 use scene::{PaintTree, Primitive, Scene, SceneBuilder, SceneStats};
 use text::{MonospaceShaper, ShapedLayout, TextSystem};
@@ -45,6 +46,8 @@ struct ViewNode {
     a11y_role: A11yRole,
     a11y_label: Option<String>,
     a11y_value: Option<String>,
+    cursor: Option<CursorIcon>,
+    tooltip: Option<String>,
     view_listeners: Vec<ViewListener>,
     key_bindings: Vec<KeyBinding>,
     drag_start: Option<Rc<RefCell<DragStartFn>>>,
@@ -607,6 +610,9 @@ struct ViewTreeInner {
     last_layout: Cell<LayoutStats>,
     focused: RefCell<Option<ViewNodeId>>,
     hovered: RefCell<Option<ViewNodeId>>,
+    hover_started: Cell<Option<Instant>>,
+    tooltip: RefCell<Option<ViewNodeId>>,
+    tooltip_delay: Cell<Duration>,
     pressed: RefCell<Option<ViewNodeId>>,
     press_position: Cell<(f32, f32)>,
     drag: RefCell<Option<DragSession>>,
@@ -660,6 +666,9 @@ impl ViewTree {
                 last_layout: Cell::new(LayoutStats::default()),
                 focused: RefCell::new(None),
                 hovered: RefCell::new(None),
+                hover_started: Cell::new(None),
+                tooltip: RefCell::new(None),
+                tooltip_delay: Cell::new(Duration::from_millis(500)),
                 pressed: RefCell::new(None),
                 press_position: Cell::new((0.0, 0.0)),
                 drag: RefCell::new(None),
@@ -727,7 +736,75 @@ impl ViewTree {
             builder.build(&tree, &roots).clone()
         };
         self.inner.paint_dirty.borrow_mut().clear();
+        let mut scene = scene;
+        self.paint_tooltip(&mut scene);
         scene
+    }
+
+    fn paint_tooltip(&self, out: &mut Scene) {
+        let Some(node) = self.tooltip_visible() else {
+            return;
+        };
+        if self.hovered() != Some(node) {
+            return;
+        }
+        let (Some(renderer_id), Some(rect)) = (self.renderer_id(node), self.layout_rect(node))
+        else {
+            return;
+        };
+        let Some(text) = self
+            .inner
+            .nodes
+            .borrow()
+            .get(node)
+            .and_then(|node| node.tooltip.clone())
+        else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        let style = TextStyle::default();
+        let layout = self
+            .inner
+            .text
+            .borrow_mut()
+            .layout(&text, style, Some(320.0));
+        let anchor = scene::Rect::new(rect.x, rect.y, rect.width, rect.height)
+            .transformed(self.world_transform(node));
+        let padding = Edges {
+            top: 4.0,
+            right: 6.0,
+            bottom: 4.0,
+            left: 6.0,
+        };
+        let width = layout.width + padding.left + padding.right;
+        let height = layout.height.max(style.line_height) + padding.top + padding.bottom;
+        let viewport = self.inner.viewport.get();
+        let mut x = anchor.x;
+        let mut y = anchor.y + anchor.height + 4.0;
+        if x + width > viewport.width {
+            x = (viewport.width - width - 4.0).max(4.0);
+        }
+        if y + height > viewport.height {
+            y = (anchor.y - height - 4.0).max(4.0);
+        }
+        out.push(Primitive::Tooltip {
+            node: renderer_id,
+            rect: scene::Rect::new(x, y, width, height),
+            layout,
+            color: renderer_api::Color::new(0.96, 0.96, 0.98, 1.0),
+            background: renderer_api::Color::new(0.12, 0.12, 0.15, 0.97),
+            border: renderer_api::Color::new(0.35, 0.35, 0.42, 1.0),
+            padding,
+            radius: Edges {
+                top: 4.0,
+                right: 4.0,
+                bottom: 4.0,
+                left: 4.0,
+            },
+            clip: None,
+        });
     }
 
     /// Scene build counters from the last [`ViewTree::build_scene`].
@@ -1240,6 +1317,11 @@ impl ViewTree {
 
     /// Update hover state and return the topmost hit.
     pub fn pointer_move(&self, event: &PointerEvent) -> Option<ViewNodeId> {
+        self.pointer_move_at(event, Instant::now())
+    }
+
+    /// Update hover state with an explicit clock for tooltip timing.
+    pub fn pointer_move_at(&self, event: &PointerEvent, now: Instant) -> Option<ViewNodeId> {
         let hit = self.hit_test(event.x, event.y);
         let previous = *self.inner.hovered.borrow();
         if previous != hit {
@@ -1250,9 +1332,66 @@ impl ViewTree {
                 self.dispatch_view_event(hit, ViewEvent::PointerEnter);
             }
             *self.inner.hovered.borrow_mut() = hit;
+            *self.inner.tooltip.borrow_mut() = None;
+            self.inner.hover_started.set(hit.map(|_| now));
+        } else if hit.is_some() && self.inner.hover_started.get().is_none() {
+            self.inner.hover_started.set(Some(now));
         }
         self.update_drag(event);
         hit
+    }
+
+    /// The cursor requested by the hovered node or its nearest ancestor.
+    #[must_use]
+    pub fn cursor(&self) -> Option<CursorIcon> {
+        let mut current = self.hovered();
+        while let Some(id) = current {
+            let nodes = self.inner.nodes.borrow();
+            let node = nodes.get(id)?;
+            if let Some(cursor) = node.cursor {
+                return Some(cursor);
+            }
+            current = node.parent;
+        }
+        None
+    }
+
+    /// Set the tooltip delay. Defaults to 500ms.
+    pub fn set_tooltip_delay(&self, delay: Duration) {
+        self.inner.tooltip_delay.set(delay);
+    }
+
+    /// The node whose tooltip is currently visible.
+    #[must_use]
+    pub fn tooltip_visible(&self) -> Option<ViewNodeId> {
+        *self.inner.tooltip.borrow()
+    }
+
+    /// Reveal the hovered node's tooltip once its delay has elapsed.
+    pub fn update_tooltip_at(&self, now: Instant) -> bool {
+        let Some(hovered) = self.hovered() else {
+            return false;
+        };
+        if self.tooltip_visible() == Some(hovered) {
+            return false;
+        }
+        let has_tooltip = self.inner.nodes.borrow().get(hovered).is_some_and(|node| {
+            node.tooltip
+                .as_ref()
+                .is_some_and(|tooltip| !tooltip.is_empty())
+        });
+        if !has_tooltip {
+            return false;
+        }
+        let Some(started) = self.inner.hover_started.get() else {
+            return false;
+        };
+        if now.saturating_duration_since(started) < self.inner.tooltip_delay.get() {
+            return false;
+        }
+        *self.inner.tooltip.borrow_mut() = Some(hovered);
+        self.mark_paint_dirty(hovered);
+        true
     }
 
     /// Pointer press. Focuses the hit node when it is focusable.
@@ -2060,6 +2199,7 @@ impl ViewTree {
                 }
             }
         }
+        self.update_tooltip_at(Instant::now());
         self.clear_dirty();
         self.inner
             .renderer
@@ -2209,6 +2349,8 @@ impl ViewTree {
                 a11y_role: A11yRole::Generic,
                 a11y_label: None,
                 a11y_value: None,
+                cursor: None,
+                tooltip: None,
                 view_listeners: Vec::new(),
                 key_bindings: Vec::new(),
                 drag_start: None,
@@ -2380,6 +2522,20 @@ impl ViewTree {
         }
     }
 
+    /// Set or clear a node's pointer cursor.
+    pub fn set_cursor(&self, view: ViewNodeId, cursor: Option<CursorIcon>) {
+        if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
+            node.cursor = cursor;
+        }
+    }
+
+    /// Set or clear a node's hover tooltip.
+    pub fn set_tooltip(&self, view: ViewNodeId, tooltip: Option<String>) {
+        if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
+            node.tooltip = tooltip;
+        }
+    }
+
     fn set_disabled(&self, view: ViewNodeId, disabled: bool) {
         if let Some(node) = self.inner.nodes.borrow_mut().get_mut(view) {
             node.disabled = disabled;
@@ -2518,6 +2674,7 @@ impl ViewTree {
             .is_some_and(|hovered| hovered == id)
         {
             *self.inner.hovered.borrow_mut() = None;
+            *self.inner.tooltip.borrow_mut() = None;
         }
         if self
             .inner
@@ -2648,6 +2805,29 @@ impl View {
             let id = mount(cx, tree);
             tree.set_tab_index(id, Some(index));
             tree.set_focusable(id, true);
+            id
+        })
+    }
+
+    /// Set the pointer cursor for this view.
+    #[must_use]
+    pub fn cursor(self, cursor: CursorIcon) -> Self {
+        let mount = self.mount;
+        view(move |cx, tree| {
+            let id = mount(cx, tree);
+            tree.set_cursor(id, Some(cursor));
+            id
+        })
+    }
+
+    /// Set a tooltip shown after hovering this view.
+    #[must_use]
+    pub fn tooltip(self, tooltip: impl Into<String>) -> Self {
+        let tooltip = tooltip.into();
+        let mount = self.mount;
+        view(move |cx, tree| {
+            let id = mount(cx, tree);
+            tree.set_tooltip(id, Some(tooltip));
             id
         })
     }

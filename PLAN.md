@@ -362,9 +362,11 @@ retained input methods
 [acceptance.rs](crates/renderer-native/tests/acceptance.rs)). IME composition
 text paints with an underline, focused carets paint as scene primitives, caret
 arrow/Home/End movement supports Shift selection extension, and the caret
-rectangle feeds the winit IME cursor area. Remaining Phase 6 work: a concrete OS
-AccessKit adapter, richer hover/focus styling, cursor/tooltip layers, and
-scroll-edge chaining/scrollbars.
+rectangle feeds the winit IME cursor area. Hovered nodes request pointer cursors
+with ancestor inheritance, and delayed tooltips paint through a scene tooltip
+primitive that the native backend renders and the window loop applies through
+`set_cursor_icon`. Remaining Phase 6 work: a concrete OS AccessKit adapter,
+richer hover/focus styling, and scroll-edge chaining/scrollbars.
 
 ### Phase 7 — Stores and authoring (3–4 weeks)
 

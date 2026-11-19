@@ -92,8 +92,8 @@ order, key bindings, accessibility snapshots/actions, native winit input
 routing, content-mask clipping, translation/scale transforms, capture/bubble
 dispatch with default suppression, scroll state/wheel routing, typed
 drag/drop, focused text input/IME with painted composition and caret,
-AccessKit tree generation and action routing, and a native two-instance counter
-example.
+AccessKit tree generation and action routing, hover cursors and delayed
+tooltips, and a native two-instance counter example.
 
 CI is path-filtered: changes to prose, docs, plans, and the README do not run the
 Rust gate. Code, dependency, flake, toolchain, and workflow changes do.
