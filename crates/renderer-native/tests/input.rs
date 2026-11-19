@@ -108,6 +108,14 @@ impl WindowApp for InputApp {
     fn wheel(&mut self, event: &WheelEvent) -> bool {
         self.tree.wheel(event)
     }
+
+    fn accesskit_update(&self) -> Option<accesskit::TreeUpdate> {
+        self.tree.accesskit_tree()
+    }
+
+    fn accesskit_action(&mut self, request: &accesskit::ActionRequest) -> bool {
+        self.tree.dispatch_accesskit_action(request)
+    }
 }
 
 struct ScrollApp {
@@ -266,6 +274,47 @@ fn window_driver_exposes_accesskit_update() {
         .find_map(|(id, node)| (*id == root_id).then_some(node))
         .expect("root node");
     assert_eq!(node.role(), accesskit::Role::TextInput);
+    assert_eq!(driver.accesskit_update_count(), 1);
+}
+
+#[test]
+fn window_driver_routes_accesskit_press_and_focus_actions() {
+    let backend = HeadlessBackend::new(200, 200, 1.0);
+    let mut driver = WindowDriver::new(InputApp::new(), backend);
+    driver.redraw().expect("initial frame");
+    let update = driver.accesskit_update().expect("update");
+    let button_id = update
+        .nodes
+        .iter()
+        .find_map(|(id, node)| {
+            (node.role() == accesskit::Role::Button && node.label() == Some("+")).then_some(*id)
+        })
+        .expect("button node");
+
+    let focus = accesskit::ActionRequest {
+        action: accesskit::Action::Focus,
+        target_tree: accesskit::TreeId::ROOT,
+        target_node: button_id,
+        data: None,
+    };
+    assert!(driver.accesskit_action(&focus));
+    assert!(driver
+        .app()
+        .tree
+        .is_focused(driver.app().tree.children(driver.app().root)[1]));
+
+    let click = accesskit::ActionRequest {
+        action: accesskit::Action::Click,
+        target_tree: accesskit::TreeId::ROOT,
+        target_node: button_id,
+        data: None,
+    };
+    assert!(driver.accesskit_action(&click));
+    driver.redraw().expect("action frame");
+    {
+        let cx = driver.app().runtime.cx();
+        assert_eq!(driver.app().count.get(&cx), 1);
+    }
 }
 
 #[test]

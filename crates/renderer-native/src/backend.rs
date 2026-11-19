@@ -1,8 +1,11 @@
 use std::fmt;
 use std::ops::Range;
 
+use accesskit::ActionRequest;
 use renderer_api::{KeyEvent, PointerEvent, WheelEvent};
 use scene::{Rect, Scene};
+
+use crate::AccessKitAdapter;
 
 /// Physical and logical window metrics.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -164,6 +167,10 @@ pub trait WindowApp {
     fn accesskit_update(&self) -> Option<accesskit::TreeUpdate> {
         None
     }
+    /// Handle an AccessKit action request.
+    fn accesskit_action(&mut self, _request: &ActionRequest) -> bool {
+        false
+    }
 }
 
 /// Drives an application and a backend through resize and redraw steps.
@@ -174,6 +181,7 @@ pub struct WindowDriver<A, B> {
     frames: u64,
     last_stats: FrameStats,
     last_scene_len: usize,
+    accesskit: AccessKitAdapter,
 }
 
 impl<A: WindowApp, B: PaintBackend> WindowDriver<A, B> {
@@ -188,6 +196,7 @@ impl<A: WindowApp, B: PaintBackend> WindowDriver<A, B> {
             frames: 0,
             last_stats: FrameStats::default(),
             last_scene_len: 0,
+            accesskit: AccessKitAdapter::new(),
         }
     }
 
@@ -262,10 +271,27 @@ impl<A: WindowApp, B: PaintBackend> WindowDriver<A, B> {
         self.app.ime_cancel();
     }
 
-    /// The app's current AccessKit tree update.
+    /// The latest AccessKit tree update applied by the driver.
     #[must_use]
-    pub fn accesskit_update(&self) -> Option<accesskit::TreeUpdate> {
-        self.app.accesskit_update()
+    pub fn accesskit_update(&self) -> Option<&accesskit::TreeUpdate> {
+        self.accesskit.last_update()
+    }
+
+    /// Number of AccessKit updates applied.
+    #[must_use]
+    pub fn accesskit_update_count(&self) -> u64 {
+        self.accesskit.update_count()
+    }
+
+    /// Route an AccessKit action into the app.
+    pub fn accesskit_action(&mut self, request: &ActionRequest) -> bool {
+        self.app.accesskit_action(request)
+    }
+
+    /// The platform AccessKit adapter boundary.
+    #[must_use]
+    pub fn accesskit_adapter(&self) -> &AccessKitAdapter {
+        &self.accesskit
     }
 
     /// Run one app frame and present it.
@@ -275,6 +301,9 @@ impl<A: WindowApp, B: PaintBackend> WindowDriver<A, B> {
         self.last_stats = self.backend.render(&output.scene, &output.damage)?;
         self.backend.present()?;
         self.last_stats.presented = true;
+        if let Some(update) = self.app.accesskit_update() {
+            self.accesskit.apply(update);
+        }
         self.frames += 1;
         Ok(self.last_stats)
     }

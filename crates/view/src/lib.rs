@@ -1552,6 +1552,76 @@ impl ViewTree {
         tree
     }
 
+    /// Dispatch an AccessKit action into the retained input methods.
+    pub fn dispatch_accesskit_action(&self, request: &accesskit::ActionRequest) -> bool {
+        if request.target_tree != accesskit::TreeId::ROOT {
+            return false;
+        }
+        let Some(node) = self
+            .inner
+            .nodes
+            .borrow()
+            .iter()
+            .find(|(_, node)| node.renderer_id == request.target_node.0)
+            .map(|(handle, _)| handle.id())
+        else {
+            return false;
+        };
+        match request.action {
+            accesskit::Action::Focus => {
+                let focusable = self
+                    .inner
+                    .nodes
+                    .borrow()
+                    .get(node)
+                    .is_some_and(|node| node.focusable && !node.disabled);
+                if focusable {
+                    self.set_focus(Some(node));
+                }
+                focusable
+            }
+            accesskit::Action::Blur => {
+                if self.focused() == Some(node) {
+                    self.set_focus(None);
+                    true
+                } else {
+                    false
+                }
+            }
+            accesskit::Action::Click => self.click_node(node),
+            accesskit::Action::SetValue => {
+                let Some(input) = self.text_input(node) else {
+                    return false;
+                };
+                let Some(accesskit::ActionData::Value(value)) = &request.data else {
+                    return false;
+                };
+                let mut input = input.borrow_mut();
+                let len = input.text().len();
+                input.set_selection(0..len);
+                input.insert_text(value);
+                self.mark_paint_dirty(node);
+                true
+            }
+            accesskit::Action::SetTextSelection => {
+                let Some(input) = self.text_input(node) else {
+                    return false;
+                };
+                let Some(accesskit::ActionData::SetTextSelection(selection)) = &request.data else {
+                    return false;
+                };
+                let mut input = input.borrow_mut();
+                let text = input.text().to_string();
+                let start = char_to_byte(&text, selection.anchor.character_index);
+                let end = char_to_byte(&text, selection.focus.character_index);
+                input.set_selection(start..end);
+                self.mark_paint_dirty(node);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Build an AccessKit tree update from the current accessibility snapshot.
     #[must_use]
     pub fn accesskit_tree(&self) -> Option<accesskit::TreeUpdate> {
@@ -2340,6 +2410,12 @@ impl ViewTree {
 
 fn is_scrollable(overflow: Overflow) -> bool {
     matches!(overflow, Overflow::Scroll | Overflow::Auto)
+}
+
+fn char_to_byte(text: &str, char_index: usize) -> usize {
+    text.char_indices()
+        .nth(char_index)
+        .map_or(text.len(), |(index, _)| index)
 }
 
 fn contains_point(rect: Rect, x: f32, y: f32) -> bool {
