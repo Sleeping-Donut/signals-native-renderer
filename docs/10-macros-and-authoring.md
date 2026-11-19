@@ -53,9 +53,11 @@ output than its component function.
 `create_derived_signal(cx, ...)`, `create_async_derived_signal(cx, ...)`,
 `create_memo(cx, ...)`, `create_async_memo(cx, ...)`, `create_derived(cx, ...)`.
 Types with a single, non-combinatoric constructor use `Type::new`
-(`Store::new`, `ViewSlot::new`). All reactive operations take `&Cx`. There is no
-global graph; the context resolves the runtime and owner. Every component takes
-`cx` as its first parameter; `view!` expressions use that same `cx`.
+(`Store::new`, `ViewSlot::new`). Every writable source and memo has
+`_unchecked` (always notify) and `_with` (custom comparator) forms; the macros
+expose only the default. All reactive operations take `&Cx`. There is no global
+graph; the context resolves the runtime and owner. Every component takes `cx` as
+its first parameter; `view!` expressions use that same `cx`.
 
 Custom primitive/abstraction helpers also use `create_*`:
 `create_resource`, `create_theme`, `create_counter`, `create_todo_store`. They

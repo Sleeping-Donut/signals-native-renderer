@@ -750,14 +750,20 @@ or a measurement.
 - `create_lazy_memo` is Solid's `{ lazy: true }` memo: deferred first compute
   plus autodisposal when unobserved. It is explicit and not part of `memo!`;
   lazy is a lifecycle choice.
+- Equality is chosen by constructor: `create_signal`/`create_memo` compare
+  (`T: PartialEq`), `_unchecked` always notifies, `_with` takes a custom
+  `Fn(&T, &T) -> bool`. There is no public `Equals` enum. The first compute or
+  landing always notifies. Macros expose only the default form.
+- Reads: `get` clones (`T: Clone`), `with` borrows for the closure; there is no
+  public read guard in v1.
+- Updates: `set` replaces and compares; `update_with` maps old to new and
+  compares without cloning (Solid's updater); `update` mutates in place and
+  always notifies (the large-value/Leptos-style escape hatch).
 
 ### Leaning, needs confirmation (recommendation exists)
 
 | Area | Question | Current leaning |
 |---|---|---|
-| Core equality | Require `T: PartialEq` by default? | Yes; `create_signal_unchecked`/custom comparator escape |
-| Signal update | Should `update` compare or always notify? | Always notify; `set` compares; `update_with` if needed |
-| Memo reads | Guards or clones? | Both: guards internally, `Clone` convenience for app code |
 | Props variants | Keep `Reactive`/`Derived` or one read handle? | Collapse; both implement `Read<T>` |
 | Effects | Public `EffectHandle` or owner-only? | Both: handles for bindings, owner-scoped for app effects |
 | Ownership | Public `OwnerId`? | No; opaque `Scope`, IDs for diagnostics |
@@ -782,8 +788,6 @@ or a measurement.
 
 | Phase | Question | Why it is still open | Next step |
 |---|---|---|---|
-| 1 | Equality default and comparator API | Affects every constructor and generic bound | Decide before core API freeze |
-| 1 | Memo read representation (guard vs clone vs both) | Borrow conflicts vs ergonomics | Prototype both on the demo |
 | 1 | EffectHandle visibility | Public API surface vs binding lifetime | Decide before prelude freeze |
 | 2 | Colorless suspension implementation | Private panic payload vs custom unwinder; `panic = "abort"` | Prototype Path A/B; measure |
 | 2 | Transaction merge criterion | Sharing a reader vs sharing a node | Fuzz independent-widget shapes |
@@ -820,15 +824,18 @@ or a measurement.
 The list is intentionally larger than the set of blockers. Most items are
 phase-gated or need a prototype/measurement; they do not prevent starting.
 
-**Only four items change the Phase 0/1 type signatures or read/write behavior:**
+**One Phase 0/1 item remains: `EffectHandle` visibility.** Equality, reads, and
+`update` are resolved above. The effect decision is the shape of the handle:
 
-1. Equality default and comparator API (Phase 1).
-2. Memo read representation: guards, clones, or both (Phase 1).
-3. `EffectHandle` visibility (Phase 1).
-4. `update` equality: always notify vs compare (Phase 1).
+- A. Public `Copy` handle with explicit `dispose`; owner-scoped lifetime.
+- B. Owner-only; effects return nothing.
+- C. Handle only for `render_effect`/bindings; user effects owner-only.
+- D. RAII handle; dropping it disposes.
 
-Each has a leaning above. Accept them and Phase 0/1 can start; the decisions can
-still be revised before the core API freezes.
+A is the recommendation: it matches Leptos's explicit handle while keeping
+Solid's owner-scoped lifetime. B is the minimal fallback; C is inconsistent; D
+has the `let _ = effect(...)` footgun and loses `Copy`. Accept A and Phase 0/1
+can start; the decision can still be revised before the core API freezes.
 
 The next gate is the async core (Phase 2): colorless suspension, transaction
 merge criterion, re-ask detection, and `is_pending` in a held frame. Phase 3 adds

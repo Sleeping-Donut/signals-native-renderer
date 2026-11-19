@@ -499,18 +499,39 @@ API in v1: the tick is the batch.
 
 ## 11. Equality
 
+There is no public `Equals` enum. Equality is chosen by the constructor, which
+keeps the comparator type-safe and removes the `dyn Any` downcast:
+
+| Form | Bound | Behavior |
+|---|---|---|
+| `create_signal(cx, v)` | `T: PartialEq` | Compare writes; equal writes do not notify |
+| `create_signal_unchecked(cx, v)` | none | Always notify |
+| `create_signal_with(cx, v, eq)` | none | Custom `eq(&T, &T) -> bool`; `true` means equal |
+
+The same three forms apply to every writable source and every memo:
+
 ```rust
-pub enum Equals {
-    Always,                         // never consider equal (always notify)
-    Never,                          // consider all values equal (never notify)
-    PartialEq,                      // T: PartialEq
-    Custom(Box<dyn Fn(&dyn Any, &dyn Any) -> bool>),
-}
+create_signal(cx, value);                       // T: PartialEq
+create_signal_unchecked(cx, value);             // always notify
+create_signal_with(cx, value, |a, b| ...);      // custom comparator
+
+create_derived_signal(cx, |cx, prev| ...);      // and _unchecked / _with
+create_memo(cx, |cx, prev| ...);                // and _unchecked / _with
+create_async_memo(cx, |cx| ...);                // and _unchecked / _with
 ```
 
-Default for `T: PartialEq` is `PartialEq`; for non-`PartialEq` types, use
-`Equals::Always` (notify every write) or wrap in a newtype with a custom
-comparator. The default is chosen at the constructor via a trait bound:
+- The comparator is `Fn(&T, &T) -> bool + 'static`; `true` means equal.
+- The first compute or landing has no previous value; it is never compared and
+  always notifies.
+- A comparator panic is a node error: the boundary or root error hook handles it
+  (Solid's A3 rule).
+- `create_derived` has no node and no equality; every read runs the closure.
+- Macros (`signal!`, `memo!`) expose only the default form. `_unchecked` and
+  `_with` are explicit constructor calls.
+
+This mirrors Solid's three policies exactly: default `equals`, `equals: false`,
+and a custom `equals`. A non-`PartialEq` value uses `_unchecked`, or a newtype
+whose `PartialEq` is the comparator.
 
 ```rust
 let (read, write) = create_signal(cx, value);          // requires T: PartialEq
@@ -529,14 +550,16 @@ let (count, set_count) = create_signal(cx, v);                 // ReadSignal<T>,
 let (value, set_value) = create_derived_signal(cx, |cx, prev| ...); // writable derived
 let (value, set_value) = create_async_derived_signal(cx, |cx| ...);         // writable derived, async
 count.get(cx) / count.is_pending(cx)
-set_count.set(cx, v) / set_count.update(cx, |v| ...)
+set_count.set(cx, v)                 // replace; compares (T: PartialEq)
+set_count.update_with(cx, |&v| v)    // old -> new; compares, no clone
+set_count.update(cx, |v| ...)        // in place; always notifies
 
 // `set` replaces and compares (`T: PartialEq`).
-// `update` mutates in place. Whether it compares is still open: after the
-// closure runs the old value is gone, so comparing needs a clone. The leaning
-// is that `update` always notifies and `set` is the equality-suppressing
-// primitive; add `update_with(cx, |&T| T)` for a comparing compound write
-// without cloning.
+// `update_with` borrows the old value, returns the next, and compares without
+// cloning: this is Solid's `setCount(c => c + 1)`.
+// `update` mutates in place and always notifies: it cannot compare without a
+// clone, so it is the escape hatch for `Vec`/`HashMap`/large values. Use `set`
+// or `update_with` when equality suppression matters.
 
 // Derivations (read-only)
 create_memo(cx, |cx, prev| ...) -> Memo<T>         // sync
@@ -565,6 +588,24 @@ There is no combined public signal handle and no `RwSignal`. `create_signal()`,
 `create_derived_signal()`, and `create_async_derived_signal()` return a `(ReadSignal<T>,
 WriteSignal<T>)` pair. `Signal<T>` in the node-model sections is the internal
 full node handle; application and library code uses the halves.
+
+**Read representation.** `get` clones and `with` borrows. There is no public
+guard type in v1:
+
+```rust
+impl<T: Clone> ReadSignal<T> {
+    fn get(&self, cx: &Cx) -> T;
+}
+impl<T> ReadSignal<T> {
+    fn with<R>(&self, cx: &Cx, f: impl FnOnce(&T) -> R) -> R;
+}
+```
+
+The same applies to `Memo<T>` and `Prop<T>`. `get` is a tracked read plus clone;
+`with` is a tracked borrow scoped to the closure. The type itself does not require
+`Clone`; a non-`Clone` value is read through `with`. A public guard (`read`)
+would avoid clones but can conflict with a concurrent write; add it only if
+profiling shows clone cost, and keep `get`/`with` as the stable surface.
 
 **Uncached derived handles.** `create_derived(cx, |cx| ...)` returns a
 `Derived<T>` that runs its closure on every read. It has one constructor and no
