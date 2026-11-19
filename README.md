@@ -81,6 +81,9 @@ nix develop -c cargo bench -p reactive-core
 Phase 0 covers the generational arena, `NodeId`/`Handle`, the runtime shell, the
 manual spawner, and the benchmark harness. Phase 1 adds the reactive graph.
 
+CI is path-filtered: changes to prose, docs, plans, and the README do not run the
+Rust gate. Code, dependency, flake, toolchain, and workflow changes do.
+
 ## The one-paragraph summary
 
 One reactive graph, one retained tree, one checkpoint per frame. State and
