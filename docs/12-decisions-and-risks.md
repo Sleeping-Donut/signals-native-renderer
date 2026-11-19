@@ -815,6 +815,28 @@ or a measurement.
 | 8 | Macro error spans | Proc-macro diagnostics quality | Budget time; `trybuild` |
 | 8 | `view_builder!` | Fluent macro front-end | Stretch only; not scheduled |
 
+### Implementation readiness
+
+The list is intentionally larger than the set of blockers. Most items are
+phase-gated or need a prototype/measurement; they do not prevent starting.
+
+**Only four items change the Phase 0/1 type signatures or read/write behavior:**
+
+1. Equality default and comparator API (Phase 1).
+2. Memo read representation: guards, clones, or both (Phase 1).
+3. `EffectHandle` visibility (Phase 1).
+4. `update` equality: always notify vs compare (Phase 1).
+
+Each has a leaning above. Accept them and Phase 0/1 can start; the decisions can
+still be revised before the core API freezes.
+
+The next gate is the async core (Phase 2): colorless suspension, transaction
+merge criterion, re-ask detection, and `is_pending` in a held frame. Phase 3 adds
+the renderer `NodeId` contract and event model. Everything later is phase-local:
+props variants and component state (Phase 4/8), layout/text (Phase 5), input/a11y
+(Phase 6), stores (Phase 7), and macro syntax (Phase 8). `on` full semantics is
+v2 and `view_builder!` is a stretch goal, so neither is a v1 blocker.
+
 ### Deferred (not open for v1)
 
 - `on` full re-arm, actions, `latest`, `affects`, optimism, lanes.
