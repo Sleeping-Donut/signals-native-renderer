@@ -1087,6 +1087,18 @@ frame wait. It belongs with the lane model because a derived value over `latest`
 needs a lane to stay consistent. Without lanes, using it in a memo can tear
 against the screen, so v1 does not expose it. It returns with the v2 lane work.
 
+**Solid amended this rule on 2026-11-12.** Its previous display-ahead limit —
+"a display-ahead pass shows; it never asks" — was replaced: a pass that asks
+reads ahead as a sync pass does, so an async derivation of `latest(x)` or
+`isPending(x)` asks the screen's question too. The lane then asks twice (the
+frame's question and the screen's), and the lane's reveal waits for the screen's
+answer. The `F-2` producer clause changed with it: the hold waits for the answer
+to its **own** question, and a change never lands on the answer asked of the
+value the screen keeps. Our txn model already has that property — derivations
+join the txn and read staged values, while display readers see only committed
+values — so no v1 rule changes. The amendment does raise the cost of lanes and
+is another reason they stay deferred to v2.
+
 ### 7.3 `affects` (v2)
 
 ```rust

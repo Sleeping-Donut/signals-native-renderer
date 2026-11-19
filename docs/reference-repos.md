@@ -8,20 +8,23 @@ written against and how to restore it.
 
 | Repo | Path | Ref | Commit | Date |
 |---|---|---|---|---|
-| Solid | `refs/solid` | `next` | `f4d2bc2c2a516f5332843b9e7172caa8a4f4634a` | 2026-11-12 |
+| Solid | `refs/solid` | `main` (2.0 release) | `6888e261cee7967d3e4d6c04a5a61fad255aff1c` | 2026-11-18 |
 | Leptos | `refs/leptos` | default branch | `1434587899126c03a649828df98a363d6bd601ab` | 2026-11-12 |
 | Zed (GPUI) | `refs/zed` | default branch, sparse | `498af674abe1f054869a4d77b5a96ed8a3f12008` | 2026-11-12 |
 
-If a reference file cited in a doc has moved, search the recorded commit before
-concluding the design note is stale.
+The Solid references were originally drafted against `next` at
+`f4d2bc2c2a516f5332843b9e7172caa8a4f4634a` (2026-11-12). Solid 2.0 has since
+released and development moved to `main`; the current state above is the 2.0
+release line. If a cited file has moved, search both the release commit and the
+older `next` commit before concluding the design note is stale.
 
 ## Clone commands
 
 ```sh
 mkdir -p refs
 
-# Solid 2.0 next branch (the behavioral oracle)
-git clone --branch next --depth 1 \
+# Solid 2.0 main branch (the behavioral oracle)
+git clone --branch main --depth 1 \
   https://github.com/solidjs/solid.git refs/solid
 
 # Leptos (Rust reactive graph + stores)

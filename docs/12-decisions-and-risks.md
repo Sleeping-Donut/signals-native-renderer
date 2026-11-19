@@ -12,10 +12,11 @@ history silently. The short table in [PLAN.md](../PLAN.md) §5 is the index.
 
 **Status:** Accepted.
 
-**Context.** Solid 2.0's `next` branch contains a large, heavily tested async
-runtime. Its rules (`F-<n>`, `D-<n>`, `S-<n>`) describe observable behavior:
-frame integrity, holds, boundaries, pending, flush visibility. Its API is shaped
-by JavaScript (getters, proxies, microtasks, exceptions for control flow).
+**Context.** Solid 2.0's `main` branch (the 2.0 release line) contains a large,
+heavily tested async runtime. Its rules (`F-<n>`, `D-<n>`, `S-<n>`) describe
+observable behavior: frame integrity, holds, boundaries, pending, flush
+visibility. Its API is shaped by JavaScript (getters, proxies, microtasks,
+exceptions for control flow).
 
 **Decision.** Port the behavioral rules that matter for a native UI, in a Rust
 API. Use the rule IDs in our docs and tests so a future reader can trace a

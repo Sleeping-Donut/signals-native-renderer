@@ -125,8 +125,10 @@ without joining the hold. `isPending` is the v1 form; `latest` arrives with lane
 in v2 (`F-6`).
 
 **Lane** — the world a display-ahead read opens: the screen plus what it shows
-ahead. A lane holds on its own async separately from the hold it reads. Lanes and
-`latest` are v2; v1 ships only the `isPending` probe.
+ahead. A lane holds on its own async separately from the hold it reads. Since
+Solid's 2026-11-12 amendment, an async pass that reads ahead asks the screen's
+question as a sync pass would, so a lane can hold on both the frame's question
+and its own. Lanes and `latest` are v2; v1 ships only the `isPending` probe.
 
 **Question** — the inputs a node's value answers. An input change asks a new
 question; `refresh()` re-asks the same one quietly (`F-9`).
