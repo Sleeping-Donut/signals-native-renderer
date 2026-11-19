@@ -5,6 +5,8 @@ members = [
     "crates/renderer-api",
     "crates/renderer-null",
     "crates/layout",
+    "crates/text",
+    "crates/scene",
     "crates/runtime",
     "crates/view",
     "crates/macros",

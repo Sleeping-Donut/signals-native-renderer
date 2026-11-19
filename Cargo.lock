@@ -61,6 +61,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "scene"
+version = "0.1.0"
+dependencies = [
+ "renderer-api",
+ "text",
+]
+
+[[package]]
 name = "serde"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -139,6 +147,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "text"
+version = "0.1.0"
+dependencies = [
+ "renderer-api",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -159,4 +174,6 @@ dependencies = [
  "reactive-core",
  "renderer-api",
  "renderer-null",
+ "scene",
+ "text",
 ]

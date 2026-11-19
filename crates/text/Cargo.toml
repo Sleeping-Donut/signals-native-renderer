@@ -1,0 +1,11 @@
+[package]
+name = "text"
+description = "Text shaping, line layout, and bounded caching"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+renderer-api = { path = "../renderer-api" }

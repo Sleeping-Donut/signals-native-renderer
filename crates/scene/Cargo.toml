@@ -1,0 +1,12 @@
+[package]
+name = "scene"
+description = "Scene primitives, paint cache, replay, and damage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+renderer-api = { path = "../renderer-api" }
+text = { path = "../text" }

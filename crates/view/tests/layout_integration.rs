@@ -108,6 +108,41 @@ fn text_binding_updates_layout_but_recolor_does_not() {
 }
 
 #[test]
+fn text_cache_hits_when_the_same_string_returns() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let (value, set_value) = create_signal(&cx, "Hello".to_string());
+    let root = tree.mount(
+        &cx,
+        column(vec![text_fn(move |cx| value.get(cx))]).style(px(200.0, 100.0)),
+    );
+    tree.set_viewport(200.0, 100.0);
+    tree.frame(&cx, 0);
+    let misses = tree.text_cache_stats().misses;
+    assert!(misses >= 1);
+
+    set_value.set(&cx, "Hello!!".to_string());
+    tree.frame(&cx, 1);
+    assert!(tree.text_cache_stats().misses > misses);
+
+    set_value.set(&cx, "Hello".to_string());
+    tree.frame(&cx, 2);
+    let hits = tree.text_cache_stats().hits;
+    assert!(hits >= 1);
+    assert!(tree.text_cache_len() >= 2);
+
+    tree.frame(&cx, 3);
+    assert!(!tree.last_layout().ran);
+    assert_eq!(
+        tree.text_cache_stats().hits,
+        hits,
+        "a clean frame does not shape"
+    );
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
 fn viewport_resize_and_scale_resnap_geometry() {
     let (runtime, tree, _renderer) = setup();
     let cx = runtime.cx();

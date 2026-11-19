@@ -11,8 +11,16 @@ caches, scene replay, and the first-party render path.
 lists, keyed lists, `show`/`view_slot`, bindings, mount/unmount/frame lifecycle,
 retained focus identity, renderer-level `FocusCapable` focus, dirty/invalidation
 tracking, and the 10k-row reorder test. The allocation-profile test shows zero
-allocations for an unchanged frame, 13 for a 10k reorder, and 11 for one text
-update.
+allocations for an unchanged frame, a bounded allocation count for a 10k reorder,
+and a bounded count for one text update.
+
+The Phase 5 scene slice is in [`crates/scene`](../crates/scene/src/lib.rs):
+fill/border/text primitives, per-node paint ranges, clean-subtree replay,
+dirty-path rebuild, damage rectangles, and a full-rebuild differential test.
+[`view`](../crates/view/src/lib.rs) exposes `build_scene`, `scene_stats`, and
+`take_scene_damage`; text is shaped through the bounded cache in
+[`crates/text`](../crates/text/src/lib.rs). The wgpu backend and window loop are
+still outstanding.
 
 ---
 

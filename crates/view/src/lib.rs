@@ -11,14 +11,17 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::rc::Rc;
 
-use layout::{LayoutEngine, LayoutId, LayoutStats, MonospaceText, Rect, TextContent};
+use layout::{LayoutEngine, LayoutId, LayoutStats, Rect, TextContent};
 use reactive_core::{
     render_effect, EffectHandle, NodeId as ViewNodeId, OwnerHandle, ReadSignal, RuntimeHandle,
 };
 use renderer_api::{
-    Display, ElementTag, EventKind, FlexDirection, FrameInfo, ListenerId, NodeId as RendererNodeId,
-    Renderer, ResolvedStyle, Size, TextStyle,
+    Display, Edges, ElementTag, EventKind, FlexDirection, FrameInfo, ListenerId,
+    NodeId as RendererNodeId, Renderer, ResolvedStyle, Size, TextMeasureRequest, TextMetrics,
+    TextStyle,
 };
+use scene::{PaintTree, Primitive, Scene, SceneBuilder, SceneStats};
+use text::{MonospaceShaper, TextSystem};
 
 /// A mounted view node.
 #[derive(Debug)]
@@ -26,6 +29,7 @@ struct ViewNode {
     renderer_id: RendererNodeId,
     layout_id: LayoutId,
     style: ResolvedStyle,
+    text: Option<String>,
     parent: Option<ViewNodeId>,
     children: Vec<ViewNodeId>,
     bindings: Vec<EffectHandle>,
@@ -38,6 +42,10 @@ struct ViewTreeInner {
     renderer: Rc<RefCell<Box<dyn Renderer>>>,
     nodes: Rc<RefCell<reactive_core::Arena<ViewNode>>>,
     layout: RefCell<LayoutEngine>,
+    text: Rc<RefCell<TextSystem>>,
+    scene: RefCell<SceneBuilder<ViewNodeId>>,
+    roots: RefCell<Vec<ViewNodeId>>,
+    paint_dirty: RefCell<HashSet<ViewNodeId>>,
     pending_layout_children: RefCell<HashSet<ViewNodeId>>,
     viewport: Cell<Size<f32>>,
     last_layout: Cell<LayoutStats>,
@@ -56,11 +64,23 @@ impl ViewTree {
     /// Create a tree over a renderer and runtime.
     #[must_use]
     pub fn new(renderer: Box<dyn Renderer>, runtime: RuntimeHandle) -> Self {
+        let text = Rc::new(RefCell::new(TextSystem::new(Box::new(
+            MonospaceShaper::default(),
+        ))));
         Self {
             inner: Rc::new(ViewTreeInner {
                 renderer: Rc::new(RefCell::new(renderer)),
                 nodes: Rc::new(RefCell::new(reactive_core::Arena::new())),
-                layout: RefCell::new(LayoutEngine::new(1.0, Box::new(MonospaceText::default()))),
+                layout: RefCell::new(LayoutEngine::new(
+                    1.0,
+                    Box::new(CachedTextMeasure {
+                        text: Rc::clone(&text),
+                    }),
+                )),
+                text,
+                scene: RefCell::new(SceneBuilder::new()),
+                roots: RefCell::new(Vec::new()),
+                paint_dirty: RefCell::new(HashSet::new()),
                 pending_layout_children: RefCell::new(HashSet::new()),
                 viewport: Cell::new(Size {
                     width: 800.0,
@@ -96,6 +116,53 @@ impl ViewTree {
         self.inner.last_layout.get()
     }
 
+    /// Text shaping cache counters.
+    #[must_use]
+    pub fn text_cache_stats(&self) -> text::CacheStats {
+        self.inner.text.borrow().stats()
+    }
+
+    /// Number of shaped layouts currently cached.
+    #[must_use]
+    pub fn text_cache_len(&self) -> usize {
+        self.inner.text.borrow().cache_len()
+    }
+
+    /// Build the scene and return a snapshot of it.
+    ///
+    /// Call after [`ViewTree::frame`] so layout geometry is current.
+    pub fn build_scene(&self) -> Scene {
+        let roots = self.inner.roots.borrow().clone();
+        let dirty = self
+            .inner
+            .paint_dirty
+            .borrow()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut builder = self.inner.scene.borrow_mut();
+        let scene = {
+            let tree = ViewPaintTree { tree: self };
+            for node in dirty {
+                builder.mark_dirty(&tree, node);
+            }
+            builder.build(&tree, &roots).clone()
+        };
+        self.inner.paint_dirty.borrow_mut().clear();
+        scene
+    }
+
+    /// Scene build counters from the last [`ViewTree::build_scene`].
+    #[must_use]
+    pub fn scene_stats(&self) -> SceneStats {
+        self.inner.scene.borrow().stats()
+    }
+
+    /// Take the damage rectangles from the last scene build.
+    pub fn take_scene_damage(&self) -> Vec<scene::Rect> {
+        self.inner.scene.borrow_mut().take_damage()
+    }
+
     /// Snapped geometry for a view node, in logical pixels.
     #[must_use]
     pub fn layout_rect(&self, id: ViewNodeId) -> Option<Rect> {
@@ -127,6 +194,7 @@ impl ViewTree {
             node.style = style;
         }
         self.mark_dirty(id);
+        self.mark_paint_dirty(id);
     }
 
     /// Replace the text of a text node.
@@ -138,10 +206,17 @@ impl ViewTree {
             };
             (node.layout_id, node.style.text)
         };
-        self.inner
-            .layout
-            .borrow_mut()
-            .set_text(layout_id, Some(TextContent { text, style }));
+        self.inner.layout.borrow_mut().set_text(
+            layout_id,
+            Some(TextContent {
+                text: text.clone(),
+                style,
+            }),
+        );
+        if let Some(node) = self.inner.nodes.borrow_mut().get_mut(id) {
+            node.text = Some(text);
+        }
+        self.mark_paint_dirty(id);
     }
 
     /// Set the retained focus identity. The renderer focus system arrives in
@@ -179,6 +254,8 @@ impl ViewTree {
         if let Some(layout_id) = self.inner.nodes.borrow().get(id).map(|node| node.layout_id) {
             self.inner.layout.borrow_mut().add_root(layout_id);
         }
+        self.inner.roots.borrow_mut().push(id);
+        self.mark_paint_dirty(id);
         id
     }
 
@@ -203,6 +280,22 @@ impl ViewTree {
             .borrow_mut()
             .compute(self.inner.viewport.get());
         self.inner.last_layout.set(stats);
+        if stats.ran {
+            let changes = self.inner.layout.borrow().geometry_changes().clone();
+            if !changes.is_empty() {
+                let ids = {
+                    let nodes = self.inner.nodes.borrow();
+                    nodes
+                        .iter()
+                        .filter(|(_, node)| changes.contains(&node.layout_id))
+                        .map(|(id, _)| id.id())
+                        .collect::<Vec<_>>()
+                };
+                for id in ids {
+                    self.mark_paint_dirty(id);
+                }
+            }
+        }
         self.clear_dirty();
         self.inner
             .renderer
@@ -247,6 +340,19 @@ impl ViewTree {
     #[must_use]
     pub fn last_frame_dirty(&self) -> usize {
         self.inner.last_dirty.get()
+    }
+
+    fn mark_paint_dirty(&self, id: ViewNodeId) {
+        let mut current = Some(id);
+        while let Some(node) = current {
+            self.inner.paint_dirty.borrow_mut().insert(node);
+            current = self
+                .inner
+                .nodes
+                .borrow()
+                .get(node)
+                .and_then(|node| node.parent);
+        }
     }
 
     fn mark_dirty(&self, id: ViewNodeId) {
@@ -308,6 +414,7 @@ impl ViewTree {
         style: ResolvedStyle,
         text: Option<TextContent>,
     ) -> ViewNodeId {
+        let text_value = text.as_ref().map(|text| text.text.clone());
         let layout_id = self.inner.layout.borrow_mut().create_node(style, text);
         self.inner
             .nodes
@@ -316,6 +423,7 @@ impl ViewTree {
                 renderer_id,
                 layout_id,
                 style,
+                text: text_value,
                 parent: None,
                 children: Vec::new(),
                 bindings: Vec::new(),
@@ -395,6 +503,12 @@ impl ViewTree {
             }
         }
         self.mark_dirty(parent);
+        self.mark_paint_dirty(parent);
+        if let Some(old_parent) = old_parent {
+            if old_parent != parent {
+                self.mark_paint_dirty(old_parent);
+            }
+        }
     }
 
     fn flush_layout_children(&self) {
@@ -442,6 +556,7 @@ impl ViewTree {
     }
 
     fn remove_view(&self, cx: &reactive_core::Cx<'_>, id: ViewNodeId) {
+        self.inner.roots.borrow_mut().retain(|root| *root != id);
         if self
             .inner
             .focused
@@ -466,6 +581,7 @@ impl ViewTree {
         let (children, renderer_id, layout_id, parent) = node_data;
         if let Some(parent) = parent {
             self.mark_dirty(parent);
+            self.mark_paint_dirty(parent);
         }
 
         for child in children {
@@ -489,6 +605,7 @@ impl ViewTree {
         }
 
         self.inner.layout.borrow_mut().remove_node(layout_id);
+        self.inner.scene.borrow_mut().remove(id);
         let node = self.inner.nodes.borrow_mut().remove(id);
         if let Some(node) = node {
             for listener in node.listeners {
@@ -831,6 +948,97 @@ fn reconcile<T, K, G, R>(
     }
 
     *state.borrow_mut() = next;
+}
+
+struct ViewPaintTree<'a> {
+    tree: &'a ViewTree,
+}
+
+impl PaintTree for ViewPaintTree<'_> {
+    type Node = ViewNodeId;
+
+    fn parent(&self, node: Self::Node) -> Option<Self::Node> {
+        self.tree
+            .inner
+            .nodes
+            .borrow()
+            .get(node)
+            .and_then(|node| node.parent)
+    }
+
+    fn children(&self, node: Self::Node) -> Vec<Self::Node> {
+        self.tree.children(node)
+    }
+
+    fn bounds(&self, node: Self::Node) -> scene::Rect {
+        self.tree
+            .layout_rect(node)
+            .map(|rect| scene::Rect::new(rect.x, rect.y, rect.width, rect.height))
+            .unwrap_or_default()
+    }
+
+    fn paint(&self, node: Self::Node, out: &mut Vec<Primitive>) {
+        let Some((renderer_id, style, text, rect)) = ({
+            let nodes = self.tree.inner.nodes.borrow();
+            nodes.get(node).map(|view| {
+                (
+                    view.renderer_id,
+                    view.style,
+                    view.text.clone(),
+                    self.tree.layout_rect(node).unwrap_or_default(),
+                )
+            })
+        }) else {
+            return;
+        };
+        let rect = scene::Rect::new(rect.x, rect.y, rect.width, rect.height);
+        if let Some(color) = style.background {
+            out.push(Primitive::Fill {
+                node: renderer_id,
+                rect,
+                color,
+                radius: style.radius,
+            });
+        }
+        if style.border != Edges::default() {
+            if let Some(color) = style.border_color {
+                out.push(Primitive::Border {
+                    node: renderer_id,
+                    rect,
+                    width: style.border,
+                    color,
+                    radius: style.radius,
+                });
+            }
+        }
+        if let Some(text) = text {
+            if !text.is_empty() {
+                // Layout geometry is pixel-snapped; give shaping a half-pixel
+                // of slack so a line at the exact snapped width does not wrap.
+                let layout = self.tree.inner.text.borrow_mut().layout(
+                    &text,
+                    style.text,
+                    Some(rect.width.max(1.0) + 0.5),
+                );
+                out.push(Primitive::Text {
+                    node: renderer_id,
+                    rect,
+                    layout,
+                    color: style.text.color,
+                });
+            }
+        }
+    }
+}
+
+struct CachedTextMeasure {
+    text: Rc<RefCell<TextSystem>>,
+}
+
+impl layout::TextMeasure for CachedTextMeasure {
+    fn measure(&mut self, request: &TextMeasureRequest) -> TextMetrics {
+        self.text.borrow_mut().measure(request)
+    }
 }
 
 /// Read a signal as a row value.

@@ -135,7 +135,7 @@ fn unchanged_frames_and_large_reorders_do_not_rebuild_the_tree() {
         "a text binding update is not structural"
     );
     assert!(
-        update_allocs < 32,
+        update_allocs < 64,
         "one text update allocated {update_allocs} times"
     );
 

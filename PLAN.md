@@ -264,20 +264,30 @@ window loop, scale factor and pixel snapping.
 (color/text) does zero layout; a layout change repaints only dirty subtrees;
 resize is correct at 1×/1.5×/2×.
 
-**Status (2026-11-19): layout slice implemented.** The new
+**Status (2026-11-19): layout, text, and scene slices implemented.** The
 [`layout`](crates/layout/src/lib.rs) crate owns a persistent
 [`taffy`](https://crates.io/crates/taffy) tree, maps logical styles to taffy
-styles, measures text through a host `TextMeasure` trait, tracks layout-dirty
-nodes, and copies snapped geometry (1×/1.5×/2×) back to the tree. Paint-only
-style changes run zero layout, and geometry changes are reported per node.
-[`view`](crates/view/src/lib.rs) mounts layout nodes, defers child-list sync to
-the frame (keeping 10k-row reorders linear), and exposes `set_viewport`,
-`set_scale`, `set_style`, and `layout_rect`. Tests cover flex grow/gap/padding/
-percent/absolute layout, text auto-size, paint-only no-layout, pixel snapping,
-resize, and scale
+styles, tracks layout-dirty nodes, and copies snapped geometry (1×/1.5×/2×)
+back to the tree. Paint-only style changes run zero layout, and geometry changes
+are reported per node. [`view`](crates/view/src/lib.rs) mounts layout nodes,
+defers child-list sync to the frame (keeping 10k-row reorders linear), and
+exposes `set_viewport`, `set_scale`, `set_style`, and `layout_rect`.
+[`text`](crates/text/src/lib.rs) shapes and wraps text behind a `Shaper` trait,
+with a deterministic monospace backend, width quantization, cache counters, and
+an LRU byte budget. [`scene`](crates/scene/src/lib.rs) builds fill/border/text
+primitives, records per-node paint ranges, replays clean subtrees, rebuilds dirty
+paths, and reports damage. `view` integrates both: text measurement is cached,
+and `build_scene` emits retained primitives with replay counters.
+
+Tests cover flex grow/gap/padding/percent/absolute layout, text auto-size and
+wrapping, paint-only no-layout, pixel snapping, resize/scale, cache hits and
+eviction, paint replay versus full rebuild, damage, and scene construction
 ([layout.rs](crates/layout/tests/layout.rs),
-[layout_integration.rs](crates/view/tests/layout_integration.rs)). Text shaping,
-the scene/paint cache, wgpu, and the window loop remain.
+[shaping.rs](crates/text/tests/shaping.rs),
+[paint_cache.rs](crates/scene/tests/paint_cache.rs),
+[layout_integration.rs](crates/view/tests/layout_integration.rs),
+[scene_integration.rs](crates/view/tests/scene_integration.rs)). A platform
+shaping backend, the wgpu backend, and the window loop remain.
 
 ### Phase 6 — Input, focus, accessibility (3–4 weeks)
 

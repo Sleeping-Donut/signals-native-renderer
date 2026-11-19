@@ -10,8 +10,13 @@ text caching, images, and scroll geometry.
 `LayoutId`, `ResolvedStyle` translation, a `TextMeasure` trait, layout-dirty
 tracking, pixel snapping at the device scale, and per-node geometry changes.
 [`view`](../crates/view/src/lib.rs) mounts layout nodes and runs the pass after
-bindings flush. Text shaping/caching, the scene builder, paint cache, wgpu
-backend, and window loop are not implemented yet.
+bindings flush. Text shaping and caching are in
+[`crates/text`](../crates/text/src/lib.rs): a pluggable `Shaper` trait, a
+deterministic monospace backend, line wrapping, glyph positions, width
+quantization, cache statistics, and an LRU byte budget. `view` feeds the cache
+into layout. The scene builder and paint cache are in
+[`crates/scene`](../crates/scene/src/lib.rs). A real platform shaping backend,
+the wgpu backend, and the window loop are not implemented yet.
 
 ---
 
