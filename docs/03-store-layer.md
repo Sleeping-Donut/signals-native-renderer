@@ -151,6 +151,17 @@ Generate variant accessors (`as_loading()`, `as_ready()`) returning
 `Option<Field<...>>`; changing the variant marks the enum's value and tag
 triggers.
 
+**Foreign and opaque values.** The macro only tracks fields it understands:
+primitives, `String`, collections with adapters, and nested types that derive
+`Store`. Any other field is a **leaf**: a read tracks the path, a write through
+the field marks it, but mutation *inside* the value is invisible. A `RefCell`, a
+channel sender, an actor handle, or a third-party object that manages its own
+state must not be held expecting fine-grained updates. Either keep it out of the
+store, or treat it as a leaf and write it back through the field (`field.set`)
+after mutating it. Solid 2.0's equivalent note is the class instance that runs
+methods on the store proxy; Rust has no proxy, so the boundary is the type, not
+the syntax.
+
 ### 3.2 `#[derive(Patch)]`
 
 `patch(new_value)` replaces a value but only notifies changed fields:
