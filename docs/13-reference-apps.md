@@ -95,30 +95,40 @@ the shared value.
 ### 2.3 Port sketch
 
 ```rust
+#[derive(Clone, Copy)]
+struct SharedCount {
+    value: ReadSignal<u32>,
+    bump: WriteSignal<u32>,
+}
+
 #[component]
-fn Counter(cx: &Cx, shared: ReadSignal<u32>, bump_shared: WriteSignal<u32>) -> impl View {
+fn Counter(shared: Prop<SharedCount>) -> impl View {
+    let shared = shared.get_untracked(cx); // stable Copy handles
     let (local, set_local) = signal!(cx, 0);
+    let local_double = memo!(cx, |cx, _prev| local.get(cx) * 2);
 
     view! {
-        <Column>
+        <Column gap=8.0 padding=12.0>
             <Button on_click=move |cx, _| set_local.update(cx, |c| *c += 1)>
                 "local " {local}
             </Button>
-            <Button on_click=move |cx, _| bump_shared.update(cx, |c| *c += 1)>
-                "shared " {shared}
+            <Button on_click=move |cx, _| shared.bump.update(cx, |c| *c += 1)>
+                "shared " {shared.value}
             </Button>
-            <Text>"local double " {move |cx| local.get(cx) * 2}</Text>
+            <Text>"local double " {local_double}</Text>
         </Column>
     }
 }
 
 #[component]
-fn App(cx: &Cx) -> impl View {
+fn App() -> impl View {
     let (shared, set_shared) = signal!(cx, 0);
+    let shared = SharedCount { value: shared, bump: set_shared };
+
     view! {
-        <Column>
-            <Counter shared=shared bump_shared=set_shared />
-            <Counter shared=shared bump_shared=set_shared />
+        <Column gap=16.0 padding=16.0>
+            <Counter shared=shared />
+            <Counter shared=shared />
         </Column>
     }
 }
@@ -126,11 +136,17 @@ fn App(cx: &Cx) -> impl View {
 
 Notes:
 
-- `{local}` and `{shared}` are text bindings, not component re-runs.
-- `{move |cx| local.get(cx) * 2}` is a per-read derived expression. Do **not**
-  make it a `Memo` in this demo; the point is that it is not one.
-- Passing both handles is one option. A `SharedCount` context or a small
-  `create_counter` helper is equally valid; the check is behavior, not wiring.
+- `{local}`, `{shared.value}`, and `{local_double}` are text bindings, not
+  component re-runs.
+- `local_double` is a `memo!`, so it is cached and notifies only when the value
+  changes. The Solid original used an uncached getter; this port deliberately
+  exercises the separate-derived-value authoring. If we want the uncached
+  shape, keep a plain function and read it in a binding:
+  `{move |cx| local_double(cx, local)}`.
+- Passing a `Copy` bundle of handles as a prop avoids context plumbing and makes
+  ownership obvious: both counters receive the same handles, and each owns its
+  `local`. A `SharedCount` context or a small `create_counter` helper is equally
+  valid; the check is behavior, not wiring.
 
 ### 2.4 Acceptance checks
 
@@ -276,17 +292,23 @@ let (city, set_city) = derived_signal(cx, move |cx, _prev| {
 });
 
 view! {
-    <LoadingBoundary fallback=|| view! { <Text>"Loading…"</Text> }>
-        <Column>
-            <For each=states key=|name| name.clone() children=|name| {
-                // Placeholder for <option>; no Select widget in the core
-                // vocabulary yet. A real Select would call set_state from its
-                // on_select handler. Behavior is what matters here.
-                view! { <Text>{name}</Text> }
-            } />
-            <For each=cities key=|name| name.clone() children=|name| {
-                view! { <Button disabled=move |cx| is_pending(cx, cities)>{name}</Button> }
-            } />
+    <LoadingBoundary fallback=|| view! {
+        <Column padding=16.0>
+            <Text>"Loading…"</Text>
+        </Column>
+    }>
+        <Column gap=12.0 padding=16.0>
+            <Select
+                items=states
+                selected=state
+                on_select=move |cx, name| set_state.set(cx, name)
+            />
+            <Select
+                items=cities
+                selected=city
+                disabled=move |cx| is_pending(cx, cities)
+                on_select=move |cx, name| set_city.set(cx, name)
+            />
             <Text>
                 "Selection: " {city} ", " {state}
             </Text>
@@ -297,6 +319,10 @@ view! {
 
 Notes:
 
+- `Select` is a **component-library** widget (a `components` crate built on the
+  element vocabulary), not a core element like `Column`. If the component layer
+  does not exist yet, the fallback is two `For` lists of selectable rows; the
+  reactive wiring is identical.
 - `derived_signal` is the right constructor for `state` and `city`: they are
   writable, their compute is synchronous, and pending comes from the async read.
   `async_derived_signal` would also work but would misrepresent the compute.
@@ -304,9 +330,6 @@ Notes:
   cannot cross an `await`; the owned `String` is what the future needs.
 - `set_state` and `set_city` are the write halves. The demo never calls them from
   an effect; the resets are consequences of the derived computes.
-- The `For` bodies need real keyed children; the sketch uses buttons because the
-  core has no `Select` yet. Add a `Select`/`ListBox` when the widget vocabulary
-  grows; do not change the reactive wiring to fit the widget.
 - If you add `on={state.get(cx)}` to the boundary, the expected frames change:
   the fallback would show on every state change. That is the `on` distinction in
   [04-async-model.md](04-async-model.md) §6.1; keep this demo without it.
@@ -354,7 +377,7 @@ Notes:
 | `disabled={expr}` | `disabled=...` reactive attribute |
 | `onClick` | `on_click` |
 | plain function read | per-read derived expression; no node unless memoized |
-| `<select>/<option>` | not in the core vocabulary yet; use a placeholder list |
+| `<select>/<option>` | `Select`/`ListBox` in the `components` crate, not a core element |
 
 Rust-specific traps:
 

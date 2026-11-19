@@ -388,6 +388,24 @@ if !counter.count.is_pending(cx) {
 }
 ```
 
+### 3.6 Element vocabulary vs component library
+
+The element vocabulary is the lower layer: structure and native controls that
+every backend can support. It stays small — `Column`, `Row`, `Box`, `Text`,
+`Button`, `TextInput`, and a few layout or decoration elements. These are
+`ElementKind`s, renderer capabilities, and what `view!` compiles to.
+
+Composed widgets are **not** elements. `Select`, `ListBox`, `Menu`, `Dialog`,
+`ScrollView`, `Tabs`, and `Tooltip` belong in a `components` crate built on
+`view` and `reactive-core`. They are ordinary components with props, children,
+focus, and overlays; they do not add `ElementKind` variants or renderer
+capabilities unless they need a new native primitive.
+
+This split keeps `renderer-api` small and stable for third-party backends, lets
+the widget layer change without backend churn, and avoids a widget zoo in the
+core. The `Select` in [13-reference-apps.md](13-reference-apps.md) is the
+example: a button, a popup, and a `For` list, with no backend changes.
+
 ## 4. Control-flow helpers
 
 ### 4.1 `Show`

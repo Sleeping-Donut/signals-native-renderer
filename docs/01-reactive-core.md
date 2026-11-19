@@ -531,6 +531,13 @@ let (value, set_value) = async_derived_signal(cx, |cx| ...);         // writable
 count.get(cx) / count.is_pending(cx)
 set_count.set(cx, v) / set_count.update(cx, |v| ...)
 
+// `set` replaces and compares (`T: PartialEq`).
+// `update` mutates in place. Whether it compares is still open: after the
+// closure runs the old value is gone, so comparing needs a clone. The leaning
+// is that `update` always notifies and `set` is the equality-suppressing
+// primitive; add `update_with(cx, |&T| T)` for a comparing compound write
+// without cloning.
+
 // Derivations (read-only)
 Memo::new(cx, |cx, prev| ...) -> Memo<T>         // sync
 Memo::new_async(cx, |cx| ...) -> Memo<T>         // async

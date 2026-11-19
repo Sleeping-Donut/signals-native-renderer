@@ -117,6 +117,7 @@ reactive-core
   ├── runtime                 (core + view + renderer-api + platform)
   ├── renderer-null           (renderer-api)
   ├── renderer-native         (view + layout + text + platform + wgpu)
+  ├── components              (view + reactive-core; Select, ListBox, Menu, …)
   ├── platform                (winit/window/input/accessibility)
   └── prelude                 (re-exports)
 ```
@@ -134,6 +135,11 @@ Hard rules:
 4. `renderer-native` may bypass `renderer-api` internally. If it implements the
    universal contract, that implementation is an adapter, never the hot path.
 5. `runtime` is the only crate that owns the frame loop and the host boundary.
+6. `components` is a higher layer than the element vocabulary. `Select`,
+   `ListBox`, `Menu`, `Dialog`, `ScrollView`, and similar widgets are composed
+   from `view` nodes and `reactive-core`; they should not add an `ElementKind`
+   or a `renderer-api` capability unless a new native primitive is unavoidable.
+   The element set stays small and backend-stable.
 
 Workspace layout:
 
@@ -151,6 +157,7 @@ crates/
 ├── platform/               # window, input, IME, AccessKit adapters
 ├── renderer-native/        # retained tree backend, scene, wgpu paint
 ├── renderer-null/          # recording renderer + conformance target
+├── components/             # Select, ListBox, Menu, Dialog, ScrollView
 ├── macros/                 # view!, #[component]
 └── prelude/                # re-exports
 examples/

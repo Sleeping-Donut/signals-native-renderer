@@ -739,6 +739,7 @@ or a measurement.
 | Area | Question | Current leaning |
 |---|---|---|
 | Core equality | Require `T: PartialEq` by default? | Yes; `signal_unchecked`/custom comparator escape |
+| Signal update | Should `update` compare or always notify? | Always notify; `set` compares; `update_with` if needed |
 | Memo reads | Guards or clones? | Both: guards internally, `Clone` convenience for app code |
 | Props variants | Keep `Reactive`/`Derived` or one read handle? | Collapse; both implement `Read<T>` |
 | Effects | Public `EffectHandle` or owner-only? | Both: handles for bindings, owner-scoped for app effects |
