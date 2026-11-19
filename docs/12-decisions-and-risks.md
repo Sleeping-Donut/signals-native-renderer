@@ -766,6 +766,7 @@ or a measurement.
 | Phase | Question | Why it is still open | Next step |
 |---|---|---|---|
 | 1 | Equality default and comparator API | Affects every constructor and generic bound | Decide before core API freeze |
+| 1 | Uncached derived read handle | Memo-only forces a node for cheap derivations; Solid functions and Leptos `Signal::derive` do not | Prototype with the counter; decide before props freeze |
 | 1 | Memo read representation (guard vs clone vs both) | Borrow conflicts vs ergonomics | Prototype both on the demo |
 | 1 | EffectHandle visibility | Public API surface vs binding lifetime | Decide before prelude freeze |
 | 2 | Colorless suspension implementation | Private panic payload vs custom unwinder; `panic = "abort"` | Prototype Path A/B; measure |

@@ -142,7 +142,9 @@ Notes:
   changes. The Solid original used an uncached getter; this port deliberately
   exercises the separate-derived-value authoring. If we want the uncached
   shape, keep a plain function and read it in a binding:
-  `{move |cx| local_double(cx, local)}`.
+  `{move |cx| local_double(cx, local)}`. A first-class uncached derived handle
+  (Solid's function form, Leptos's `Signal::derive`) is an open question in
+  [12-decisions-and-risks.md](12-decisions-and-risks.md) Part F.
 - Passing a `Copy` bundle of handles as a prop avoids context plumbing and makes
   ownership obvious: both counters receive the same handles, and each owns its
   `local`. A `SharedCount` context or a small `create_counter` helper is equally
@@ -215,7 +217,9 @@ render(() => <App />, document.getElementById("app")!);
 ### 3.1 What it exercises
 
 - **Async is a compute mode.** `states` and `cities` are memos whose compute is
-  async. There is no `AsyncMemo` type; they read like memo values.
+  async. There is no `AsyncMemo` type; they read like memo values. They are
+  memos for a stronger reason than caching: a flight, cancellation, and a staged
+  answer need a node. An uncached closure cannot carry async state.
 - **A sync derived signal can be pending.** `state` and `city` have synchronous
   computes but read async values, so they suspend on first load and replay at
   commit. This is the clearest small proof that pending belongs to the node, not
