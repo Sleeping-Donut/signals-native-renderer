@@ -323,6 +323,15 @@ reinsert it (and reinsert its subscribers if their invariant is now violated).
 Solid's `insertIntoHeap` reuses `IN_HEAP`/`IN_HEAP_HEIGHT` flags to avoid
 duplicates.
 
+Solid's 2026-11 update (`#4848`, `liftOwned` in `heap.ts`) also raises the
+raised node's **owned** computations through roots, and moves an owned child
+that is already waiting in the heap with it. Without that, an owner can be
+raised above a grandchild it owns, and the owner's run disposes the grandchild
+before the grandchild runs. Our arena makes ownership explicit, so we should
+enforce the invariant directly: **a node's height must exceed the height of
+every node it owns**, and raising a node raises its owned subtree. This matters
+for `Show`/`Switch` branches, where disposal is owner-driven.
+
 Heights are a heuristic for order, not a proof of topology. `Check` verification
 is the correctness net: if a node runs too early, its `Check` state forces it to
 ensure dependencies are clean before recompute.
