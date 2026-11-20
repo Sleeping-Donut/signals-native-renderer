@@ -81,8 +81,10 @@ form uses `ElementKind::Row`, `ElementKind::Text`, `ElementKind::Button`, etc.
 attributes for `style`, `hover_style`, `focus_style`, `cursor`, `tooltip`,
 `disabled_when`, `tab_index`, `focusable`, and `disabled`. `Button` requires
 `on_click`. `For` expands to `keyed_list`; `Embed` inserts an existing `View`.
-`Loading` takes `ready={...}` and `fallback={...}` and expands to the
-view-aware loading boundary:
+`Loading` currently takes `ready={...}` and `fallback={...}` and expands to the
+view-aware loading boundary. `ready` is transitional: the final API is
+`<Loading fallback={...}>` with the boundary observing pending reads while it
+mounts the content.
 
 ```rust
 <Loading

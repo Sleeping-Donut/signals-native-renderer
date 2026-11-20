@@ -408,8 +408,10 @@ complete under the hardware-adapted M3 Pro baseline.
 `view!` now supports attributes, `Loading`, `For`, and `Embed`; both demo files
 are split into `model`/`styles`/`signals`/`app` modules and use the authoring
 macros. The states/cities UI uses the view-aware `<Loading>` form instead of the
-`bool + view_slot` bridge. Store derives, fields, patches, keyed stores, and
-store diagnostics remain. The states/cities demo does not depend on stores; it
+`bool + view_slot` bridge. That `<Loading>` still takes an explicit
+`ready={...}` probe; removing it is a required Phase 7 authoring follow-up once
+the view boundary can observe pending reads while mounting content. Store
+derives, fields, patches, keyed stores, and store diagnostics remain. The states/cities demo does not depend on stores; it
 builds on the Phase 2 async primitives and the Phase 4–6 view/input layers.
 
 **Build:** `#[derive(Store)]`, `Field`/`Subfield`, `Patch`, keyed collections,
