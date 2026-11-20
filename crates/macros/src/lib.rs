@@ -356,3 +356,186 @@ pub fn component(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
     quote! { #[allow(non_snake_case)] #function }.into()
 }
+
+enum BuilderArg {
+    Builder(Builder),
+    Expr(Expr),
+}
+
+impl Parse for BuilderArg {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        if input.peek(Ident) {
+            let fork = input.fork();
+            let ident: Ident = fork.parse()?;
+            if ident
+                .to_string()
+                .chars()
+                .next()
+                .is_some_and(char::is_uppercase)
+            {
+                return Ok(Self::Builder(input.parse()?));
+            }
+        }
+        Ok(Self::Expr(input.parse()?))
+    }
+}
+
+struct BuilderMethod {
+    name: Ident,
+    arg: Option<BuilderArg>,
+}
+
+struct Builder {
+    tag: Ident,
+    methods: Vec<BuilderMethod>,
+}
+
+impl Parse for Builder {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        let tag: Ident = input.parse()?;
+        if !tag
+            .to_string()
+            .chars()
+            .next()
+            .is_some_and(char::is_uppercase)
+        {
+            return Err(syn::Error::new_spanned(
+                tag,
+                "builder tags start with an uppercase letter",
+            ));
+        }
+        let mut methods = Vec::new();
+        while input.peek(Token![.]) {
+            input.parse::<Token![.]>()?;
+            let name: Ident = input.parse()?;
+            let arg = if input.peek(syn::token::Paren) {
+                let content;
+                syn::parenthesized!(content in input);
+                Some(content.parse()?)
+            } else {
+                None
+            };
+            methods.push(BuilderMethod { name, arg });
+        }
+        Ok(Self { tag, methods })
+    }
+}
+
+fn builder_tokens(builder: &Builder) -> Result<TokenStream2> {
+    let tag = builder.tag.to_string();
+    let mut children = Vec::new();
+    let mut value = None;
+    let mut on_click = None;
+    let mut attrs: Vec<(&'static str, Expr)> = Vec::new();
+
+    for method in &builder.methods {
+        let name = method.name.to_string();
+        match name.as_str() {
+            "child" => match method.arg.as_ref() {
+                Some(BuilderArg::Builder(child)) => children.push(builder_tokens(child)?),
+                Some(BuilderArg::Expr(expr)) => children.push(quote! { #expr }),
+                None => {
+                    return Err(syn::Error::new_spanned(
+                        &method.name,
+                        "child requires an argument",
+                    ))
+                }
+            },
+            "value" => {
+                let Some(BuilderArg::Expr(expr)) = method.arg.as_ref() else {
+                    return Err(syn::Error::new_spanned(
+                        &method.name,
+                        "value requires an expression",
+                    ));
+                };
+                value = Some(expr.clone());
+            }
+            "on_click" => {
+                let Some(BuilderArg::Expr(expr)) = method.arg.as_ref() else {
+                    return Err(syn::Error::new_spanned(
+                        &method.name,
+                        "on_click requires a closure",
+                    ));
+                };
+                on_click = Some(expr.clone());
+            }
+            "style" | "hover_style" | "focus_style" | "cursor" | "tooltip" | "disabled_when"
+            | "tab_index" | "focusable" | "disabled" => {
+                let Some(BuilderArg::Expr(expr)) = method.arg.as_ref() else {
+                    return Err(syn::Error::new_spanned(
+                        &method.name,
+                        "attribute requires an expression",
+                    ));
+                };
+                let key = match name.as_str() {
+                    "style" => "style",
+                    "hover_style" => "hover_style",
+                    "focus_style" => "focus_style",
+                    "cursor" => "cursor",
+                    "tooltip" => "tooltip",
+                    "disabled_when" => "disabled_when",
+                    "tab_index" => "tab_index",
+                    "focusable" => "focusable",
+                    "disabled" => "disabled",
+                    _ => unreachable!(),
+                };
+                attrs.push((key, expr.clone()));
+            }
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    &method.name,
+                    format!("unsupported builder method `{name}`"),
+                ))
+            }
+        }
+    }
+
+    let base = match tag.as_str() {
+        "Column" => quote! { ::view::column(vec![#(#children),*]) },
+        "Row" => quote! { ::view::row(vec![#(#children),*]) },
+        "Text" => {
+            let value = value.ok_or_else(|| {
+                syn::Error::new_spanned(&builder.tag, "Text requires .value(...)")
+            })?;
+            quote! { ::view::text_fn(move |cx| (#value).to_string()) }
+        }
+        "Button" => {
+            let on_click = on_click.ok_or_else(|| {
+                syn::Error::new_spanned(&builder.tag, "Button requires .on_click(...)")
+            })?;
+            quote! { ::view::button(vec![#(#children),*], #on_click) }
+        }
+        _ => {
+            return Err(syn::Error::new_spanned(
+                &builder.tag,
+                "builder supports Column, Row, Text, and Button",
+            ))
+        }
+    };
+
+    let mut tokens = base;
+    for (key, value) in attrs {
+        let key = syn::Ident::new(key, builder.tag.span());
+        tokens = quote! { (#tokens).#key(#value) };
+    }
+    Ok(tokens)
+}
+
+/// Fluent builder-chain authoring.
+///
+/// ```ignore
+/// view_builder! {
+///     Column
+///         .style(styles::root())
+///         .child(Text.value(format!("count {}", count.get(cx))))
+///         .child(Button.on_click(move |cx| bump(cx)).child(Text.value("+")))
+/// }
+/// ```
+#[proc_macro]
+pub fn view_builder(input: TokenStream) -> TokenStream {
+    let builder = parse_macro_input!(input as Builder);
+    match builder_tokens(&builder) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}

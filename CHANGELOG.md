@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Experimental `view_builder!` fluent authoring front-end.
+- Component children and the `view::select` selectable-list component.
+- Automatic view-aware `Loading` no longer needs a `ready` probe.
+
 ## v0.1.0 — 2026-11-20
 
 First pre-release. Phases 0–8 are implemented.
@@ -33,8 +39,7 @@ First pre-release. Phases 0–8 are implemented.
 - Pointer/key/wheel/IME dispatch, focus/tab order, drag/drop.
 - Hover/focus state styles, cursors, tooltips, scroll chaining/scrollbars.
 - AccessKit tree generation, `accesskit_winit` OS adapter, action routing.
-- Automatic view-aware `Loading`, component/props tags with children, and
-  `view::select`.
+- Automatic view-aware `Loading` and component/props tags.
 
 ### Async demo
 

@@ -445,13 +445,12 @@ is green.
 
 ### Stretch goals (not scheduled)
 
-- **`view_builder!`** — a second proc-macro front-end that parses fluent
-  builder-chain syntax (`Row.gap(8).child(Text.value(label))`) and emits the
-  same direct `cx.element` / component-mount calls as `view!`. It is a syntax
-  front-end, not a runtime builder, so runtime cost should match `view!` when the
-  emitter is shared. It is explicitly unimportant and not in any phase: it adds a
-  second syntax, documentation, and weaker IDE/type diagnostics inside the macro.
-  Only pursue if fluent syntax is strongly requested.
+- **`view_builder!` — implemented (experimental).** A second proc-macro
+  front-end parses fluent builder-chain syntax
+  (`Column.child(Text.value(label))`) and emits the same view constructors as
+  `view!`. Supported: `Column`, `Row`, `Text`, `Button`, children, `value`,
+  `on_click`, and shared state/style attributes. It remains a second syntax with
+  weaker IDE diagnostics, so `view!` stays the recommended authoring form.
 
 ### Milestones
 

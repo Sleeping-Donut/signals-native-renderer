@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use macros::{component, view};
+use macros::{component, view, view_builder};
 use std::future::poll_fn;
 use std::task::Poll;
 
@@ -255,5 +255,37 @@ fn view_macro_component_children() {
     let child = tree.children(root)[0];
     let text = tree.renderer_id(child).unwrap();
     assert_eq!(renderer.borrow().text_of(text), Some("inside"));
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn view_builder_builds_a_counter() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let renderer = Rc::new(RefCell::new(NullRenderer::new()));
+    let tree = ViewTree::new(
+        Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
+        runtime.clone(),
+    );
+    let (count, set_count) = signal!(&cx, 0_u32);
+    let root = tree.mount(
+        &cx,
+        view_builder! {
+            Column
+                .child(Text.value(format!("count {}", count.get(cx))))
+                .child(
+                    Button
+                        .on_click(move |cx| set_count.update_with(cx, |value| value + 1))
+                        .child(Text.value("+"))
+                )
+        },
+    );
+    tree.frame(&cx, 0);
+    let children = tree.children(root);
+    let text = tree.renderer_id(children[0]).unwrap();
+    assert_eq!(renderer.borrow().text_of(text), Some("count 0"));
+    tree.click_node(children[1]);
+    tree.frame(&cx, 1);
+    assert_eq!(renderer.borrow().text_of(text), Some("count 1"));
     tree.unmount(&cx, root);
 }

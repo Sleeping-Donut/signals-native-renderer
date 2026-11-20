@@ -33,7 +33,7 @@ in-tree apps and examples.
 - Automatic `Loading` internals (effect readiness tokens, subtree collection).
 - Store enum tuple-variant ergonomics, dynamic-store schema helpers.
 - Damage scissoring, incremental layout, and partial presentation.
-- `view_builder!` and other authoring macros.
+- `view_builder!` fluent syntax; `view!` remains the recommended form.
 
 ## Compatibility notes
 

@@ -94,7 +94,24 @@ detection from the mounted content is explicitly Phase 8 work.
 </Loading>
 ```
 
-Component tags are supported by convention: `<Badge label={...} />` expands to
+`view_builder!` is the second, experimental front-end:
+
+```rust
+view_builder! {
+    Column
+        .style(styles::root())
+        .child(Text.value(format!("count {}", count.get(cx))))
+        .child(
+            Button
+                .on_click(move |cx| set_count.update_with(cx, |v| v + 1))
+                .child(Text.value("+"))
+        )
+}
+```
+
+It is a syntax front-end, not a separate runtime. It currently supports
+`Column`, `Row`, `Text`, `Button`, children, values, `on_click`, and the shared
+state/style attributes. Component tags are supported by convention: `<Badge label={...} />` expands to
 `Badge(&cx, BadgeProps { label: ... })`; mark the function with
 `#[component]`. Component props can use `Prop<T>` for static/reactive values.
 Component content is passed as a `children: View` prop; named slots are ordinary
