@@ -11,8 +11,8 @@
 implemented in [`reactive-stores`](../crates/reactive-stores/src/lib.rs).
 Reads track one path; writes mark that path, its ancestors, and descendants when
 a whole subtree is replaced. Keyed patches use shallow list writes so unchanged
-key handles are not invalidated. Enum variant stores, dynamic stores, and the
-draft guard remain future work.
+key handles are not invalidated. Enum variant stores and dynamic stores are Phase 8; the
+`Draft<T>` guard is implemented.
 
 ---
 

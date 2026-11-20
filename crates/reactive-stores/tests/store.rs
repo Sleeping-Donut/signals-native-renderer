@@ -156,6 +156,20 @@ fn keyed_patch_marks_only_changed_keys() {
 }
 
 #[test]
+fn draft_writes_on_drop() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let store = Store::new(&cx, app());
+    {
+        let mut draft = store.user().draft(&runtime);
+        draft.age += 1;
+        assert_eq!(draft.age, 31);
+    }
+    cx.flush().unwrap();
+    assert_eq!(store.user().age().get(&cx), 31);
+}
+
+#[test]
 fn keyed_rows_survive_reorder() {
     let runtime = Runtime::new();
     let cx = runtime.cx();

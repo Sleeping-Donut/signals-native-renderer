@@ -12,7 +12,7 @@ use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-use reactive_core::{create_signal, Cx, OwnerHandle, ReadSignal, WriteSignal};
+use reactive_core::{create_signal, Cx, OwnerHandle, ReadSignal, RuntimeHandle, WriteSignal};
 
 pub use reactive_stores_macro::{Patch, Store};
 
@@ -304,6 +304,20 @@ impl<T: Clone + 'static> Field<T> {
         }
     }
 
+    /// Start a draft update. The write lands when the guard drops.
+    #[must_use]
+    pub fn draft(&self, runtime: &RuntimeHandle) -> Draft<T>
+    where
+        T: Clone,
+    {
+        let value = self.get(&runtime.cx());
+        Draft {
+            field: self.clone(),
+            runtime: runtime.clone(),
+            value,
+        }
+    }
+
     /// The store path.
     #[must_use]
     pub fn path(&self) -> &str {
@@ -487,6 +501,34 @@ impl<T: Clone + 'static, K: Clone + Eq + Hash + 'static> KeyedField<T, K> {
                 (key.clone(), self.at_key_value(&key))
             })
             .collect()
+    }
+}
+
+/// A clone-modify-swap draft. Dropping the guard writes the value back.
+pub struct Draft<T: Clone + 'static> {
+    field: Field<T>,
+    runtime: RuntimeHandle,
+    value: T,
+}
+
+impl<T: Clone + 'static> std::ops::Deref for Draft<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl<T: Clone + 'static> std::ops::DerefMut for Draft<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
+    }
+}
+
+impl<T: Clone + 'static> Drop for Draft<T> {
+    fn drop(&mut self) {
+        let cx = self.runtime.cx();
+        self.field.set(&cx, self.value.clone());
     }
 }
 

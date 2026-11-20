@@ -422,10 +422,12 @@ store aliasing.
 **Exit:** field-granular notification verified; nested stores compose; keyed list
 patch only dirties changed keys; the example app uses no manual `notify`.
 
-### Phase 8 — Hardening and performance (ongoing)
+### Phase 8 — Hardening, remaining authoring, and performance (ongoing)
 
-**Build:** incremental layout experiments, damage regions, text cache eviction,
-arena compaction only if measurements demand it, fuzzers, benchmarks, devtools.
+**Build:** enum/dynamic stores, automatic view-aware `Loading` (no `ready`
+probe), a component/props macro, incremental layout experiments, damage regions,
+text cache eviction, arena compaction only if measurements demand it, fuzzers,
+benchmarks, devtools.
 
 **Exit:** published performance report; no unbounded growth in a 24-hour churn
 test; third-party null renderer conformance suite is green.

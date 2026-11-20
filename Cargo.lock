@@ -2004,6 +2004,7 @@ dependencies = [
  "macros",
  "pollster",
  "reactive-core",
+ "reactive-stores",
  "renderer-api",
  "renderer-null",
  "scene",

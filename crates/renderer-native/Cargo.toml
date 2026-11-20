@@ -19,6 +19,7 @@ accesskit_winit = { version = "0.34.2", optional = true }
 
 [dev-dependencies]
 macros = { path = "../macros" }
+reactive-stores = { path = "../reactive-stores" }
 layout = { path = "../layout" }
 reactive-core = { path = "../reactive-core" }
 renderer-null = { path = "../renderer-null" }
@@ -39,6 +40,10 @@ required-features = ["window"]
 
 [[example]]
 name = "states"
+required-features = ["window"]
+
+[[example]]
+name = "store_counter"
 required-features = ["window"]
 
 [features]
