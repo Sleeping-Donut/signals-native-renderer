@@ -319,7 +319,7 @@ The node itself remains, so its position and style (e.g. a wrapper) are stable.
 A `Match`/`Switch` node generalizes this to keyed branches; only the active
 branch is mounted.
 
-`KeepAlive` (v1.1) moves the inactive branch's owner to a cache and re-inserts
+`KeepAlive` (v0.1.1) moves the inactive branch's owner to a cache and re-inserts
 it on return, preserving state.
 
 ## 6. Structure: keyed lists
@@ -463,8 +463,8 @@ it incrementally after a change, assert equal.
 The scene builder can union the bounds of dirty nodes into a `Damage` list. The
 backend may:
 
-- redraw the whole surface (v1, simplest);
-- scissor to damage rects and blend (v2);
+- redraw the whole surface (v0.1, simplest);
+- scissor to damage rects and blend (v0.2);
 - keep a texture atlas and update only damaged tiles.
 
 **What wgpu can and cannot do.** Retained-mode partial work splits into three
@@ -485,7 +485,7 @@ layers:
 
 So: retained-mode **scene and command** partial updates work with wgpu. Partial
 **fragment work** works with an offscreen retained target plus scissor. Partial
-**present bandwidth** does not, portably. v1 presents the whole scene; v2 can add
+**present bandwidth** does not, portably. v0.1 presents the whole scene; v0.2 can add
 the offscreen retained target and damage scissoring; v3 can add a native backend
 for true partial present if power/bandwidth measurements justify it.
 
@@ -628,5 +628,5 @@ Compiled shape (simplified):
    cache measured widths.
 5. **Paint roots.** A window is the natural root; layers (overlays, tooltips) are
    separate roots. How do we scope damage to a layer?
-6. **KeepAlive.** Is it needed in v1? Tabs and navigation state are common; maybe
-   a `KeepAlive` wrapper in v1.1.
+6. **KeepAlive.** Is it needed in v0.1? Tabs and navigation state are common; maybe
+   a `KeepAlive` wrapper in v0.1.1.

@@ -2,8 +2,8 @@
 
 **Crates:** `reactive-core` (async state, holds) + `runtime` (spawner, queues)
 **Owns:** flights, continuations, staged values, holds, reader classes,
-boundaries, `isPending`, and the v1 async subset of the Solid 2.0 rules.
-`latest`, actions, `affects`, and full `on` are v2.
+boundaries, `isPending`, and the v0.1 async subset of the Solid 2.0 rules.
+`latest`, actions, `affects`, and full `on` are v0.2.
 
 **Implementation status (2026-11-19).** Phase 2 is implemented across
 [`graph.rs`](../crates/reactive-core/src/graph.rs),
@@ -14,7 +14,7 @@ derived signals, flight generations, cancellation, `is_pending`,
 (display/derive/observe), and the deterministic virtual clock. Async flights are
 spawned through a host `Spawner`; `ManualSpawner` is the default and the runtime
 crate re-exports the contract. The full multi-node transaction model is still a
-v2 refinement; the boundary hold covers the v1 cases.
+v0.2 refinement; the boundary hold covers the v0.1 cases.
 
 **No async-runtime lock-in.** `reactive-core` depends on no executor. Flights
 are `LocalBoxFuture`s spawned through the host-supplied [`Spawner`]; a tokio
@@ -28,7 +28,7 @@ not a production scheduler requirement.
 
 Solid 2.0's async model is large: holds, transactions, boundaries, display-ahead
 readers, lanes, optimistic guesses, declared lag, deferred sources, actions, and
-a dozen error-recovery rules. Implementing all of it in v1 would dominate the
+a dozen error-recovery rules. Implementing all of it in v0.1 would dominate the
 schedule.
 
 We implement the **navigation and loading model** first, because it is what makes
@@ -49,11 +49,11 @@ We defer:
 - `F-11` optimistic writes;
 - actions and `affects` (they rely on the hold/verdict machinery we are not
   building yet);
-- full `LoadingBoundary::on` re-arm (v1 uses a `key` remount; see §6.1);
+- full `LoadingBoundary::on` re-arm (v0.1 uses a `key` remount; see §6.1);
 - `F-8` (withdrawn in the reference) and the deferred/lag rules;
 - optimistic store overlays and lane-derived async.
 
-`isPending` stays in v1 in its basic form (a new question is in flight or a
+`isPending` stays in v0.1 in its basic form (a new question is in flight or a
 landed answer is held). It does not need optimism or lanes.
 
 The node and transaction shapes leave room for the deferred pieces; see §11.
@@ -87,7 +87,7 @@ pub trait BackgroundSpawner {
 }
 ```
 
-- The runtime calls `spawn_local` for every async memo (and, in v2, action).
+- The runtime calls `spawn_local` for every async memo (and, in v0.2, action).
 - The future must be `'static` and run on the UI thread's local executor. It may
   `await` I/O; the actual I/O happens wherever the host's reactor or background
   executor runs.
@@ -248,7 +248,7 @@ the same capabilities:
 |---|---|---|---|---|
 | `&Cx` | No | Yes | Yes | Mount, events, sync compute |
 | `CxHandle` | Yes | Yes | No | Async compute |
-| `ActionCx` | Yes | Yes | Yes, joins the action txn | Actions (v2) |
+| `ActionCx` | Yes | Yes | Yes, joins the action txn | Actions (v0.2) |
 | `TaskCx` | Yes | Yes | Yes, mainline | Detached tasks and continuations |
 
 - `CxHandle` is cloneable and `!Send`; the runtime is UI-thread-affine. It keeps
@@ -818,7 +818,7 @@ Every compute pass has a class, set by what created it:
 pub enum ReaderClass {
     Derive,    // a memo or a user-effect compute
     Display,   // a render effect / binding
-    Observe,   // isPending probe (latest arrives with lanes in v2)
+    Observe,   // isPending probe (latest arrives with lanes in v0.2)
 }
 ```
 
@@ -852,7 +852,7 @@ first compute synchronously so the subtree is initialized before layout. It is a
 
 If that first compute reads a `Loading` node outside an armed boundary, the mount
 is aborted and retried when the node lands. The parent structural binding keeps a
-placeholder in its place. v1 requires async reads in newly mounted content to be
+placeholder in its place. v0.1 requires async reads in newly mounted content to be
 under an armed `LoadingBoundary`; mounting arbitrary async content into an
 already-visible frame without a boundary is a documented limitation. The full
 Solid model treats this as "born held" and ties the mount to the hold
@@ -968,8 +968,8 @@ nodes/readers/flights; the older id survives.
 ```rust
 pub struct LoadingBoundary {
     armed: bool,
-    key: Option<Memo<Key>>,    // v1: changing the key remounts the boundary
-    on: Option<OnDeps>,        // v2: dependency-list re-arm, notification only
+    key: Option<Memo<Key>>,    // v0.1: changing the key remounts the boundary
+    on: Option<OnDeps>,        // v0.2: dependency-list re-arm, notification only
     content: ViewNodeId,
     fallback: ViewNodeId,
 }
@@ -984,18 +984,18 @@ Semantics:
 - **Disarmed** (has shown content): a `NotReady` is forwarded to the enclosing
   transaction. The boundary keeps showing content, registers as a display reader,
   and replays at commit. This is `F-5`.
-- **`key` remount (v1)**: if the key memo changes, the boundary is disposed and
+- **`key` remount (v0.1)**: if the key memo changes, the boundary is disposed and
   remounted under the same parent. The new boundary is fresh/armed, so a load
   shows the fallback, then content. This covers the common navigation/reload
   shape without the full `on` semantics. State inside the content is lost.
-- **`on` re-arm (v2)**: when the `on` memo changes, the boundary arms again
+- **`on` re-arm (v0.2)**: when the `on` memo changes, the boundary arms again
   without remounting. If something under it is pending, it shows the fallback
   with the change's frame; otherwise the arm is a no-op. This requires the full
   boundary/txn interaction (`F-4`/`F-5`, `D-15`/`D-16`), so it is deferred.
 - **Nested boundaries**: the nearest armed boundary catches. A disarmed inner
   boundary forwards to the outer boundary/transaction.
 
-Why `on` is v2: it is not just "reset a bool". It must identify the frame of the
+Why `on` is v0.2: it is not just "reset a bool". It must identify the frame of the
 change that armed it, keep the fallback off screen when the same data is read
 outside the boundary, collect pending readers that were already forwarded, and
 interact with lanes when the `on` read is display-ahead. Those are the cases in
@@ -1030,7 +1030,7 @@ In Solid:
   waiting on it and the fallback can never be shown; that is a structural
   diagnostic (`LOADING_ON_OUTSIDE_HOLD`), not a bug in `on`.
 - Children are not re-created in Solid; they stay alive behind the fallback.
-  Our v1 disposes content, so a `key` remount is equivalent in observable
+  Our v0.1 disposes content, so a `key` remount is equivalent in observable
   behavior for the common case.
 
 **`on` is a notification, not a value.** This is the part that is easy to get
@@ -1054,7 +1054,7 @@ LoadingBoundary::new(cx)
 ```
 
 `view!` sugar can lower `on={product_id.get(cx)}` to that closure later, but the
-primitive should not depend on the macro. `on` remains v2 because the frame
+primitive should not depend on the macro. `on` remains v0.2 because the frame
 questions below are about the boundary, not about the API shape.
 
 **Leptos equivalent.** Leptos does not have an `on` dependency list. Its coarse
@@ -1065,14 +1065,14 @@ version is the choice between `<Suspense>` and `<Transition>`:
 - `<Transition>` keeps the old content after the first load and never falls back
   for later changes.
 - To force a fallback for a specific change, you key/remount the branch (or use
-  the router's route-keyed view). That is exactly our v1 `key` remount.
+  the router's route-keyed view). That is exactly our v0.1 `key` remount.
 
 Solid's `on` is the granular middle: keep the boundary disarmed for refetches,
 but re-arm it for a named dependency without remounting children. That is why it
-is v2 for us: it needs the fuller boundary/txn model, while `Suspense` vs
-`Transition` and keyed remount cover the common cases in v1.
+is v0.2 for us: it needs the fuller boundary/txn model, while `Suspense` vs
+`Transition` and keyed remount cover the common cases in v0.1.
 
-v1 simplification: content behind a fallback is **disposed** when the fallback is
+v0.1 simplification: content behind a fallback is **disposed** when the fallback is
 shown, and rebuilt on reveal. Solid keeps it alive but off screen. Disposing is
 simpler and avoids "hidden content holds nothing" bookkeeping; it loses scroll
 position and local state. Provide a `KeepAlive` wrapper later if needed.
@@ -1152,7 +1152,7 @@ to `ErrorBoundary`; rendered `Result` values hoist by type.
 
 These are direct translations of `F-4`/`F-5`/`F-9`.
 
-## 7. Verdicts: `isPending` (v1), `latest` and `affects` (v2)
+## 7. Verdicts: `isPending` (v0.1), `latest` and `affects` (v0.2)
 
 ### 7.1 `isPending`
 
@@ -1173,14 +1173,14 @@ Returns false when:
 - the node is loading (no committed value) — that is loading, not pending;
 - the node is idle or errored with a committed previous value and no new question.
 
-`affects()` marks are v2; v1 implements the two flight/staging causes. The
+`affects()` marks are v0.2; v0.1 implements the two flight/staging causes. The
 "landed value staged" case is the txn's `staged` flag.
 
 **It must be readable during the hold.** The hold is the only window in which
 `isPending` is useful: after the commit, the new question has an answer. Solid
 shows this directly — a pending text updates while the values it describes stay
 committed (`refs/solid/packages/web/test/ispending-combined-atomic-3442.spec.tsx`).
-Our v1 rule: a Display pass that computes entirely from committed values may
+Our v0.1 rule: a Display pass that computes entirely from committed values may
 apply during a hold. Its value reads are the committed ones, so the applied
 result is value-identical; only a verdict read can differ. A pass that hits
 `NotReady` (no committed value) is still held or caught by a boundary. This is a
@@ -1188,7 +1188,7 @@ result is value-identical; only a verdict read can differ. A pass that hits
 The reader-class plumbing is not frozen; the states-and-cities demo in
 [13-reference-apps.md](13-reference-apps.md) is the check for it.
 
-### 7.2 `latest` (v2)
+### 7.2 `latest` (v0.2)
 
 ```rust
 pub fn latest<T: Clone>(cx: &Cx, memo: Memo<T>) -> Result<T, LatestError>
@@ -1201,7 +1201,7 @@ pub fn latest<T: Clone>(cx: &Cx, memo: Memo<T>) -> Result<T, LatestError>
 `latest` is a display-ahead read: it does not join the txn and does not make the
 frame wait. It belongs with the lane model because a derived value over `latest`
 needs a lane to stay consistent. Without lanes, using it in a memo can tear
-against the screen, so v1 does not expose it. It returns with the v2 lane work.
+against the screen, so v0.1 does not expose it. It returns with the v0.2 lane work.
 
 **Solid amended this rule on 2026-11-12.** Its previous display-ahead limit —
 "a display-ahead pass shows; it never asks" — was replaced: a pass that asks
@@ -1212,10 +1212,10 @@ answer. The `F-2` producer clause changed with it: the hold waits for the answer
 to its **own** question, and a change never lands on the answer asked of the
 value the screen keeps. Our txn model already has that property — derivations
 join the txn and read staged values, while display readers see only committed
-values — so no v1 rule changes. The amendment does raise the cost of lanes and
-is another reason they stay deferred to v2.
+values — so no v0.1 rule changes. The amendment does raise the cost of lanes and
+is another reason they stay deferred to v0.2.
 
-### 7.3 `affects` (v2)
+### 7.3 `affects` (v0.2)
 
 ```rust
 pub fn affects<T>(cx: &Cx, node: &T);
@@ -1223,9 +1223,9 @@ pub fn affects<T>(cx: &Cx, node: &T);
 
 Declares "this data is changing" without a value write. It marks the node and
 its derivations pending until the next commit. It is the declared-pending half of
-the optimistic/verdict model, so it moves with that model to v2.
+the optimistic/verdict model, so it moves with that model to v0.2.
 
-## 8. Actions (v2)
+## 8. Actions (v0.2)
 
 An action is an explicit hold around a future:
 
@@ -1256,18 +1256,18 @@ not ambient thread state.
 
 ## 9. Rule subset and what each buys
 
-| Rule | v1? | Mechanism |
+| Rule | v0.1? | Mechanism |
 |---|---|---|
 | `F-1` screen is whole | Yes | Display reads committed; txn commit is atomic. |
 | `F-2` async changes are held | Yes | `NotReady`/`CommittedPending` opens a txn. |
 | `F-3` reader holds while display | Partial | Display readers register per txn; disposed readers are removed. No "fallback hidden reader" edge cases. |
 | `F-4` armed boundary catches | Yes | First-load fallback; no txn for caught readers. |
 | `F-5` disarmed boundary forwards | Yes | Keeps content; reader joins txn. |
-| `F-6` display-ahead lanes | Subset (v1 verdict only) | `is_pending` shows its verdict during a hold; `latest` and value lanes are v2. |
-| `F-7` nothing reveals ahead | Values only | Staged values reveal at commit; the v1 `is_pending` verdict may show during a hold. |
+| `F-6` display-ahead lanes | Subset (v0.1 verdict only) | `is_pending` shows its verdict during a hold; `latest` and value lanes are v0.2. |
+| `F-7` nothing reveals ahead | Values only | Staged values reveal at commit; the v0.1 `is_pending` verdict may show during a hold. |
 | `F-9` pending semantics | Subset | New question vs re-ask; basic `isPending`; no `affects`/store-wide marks. |
 | `F-10` flush visibility | Yes | Staged writes. |
-| `F-11` optimistic | No (v2) | Deferred with actions/affects. |
+| `F-11` optimistic | No (v0.2) | Deferred with actions/affects. |
 | `F-12` errors | Yes | ErrorBoundary; pending is not an error. |
 
 ### 9.1 Documented deviations from Solid 2.0
@@ -1277,14 +1277,14 @@ not ambient thread state.
   defaulting read. `is_pending` is the verdict. This is not a throw-to-user-code
   channel; `D-42` still applies.
 - **Content is disposed on fallback entry.** Solid keeps it alive but off screen.
-  Use `KeepAlive` (v1.1) for state that must survive.
+  Use `KeepAlive` (v0.1.1) for state that must survive.
 - **No born-held mounts outside a boundary.** A newly mounted subtree that reads
   loading async must be under an armed boundary. The full model ties the mount to
   the hold (`A29`); we defer it.
-- **No `latest` in v1.** It arrives with the lane model in v2.
-- **No optimistic writes, actions, or `affects` in v1.** The node shape reserves
-  space; the machinery is v2.
-- **Actions require `ActionCx` (v2).** There is no ambient async context in Rust,
+- **No `latest` in v0.1.** It arrives with the lane model in v0.2.
+- **No optimistic writes, actions, or `affects` in v0.1.** The node shape reserves
+  space; the machinery is v0.2.
+- **Actions require `ActionCx` (v0.2).** There is no ambient async context in Rust,
   so a write after `await` joins an action only through the action's capability.
 
 ## 10. Testing
@@ -1320,7 +1320,7 @@ Required tests:
 - Fuzz: random graph of async memos, writes, and boundaries; assert every frame
   is a snapshot consistent with some committed txn state.
 
-## 11. v2: lanes, optimism, actions, `latest`, `on`
+## 11. v0.2: lanes, optimism, actions, `latest`, `on`
 
 The node shape reserves:
 
@@ -1339,7 +1339,7 @@ When we add `F-6`/`F-11`:
 5. Actions, `affects`, and full `on` arrive with the same verdict/hold
    machinery; they are not independent features.
 
-Do not start this until the v1 navigation model is stable and the conformance
+Do not start this until the v0.1 navigation model is stable and the conformance
 suite is green. The reference implementation
 (`refs/solid/packages/signals/src/core/{lanes,optimistic,guesses}.ts`) shows how
 much machinery is involved; it is not a weekend addition.
@@ -1350,11 +1350,11 @@ much machinery is involved; it is not a weekend addition.
    no public try/default read. The open part is whether the unwind should be a
    real panic payload or a custom `ControlFlow`-based unwinder; `panic = "abort"`
    forces the internal fallback.
-2. **Boundary content lifetime.** v1 disposes on fallback; Solid keeps alive.
+2. **Boundary content lifetime.** v0.1 disposes on fallback; Solid keeps alive.
    Which is the better default for a native app with scroll/focus state?
-3. **Action writes after await (v2).** `ActionCx` is required. Is that too
+3. **Action writes after await (v0.2).** `ActionCx` is required. Is that too
    restrictive for library code that takes a plain `Cx`?
-4. **`affects` (v2).** It should move with the verdict machinery; confirm the
+4. **`affects` (v0.2).** It should move with the verdict machinery; confirm the
    arity and store coverage at that point.
 5. **Merging transactions.** Sharing a reader is our merge criterion. Is sharing
    a *node* enough, or does that over-merge independent widgets?

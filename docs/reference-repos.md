@@ -85,5 +85,5 @@ top-level `THIRD_PARTY.md` (see ADR Q8 in
 - **GPUI** proves retained view identity, per-view paint caching, scene replay,
   taffy layout, and AccessKit integration at application scale.
 
-No other repository is required for v1. If one is added, record its commit here
+No other repository is required for v0.1. If one is added, record its commit here
 first.

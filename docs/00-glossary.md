@@ -98,7 +98,7 @@ readers need (`F-2`).
 reader registrations, and the frame at which it commits.
 
 **Reader** — a computation that displays a value. In the full Solid model only a
-render effect is a reader; memos participate through their readers. In v1, our
+render effect is a reader; memos participate through their readers. In v0.1, our
 `ReaderClass` distinguishes *derive*, *display*, and *observe*.
 
 **Display** — a render effect that puts a value on screen.
@@ -120,17 +120,17 @@ suspends to a boundary or holds the mount.
 
 **Latest** — the newest value a node has produced, including a held staged value.
 `latest` is display-ahead: it may show a held change before the screen reveals
-it (`F-6`). It arrives with the lane model in v2.
+it (`F-6`). It arrives with the lane model in v0.2.
 
 **Display-ahead** — a read that shows a held value or a verdict about it now,
-without joining the hold. `isPending` is the v1 form; `latest` arrives with lanes
-in v2 (`F-6`).
+without joining the hold. `isPending` is the v0.1 form; `latest` arrives with lanes
+in v0.2 (`F-6`).
 
 **Lane** — the world a display-ahead read opens: the screen plus what it shows
 ahead. A lane holds on its own async separately from the hold it reads. Since
 Solid's 2026-11-12 amendment, an async pass that reads ahead asks the screen's
 question as a sync pass would, so a lane can hold on both the frame's question
-and its own. Lanes and `latest` are v2; v1 ships only the `isPending` probe.
+and its own. Lanes and `latest` are v0.2; v0.1 ships only the `isPending` probe.
 
 **Question** — the inputs a node's value answers. An input change asks a new
 question; `refresh()` re-asks the same one quietly (`F-9`).
@@ -142,7 +142,7 @@ quiet: `isPending` stays false, and the fresh value reveals silently.
 refetching (`createDeferred`). It lags but never leads.
 
 **Optimistic write / guess** — a tentative value shown while a hold is open
-(`F-11`). Not in v1.
+(`F-11`). Not in v0.1.
 
 ## View and rendering
 
@@ -175,7 +175,7 @@ node.
 nodes replay their range.
 
 **Damage** — the union of changed regions; used by the backend to decide how much
-to rasterize/present. Optional in v1.
+to rasterize/present. Optional in v0.1.
 
 **Keyed list** — a list whose rows are identified by a key, so reordering
 preserves row state and bindings.

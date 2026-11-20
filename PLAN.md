@@ -1,6 +1,6 @@
 # PLAN
 
-**Status:** Draft 2 — review decisions folded in (v1/v2 scope, async reads, props, rebuild, license).
+**Status:** Draft 2 — review decisions folded in (v0.1/v0.2 scope, async reads, props, rebuild, license).
 **Supersedes:** `PLAN-OUTLINE.md` (kept as the original brief).
 **Companion docs:** [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`docs/`](docs/README.md).
 
@@ -44,7 +44,7 @@ hidden background executor owned by the framework.
 
 ## 3. Scope
 
-### 3.1 In scope for v1
+### 3.1 In scope for v0.1
 
 - Reactive core with signals, memos, split effects, render effects, batching, and
   ownership.
@@ -54,7 +54,7 @@ hidden background executor owned by the framework.
 - `LoadingBoundary` and `ErrorBoundary`, with the subset of Solid's hold model
   described in [04-async-model.md](docs/04-async-model.md): first load, held
   navigation, disarmed forwarding, and errors. A `key`-triggered boundary remount
-  substitutes for `on` in v1.
+  substitutes for `on` in v0.1.
 - Derived stores with per-field and per-key granularity.
 - Universal renderer contract, null renderer, and a conformance suite.
 - Retained native renderer: element tree, bindings, keyed lists, conditionals,
@@ -65,12 +65,12 @@ hidden background executor owned by the framework.
   tracing, and a live graph inspector.
 - Deterministic test runtime and a headless scene renderer.
 
-### 3.2 Explicitly out of scope for v1
+### 3.2 Explicitly out of scope for v0.1
 
 - Optimistic writes (`F-11`), actions, `latest`, `affects`, and full
   display-ahead/lane semantics (`F-6`). The node shape leaves room for them; the
-  machinery lands in v2.
-- Full `LoadingBoundary::on` re-arm semantics. v1 uses a `key` that remounts the
+  machinery lands in v0.2.
+- Full `LoadingBoundary::on` re-arm semantics. v0.1 uses a `key` that remounts the
   boundary, which covers navigation and reload without the re-arm edge cases
   (`F-4`/`F-5`, `D-15`/`D-16`).
 - SSR, hydration, and server functions. The renderer contract must not assume a
@@ -134,8 +134,8 @@ bindings). A section-by-section mapping from the outline is in
 | D4 | **Writes stage; the flush promotes.** Staged writes are invisible to readers until the frame checkpoint. | `F-10` is load-bearing for async holds and for `latest`/`isPending`. Retrofitting it later would touch every read path. | Eager writes with a "dirty" notification. |
 | D5 | **Async is Phase 2, not Phase 6.** | Flight state, staged values, and reader classes determine the node shape and scheduler. Building the renderer first would force a core rewrite. | Outline order (renderer before async). |
 | D6 | **Retained element tree with per-node bindings**, plus a `ViewSlot` for structural replacement. | Matches the fine-grained graph: one signal write updates one text run, not a whole component subtree. Retains a GPUI-like subtree replacement as the escape hatch, without making it a second renderer model. | GPUI's fully ephemeral element tree (coarse); a virtual DOM (diff tax). |
-| D7 | **Taffy full layout on layout-dirty frames; incremental layout is a later optimization.** | Correctness first; paint-only frames can skip layout entirely, which is the common case. | Promising incremental flex/grid layout in v1. |
-| D8 | **wgpu** for the first-party paint backend. | Cross-platform, testable offscreen, one shader path. | Metal/D3D/Blade per platform in v1. |
+| D7 | **Taffy full layout on layout-dirty frames; incremental layout is a later optimization.** | Correctness first; paint-only frames can skip layout entirely, which is the common case. | Promising incremental flex/grid layout in v0.1. |
+| D8 | **wgpu** for the first-party paint backend. | Cross-platform, testable offscreen, one shader path. | Metal/D3D/Blade per platform in v0.1. |
 | D9 | **Derive-macro stores** (Leptos-style), not a proxy emulation. | Compile-time paths are fast and Rust-idiomatic; dynamic stores are an explicit opt-in. | A `Deref`-based fake proxy with runtime interception. |
 | D10 | Rename **`renderer-gpui` → `renderer-native`**; rename **`universal` → `renderer-api`**. | The renderer does not use GPUI, and "universal" is a Solid-ism. Layer names stay recognisable in prose. | Keeping misleading crate names. |
 | D11 | **Single UI thread**; async may run elsewhere, but state mutation and rendering are thread-affine. | Removes atomic and lock costs, matches both reference systems, and keeps frame determinism. | A multi-threaded graph with `Send` nodes. |
@@ -190,7 +190,7 @@ scale/timing tests are ignored under Miri because they measure wall-clock time.
 generations, async compute mode for derived signals and memos, basic `isPending`,
 `LoadingBoundary` (first load, disarmed forwarding, `key` remount),
 `ErrorBoundary`, staged holds, reader classes (derive / display / observe),
-deterministic virtual clock. Actions, `latest`, `affects`, and full `on` are v2.
+deterministic virtual clock. Actions, `latest`, `affects`, and full `on` are v0.2.
 
 **Exit:**
 - A navigation test: click → page B data loads → old page stays on screen →
@@ -215,7 +215,7 @@ cities wiring runs on the retained view tree in
 [`async_city.rs`](crates/view/tests/async_city.rs) and as a native app in
 [`examples/states.rs`](crates/renderer-native/examples/states.rs), covering
 first-load sequencing, pending refetch, derived selection reset, manual city
-selection, and supersession. The full multi-node transaction model remains a v2
+selection, and supersession. The full multi-node transaction model remains a v0.2
 refinement.
 
 ### Phase 3 — Renderer contract and null renderer (2 weeks)
@@ -404,9 +404,12 @@ complete under the hardware-adapted M3 Pro baseline.
 
 ### Phase 7 — Stores and authoring (3–4 weeks)
 
-**Status (2026-11-19): not started.** The states/cities demo does not depend on
-stores; it builds directly on the Phase 2 async primitives and the Phase 4–6
-view/input layers.
+**Status (2026-11-20): authoring slice started.** `signal!` and `memo!` exist;
+`view!` now supports attributes, `For`, and `Embed`; both demo files are split
+into `model`/`styles`/`signals`/`app` modules and use the authoring macros. Store
+derives, fields, patches, keyed stores, and store diagnostics remain. The
+states/cities demo does not depend on stores; it builds on the Phase 2 async
+primitives and the Phase 4–6 view/input layers.
 
 **Build:** `#[derive(Store)]`, `Field`/`Subfield`, `Patch`, keyed collections,
 `store!`/`view!` ergonomics, props as signals, diagnostics for strict reads and
@@ -456,9 +459,9 @@ counter is the M1/M3 app; states and cities is the M2/M4 app.
 
 | Risk | Likelihood | Impact | Mitigation | Trigger to change course |
 |---|---|---|---|---|
-| Hold/async semantics are too large for v1 | High | High | Ship a defined subset (`F-1,2,3,4,5,9,10,12`) and gate optimistic lanes/actions/`latest`. Keep the node shape extensible. | If Phase 2 exceeds 7 weeks, cut `isPending` to a read-only diagnostic and ship navigation holds only. |
+| Hold/async semantics are too large for v0.1 | High | High | Ship a defined subset (`F-1,2,3,4,5,9,10,12`) and gate optimistic lanes/actions/`latest`. Keep the node shape extensible. | If Phase 2 exceeds 7 weeks, cut `isPending` to a read-only diagnostic and ship navigation holds only. |
 | Retained tree structural updates are harder than expected | High | High | Start with keyed list + `Show` only; disallow arbitrary re-parenting; keep cached-rebuild escape hatch. | If keyed list reorder is not stable by Phase 4 exit, fall back to GPUI-style per-view rebuild for that subtree. |
-| Incremental layout is not achievable with taffy | Medium | Medium | Treat full layout on layout-dirty frames as v1; add layout boundaries and measure caching later. | If layout exceeds 30% of frame time in the demo, add a dirty-subtree layout prototype before Phase 8. |
+| Incremental layout is not achievable with taffy | Medium | Medium | Treat full layout on layout-dirty frames as v0.1; add layout boundaries and measure caching later. | If layout exceeds 30% of frame time in the demo, add a dirty-subtree layout prototype before Phase 8. |
 | Text shaping dominates frame time | Medium | Medium | Cache shaped lines by content+font+width; keep a platform text system boundary; profile early. | If shaping > 5 ms/frame, move to a retained line layout with incremental reflow. |
 | Store macro complexity delays app work | Medium | Medium | Ship flat `create_signal()` pairs first; stores are opt-in. | If derive macro exceeds 3 weeks, ship a `#[derive(Store)]` subset (plain fields + Vec) and defer enums/patch. |
 | wgpu backend blocks on platform issues | Low | Medium | Null renderer and scene recorder are first-class; a CPU rasterizer test backend keeps CI green. | If wgpu is unstable on a target, add a `tiny-skia` software backend for that platform. |
@@ -467,7 +470,7 @@ counter is the M1/M3 app; states and cities is the M2/M4 app.
 
 ---
 
-## 8. Performance budgets (v1 targets)
+## 8. Performance budgets (v0.1 targets)
 
 Measured on the development M3 Pro (2× Retina), release build, near-1600×1000
 logical window.
@@ -540,9 +543,9 @@ small interaction costs 0.5–3 ms end-to-end; a paint-only frame 0.3–2 ms; a
 10k-node layout 10–20 ms. Signal read is 10–30 ns, a write with one dependent
 50–200 ns, a binding apply 0.2–1 µs. User code dominates normal actions.
 
-**GPU activity.** Idle: zero draw calls and no app GPU work. v1 presents the
+**GPU activity.** Idle: zero draw calls and no app GPU work. v0.1 presents the
 whole scene on any dirty frame, so a small change redraws the full window; that
-is avoidable overdraw, not idle load. Damage regions/scissor are a v2
+is avoidable overdraw, not idle load. Damage regions/scissor are a v0.2
 optimization. Text atlases upload only new glyphs. Continuous animation or a
 blinking caret wakes frames deliberately; without them the app is GPU-idle.
 
@@ -576,12 +579,12 @@ section docs.
    color every helper. `panic = "abort"` builds use a boundary/domain state or an
    internal fallback. Implementation paths are in
    [docs/04-async-model.md](docs/04-async-model.md) §3.6.
-4. **Boundary scope.** v1 implements first-load, held navigation, disarmed
+4. **Boundary scope.** v0.1 implements first-load, held navigation, disarmed
    forwarding, errors, and a `key` that remounts the boundary. Full `on` re-arm
-   and `latest` are v2. See
+   and `latest` are v0.2. See
    [docs/04-async-model.md](docs/04-async-model.md) §6.1 and §7.2.
-5. **Dynamic stores.** The static macro path is v1; `DynamicStore` with an
-   interned path map is v2 unless a real app needs it in v1. If the full
+5. **Dynamic stores.** The static macro path is v0.1; `DynamicStore` with an
+   interned path map is v0.2 unless a real app needs it in v0.1. If the full
    interner is too complex, fall back to the Leptos `StorePath`/`TriggerMap`
    design. See [docs/03-store-layer.md](docs/03-store-layer.md) §5.
 6. **Threading.** Background work is allowed. The graph and view tree remain
@@ -631,12 +634,12 @@ tree vs parent walk, and store field split.
 
 ---
 
-## 11. Definition of done for v1
+## 11. Definition of done for v0.1
 
 - The demo app exercises state, async navigation, a 10k-row list, text input,
   keyboard navigation, and accessibility.
 - The reactive core passes the ported fundamental and derived rule suites for the
-  v1 subset, plus the fuzz corpus.
+  v0.1 subset, plus the fuzz corpus.
 - The renderer passes incremental-vs-full scene equivalence, leak checks, and
   the randomized tree fuzzer.
 - Idle CPU and frame budgets in §8 are met on the reference machine.

@@ -376,7 +376,7 @@ Notes:
    refetch lands: the displayed state and city are still California and Los
    Angeles, the lists are still California's, the city control is disabled,
    `is_pending(cities)` is true, and there is no fallback. The graph's `state`
-   value is Florida; only the display is held. This is the v1 verdict-only
+   value is Florida; only the display is held. This is the v0.1 verdict-only
    display-ahead check ([04-async-model.md](04-async-model.md) §7.1).
 4. `states_derived_reset` — when Florida's cities land, city becomes Miami with
    no effect and no extra compute of the city node.
@@ -458,7 +458,7 @@ acceptance run.
 | `createSignal(fn)` (writable memo) | `create_derived_signal(cx, \|cx, prev\| ...)`; not a thunk value |
 | `createMemo(syncFn)` | `create_memo(cx, ...)` |
 | `createMemo(asyncFn)` | `create_async_memo(cx, ...)` |
-| `isPending(x)` | `is_pending(cx, x)` (v1 subset) |
+| `isPending(x)` | `is_pending(cx, x)` (v0.1 subset) |
 | `<Loading>` | `<LoadingBoundary>`; first load catches, later loads forward |
 | `<For each=...>` | `<For each=... key=...>`; key is explicit |
 | `disabled={expr}` | `disabled=...` reactive attribute |
@@ -495,9 +495,9 @@ Rust-specific traps:
 - **Error boundary** — a failing async compute replaces the subtree; a domain
   `Result` stays a value. Gates M2/M3.
 - **Navigation with `on`** — the product-page example from
-  [04-async-model.md](04-async-model.md) §6.1; only after the v2 `on` work.
+  [04-async-model.md](04-async-model.md) §6.1; only after the v0.2 `on` work.
 - **Actions and optimism** — write, pessimistic wait, optimistic reveal,
-  revert. v2.
+  revert. v0.2.
 - **Store form** — field-granular updates, nested paths, patch only changed
   fields. Gates M7.
 - **Focus and keyboard** — tab order, IME, accessibility tree. Gates M6.

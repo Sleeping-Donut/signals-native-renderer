@@ -27,7 +27,7 @@ semantic decision back to its source.
 - We can validate against a real, maintained oracle rather than inventing
   semantics.
 - We must explicitly document deviations (Result vs throw, no resurrection,
-  mount-once, v1 subset).
+  mount-once, v0.1 subset).
 - We are not bound to Solid's release schedule or API.
 
 **Alternatives.** A "signals-like" core with no oracle (fast to build, impossible
@@ -181,9 +181,9 @@ no stable node identity); fully immediate mode (no retained state).
 and rebuilds its taffy tree every draw. Retaining the taffy tree and skipping
 layout on paint-only frames is a large win; true dirty-subtree layout is research.
 
-**Decision.** v1 keeps a persistent taffy tree, runs layout only when
+**Decision.** v0.1 keeps a persistent taffy tree, runs layout only when
 layout-dirty, and uses layout roots (fixed-size/contained subtrees) as the
-incremental unit. Do not promise dirty-subtree flex/grid layout in v1.
+incremental unit. Do not promise dirty-subtree flex/grid layout in v0.1.
 
 **Consequences.**
 
@@ -213,7 +213,7 @@ and overhead, not API availability.
 | GPUI-style native backends | Lowest overhead, platform features (IOSurface, partial present, display link), best latency | 3× implementation, shaders, testing, unsafe/platform code; large team commitment |
 | CPU (`tiny-skia`) | Simple, deterministic, no GPU risk | Slow for large scenes; not the flagship |
 
-**Decision.** Use `wgpu` for v1 behind a `PaintBackend` trait. The scene,
+**Decision.** Use `wgpu` for v0.1 behind a `PaintBackend` trait. The scene,
 paint-cache, and batching layers are backend-agnostic, so a native Metal/Vulkan/
 DX12 backend is an additive change, not a rewrite. The null/software backend is
 always available for tests.
@@ -329,7 +329,7 @@ cycles).
 different licenses: Solid MIT, Leptos MIT, GPUI Apache-2.0.
 
 **Decision.** License the project GPL-2.0-or-later. Keep GPUI as an architectural
-reference for v1; do not copy its code yet. Ported MIT code keeps its notice.
+reference for v0.1; do not copy its code yet. Ported MIT code keeps its notice.
 
 **Consequences.** The project can use Solid/Leptos code and ideas with
 attribution. GPUI is Apache-2.0: compatible with GPLv3, not GPLv2-only. Because
@@ -387,7 +387,7 @@ signs and the decision that would change.
   keep finding new edge cases; `isPending` tests depend on reader placement.
 - **Mitigation:** ship the subset in [04-async-model.md](04-async-model.md); cut
   `isPending` to a diagnostic if needed; defer actions, `latest`, `affects`, and
-  full `on` to v2.
+  full `on` to v0.2.
 - **Course change:** if the txn model cannot express a case without lanes, stop
   and add the lane abstraction rather than piling special cases.
 
@@ -395,7 +395,7 @@ signs and the decision that would change.
 
 - **Warning signs:** keyed list reorder loses focus or duplicates nodes; `Show`
   flip leaks owners; the differential fuzzer finds scene mismatches after moves.
-- **Mitigation:** restrict v1 structure to `Show` + keyed `For`; no arbitrary
+- **Mitigation:** restrict v0.1 structure to `Show` + keyed `For`; no arbitrary
   re-parenting except portals; use `Rebuild` for pathological cases.
 - **Course change:** if keyed reorder is not stable by Phase 4 exit, use
   per-view rebuild for that subtree and keep the retained model for static
@@ -423,7 +423,7 @@ signs and the decision that would change.
 
 - **Warning signs:** macro errors are unreadable; compile time grows; enum/patch
   cases explode.
-- **Mitigation:** v1 subset: plain structs, `Vec`, `Option`, `HashMap`; defer
+- **Mitigation:** v0.1 subset: plain structs, `Vec`, `Option`, `HashMap`; defer
   enums and projections.
 - **Course change:** ship a hand-written `Store` for the demo and defer the
   derive.
@@ -459,7 +459,7 @@ signs and the decision that would change.
 These were open in Draft 1. Most are now resolved; the remaining engineering
 questions are flagged.
 
-### Q1. Component rebuild (resolved for v1)
+### Q1. Component rebuild (resolved for v0.1)
 
 **Decision:** no special rebuild primitive. The generic primitive is a
 `ViewSlot`: a stable host node whose one active child is replaced when its key
@@ -490,7 +490,7 @@ When useful: generated/plugin UIs, runtime component switching, cheap leaves, an
 code naturally written as "render this tree from this state". Not for value
 changes, keyed lists, or as a default.
 
-### Q2. Props representation (resolved for v1)
+### Q2. Props representation (resolved for v0.1)
 
 **Decision:** all props are `Prop<T>`:
 
@@ -518,7 +518,7 @@ node cost of making everything `Signal<T>`.
 prop reads are not the hottest loop, and the alternative is a silent snapshot bug
 or a node per static prop.
 
-### Q3. Async read style (resolved for v1)
+### Q3. Async read style (resolved for v0.1)
 
 **Decision:** `get()` is the public read.
 
@@ -540,15 +540,15 @@ graph control token, not an application error. Implementation paths (private
 panic payload and the internal `panic = "abort"` fallback) are in
 [04-async-model.md](04-async-model.md) §3.6.
 
-### Q4. Boundary content lifetime and `on` (resolved for v1)
+### Q4. Boundary content lifetime and `on` (resolved for v0.1)
 
-**Decision:** v1 disposes content when the fallback is shown; `KeepAlive` is the
+**Decision:** v0.1 disposes content when the fallback is shown; `KeepAlive` is the
 opt-in for state that must survive. Solid keeps content alive but off screen;
 that buys state preservation at the cost of "hidden readers hold nothing"
 bookkeeping. For a first native version, disposal is simpler and matches the
 retained tree's owner model.
 
-**`on`:** deferred to v2. v1 uses a `key` memo that remounts the boundary. A key
+**`on`:** deferred to v0.2. v0.1 uses a `key` memo that remounts the boundary. A key
 change produces a fresh armed boundary, which shows the fallback on a new load
 and then content. This covers navigation/reload.
 
@@ -557,12 +557,12 @@ fallback with the frame of the change that armed it, avoid showing it when the
 same data is read outside the boundary, collect readers that were already
 forwarded, and interact with lanes when the `on` read is display-ahead. Those are
 `D-15`/`D-16`; implementing a partial version produces wrong-frame fallbacks and
-stranded holds. It belongs with the v2 lane/hold work.
+stranded holds. It belongs with the v0.2 lane/hold work.
 
-### Q5. Dynamic stores and the interned path map (resolved for v1)
+### Q5. Dynamic stores and the interned path map (resolved for v0.1)
 
-**Decision:** the static `#[derive(Store)]` path is v1. `DynamicStore` with an
-interned path map is v2 unless a real v1 app needs it.
+**Decision:** the static `#[derive(Store)]` path is v0.1. `DynamicStore` with an
+interned path map is v0.2 unless a real v0.1 app needs it.
 
 An interned path map is:
 
@@ -594,7 +594,7 @@ Leptos shape directly (`StorePath` + `HashMap<StorePath, Trigger>`). It gives up
 the dense fast path and arbitrary key types but keeps the dynamic API and is
 already proven.
 
-### Q6. Threading of background computation (resolved for v1)
+### Q6. Threading of background computation (resolved for v0.1)
 
 **Decision:** background work is allowed. The user is not misunderstanding: you
 can spawn a thread or a `tokio` task from the UI thread. The rule is that the
@@ -616,7 +616,7 @@ discarded. A raw thread cannot be killed, so long-running work must check the
 flight's `CancellationToken` and stop early. The framework guarantees the stale
 result is ignored; it cannot guarantee the thread stops without cooperation.
 
-### Q7. Batching (resolved for v1)
+### Q7. Batching (resolved for v0.1)
 
 **Reactive write batching.** The choice is frame checkpoint (chosen), microtask,
 explicit `batch` scopes, or immediate writes. Frame batching gives deterministic
@@ -624,7 +624,7 @@ one-flush/one-paint semantics and is required for holds; its cost is that
 read-after-write needs `flush(fn)`, and non-frame contexts need an explicit
 flush. Microtask batching is a JS event-loop artifact; immediate writes tear and
 lose glitch freedom; a separate `batch` API is mostly redundant when the tick is
-already the batch. v1 keeps `flush(fn)` as the imperative escape hatch and does
+already the batch. v0.1 keeps `flush(fn)` as the imperative escape hatch and does
 not add `batch`.
 
 **Renderer contract batching.** The base trait is per-operation; `begin_frame`/
@@ -641,7 +641,7 @@ the contract at all; it has its own frame.
 code.
 
 **Compatibility note:** GPUI is Apache-2.0, compatible with GPLv3 but not
-GPLv2-only. Keep it reference-only for v1. If GPUI code is incorporated, the
+GPLv2-only. Keep it reference-only for v0.1. If GPUI code is incorporated, the
 combined distribution must be under GPLv3 terms (allowed by the “or later” grant)
 and carry the Apache notices. Solid and Leptos are MIT and compatible; keep
 their notices when porting code.
@@ -657,7 +657,7 @@ stretching is a style concern.
 
 Parent/sibling fallback, or restore to the last focused node when it remounts?
 
-**Recommendation:** parent/sibling fallback in v1; `KeepAlive` for exact restore.
+**Recommendation:** parent/sibling fallback in v0.1; `KeepAlive` for exact restore.
 
 ---
 
@@ -690,11 +690,11 @@ without guessing.
 |---|---|---|
 | §4.1 R3 push-pull, lazy two-phase | ADR-002, [01-reactive-core.md](01-reactive-core.md) §7 | The shipped oracle uses a height-indexed heap with DIRTY/CHECK, not R3. R3 stays a benchmark. |
 | §4.2 generational arena, `Copy` handles | ADR-003, [02-ownership-and-lifetimes.md](02-ownership-and-lifetimes.md) | Kept, with a stronger rule: disposed handles never resolve, so no resurrection. |
-| §4.3 Solid 2.0 `F-<n>` rules | ADR-001, [04-async-model.md](04-async-model.md) §9 | Adopted as the oracle, but only a v1 subset. Optimistic/lane rules are deferred. |
+| §4.3 Solid 2.0 `F-<n>` rules | ADR-001, [04-async-model.md](04-async-model.md) §9 | Adopted as the oracle, but only a v0.1 subset. Optimistic/lane rules are deferred. |
 | §4.4 "No async runtime is required" | [04-async-model.md](04-async-model.md) §3 | Rust async needs an executor and an I/O driver. The framework owns queues and wakeups, not the executor; the host supplies a `Spawner`. |
 | §5 `#[derive(Store)]` field getters | [03-store-layer.md](03-store-layer.md) | Kept, with explicit `Patch`, keyed collections, and a dynamic-store escape hatch. |
 | §6.1 owner tree, RAII guards | [02-ownership-and-lifetimes.md](02-ownership-and-lifetimes.md) | Kept; expanded cleanup order, context, and view ownership. |
-| §6.2 reclamation gap | ADR-003, [02-ownership-and-lifetimes.md](02-ownership-and-lifetimes.md) §5 | Eliminated by no-resurrection + free-list reuse. No compaction in v1. |
+| §6.2 reclamation gap | ADR-003, [02-ownership-and-lifetimes.md](02-ownership-and-lifetimes.md) §5 | Eliminated by no-resurrection + free-list reuse. No compaction in v0.1. |
 | §7 universal trait and capabilities | [06-renderer-contract.md](06-renderer-contract.md) | Made object-safe with `u64` node IDs; added style, events, frame hooks; renamed `renderer-api`. |
 | §8.1 persistent `UiNode` tree | [07-retained-renderer.md](07-retained-renderer.md) | Kept, but the node tree is not a second reactive system: dynamic properties are bindings. |
 | §8.2 "each UI node subscribes to the signals it reads during its render function" | [07-retained-renderer.md](07-retained-renderer.md) §3 | Refined: the *binding* subscribes, not the node's whole render function. Components mount once. |
@@ -727,12 +727,12 @@ or a measurement.
 - Props are `Prop<T>` (`Static`, `Reactive(ReadSignal)`, `Derived(Memo)`).
 - `ViewSlot` is a sibling of specialized `Show`/`Switch`/`For`; no rebuild
   primitive.
-- `on`, actions, `latest`, `affects`, optimism, and lanes are v2.
+- `on`, actions, `latest`, `affects`, optimism, and lanes are v0.2.
 - Background work is allowed; the graph stays UI-thread-affine; cancellation is
   cooperative.
 - Frame batching is the write batch; `flush(fn)` is the imperative escape hatch.
-- License is GPL-2.0-or-later; GPUI is reference-only for v1.
-- `DynamicStore` is v2 with a Leptos-style fallback.
+- License is GPL-2.0-or-later; GPUI is reference-only for v0.1.
+- `DynamicStore` is v0.2 with a Leptos-style fallback.
 - Async code uses owned context capabilities: `&Cx` for sync, read-only
   `CxHandle` for async compute, `ActionCx` for action writes, `TaskCx` for
   detached mainline work. Reads after `await` are tracked.
@@ -755,13 +755,13 @@ or a measurement.
   `Fn(&T, &T) -> bool`. There is no public `Equals` enum. The first compute or
   landing always notifies. Macros expose only the default form.
 - Reads: `get` clones (`T: Clone`), `with` borrows for the closure; there is no
-  public read guard in v1.
+  public read guard in v0.1.
 - Updates: `set` replaces and compares; `update_with` maps old to new and
   compares without cloning (Solid's updater); `update` mutates in place and
   always notifies (the large-value/Leptos-style escape hatch).
 - `EffectHandle` is a public `Copy` capability with explicit `dispose`. Effects
   remain owner-scoped; dropping the handle does nothing. `effect_once` returns no
-  handle. No pause/resume or detach in v1.
+  handle. No pause/resume or detach in v0.1.
 
 ### Leaning, needs confirmation (recommendation exists)
 
@@ -770,11 +770,11 @@ or a measurement.
 | Props variants | Keep `Reactive`/`Derived` or one read handle? | Collapse; both implement `Read<T>` |
 | Ownership | Public `OwnerId`? | No; opaque `Scope`, IDs for diagnostics |
 | Cleanup panic | Halt or report/continue? | Report and continue; halt only for uncaught compute/apply errors |
-| Boundary content | Dispose on fallback or keep alive? | Dispose in v1; `KeepAlive` opt-in |
+| Boundary content | Dispose on fallback or keep alive? | Dispose in v0.1; `KeepAlive` opt-in |
 | First load | Write while a first load is out | Held behind the load; a memo in between changes nothing |
-| Store draft | Clone-modify-swap or `Draft` guard? | Clone-modify-swap v1; draft v2 |
+| Store draft | Clone-modify-swap or `Draft` guard? | Clone-modify-swap v0.1; draft v0.2 |
 | Store patch | Require `PartialEq`? | Yes; manual `Patch` trait for other types |
-| Renderer style | Full `ResolvedStyle` or property diffs? | Full struct v1; diff adapter later |
+| Renderer style | Full `ResolvedStyle` or property diffs? | Full struct v0.1; diff adapter later |
 | Text ownership | Renderer or shared text system? | Shared; capability reports which |
 | Frame hooks | Required or optional? | Optional |
 | Runtime loop | Runtime owns winit or host owns loop? | Both: `run` convenience, host-owned `frame` |
@@ -794,12 +794,12 @@ or a measurement.
 | 2 | Transaction merge criterion | Sharing a reader vs sharing a node | Fuzz independent-widget shapes |
 | 2 | Re-ask detection | Explicit `refresh()` vs hashing tracked inputs | Decide with async rule tests |
 | 2 | `is_pending` in a held frame | Verdict-only display-ahead: allow value-identical Display applies, or build a verdict lane | Prototype with the states demo (13-reference-apps.md) |
-| 2 | `on` full semantics | Needs full boundary/txn/lane model | v2; keyed remount in v1 |
+| 2 | `on` full semantics | Needs full boundary/txn/lane model | v0.2; keyed remount in v0.1 |
 | 3 | Stable renderer `NodeId` contract | `u64` opaque; `0` invalid; backend pointer option | Freeze in `renderer-api` |
 | 3 | Event model richness | Generic `Event` vs typed pointer/key/IME | Prototype with real input |
 | 4 | Component-local state representation | Per-mount struct vs closure captures | Decide with macro design |
 | 4 | Child order representation | Linked list vs cached Vec | Benchmark mount/reorder |
-| 4 | `KeepAlive` scope | v1 or v1.1? Tabs/navigation need it | Decide before M4 |
+| 4 | `KeepAlive` scope | v0.1 or v0.1.1? Tabs/navigation need it | Decide before M4 |
 | 4 | Paint roots / damage layering | Window vs layer roots | Prototype overlays/tooltips |
 | 5 | Text engine | parley vs cosmic-text vs platform | Prototype on demo text |
 | 5 | Persistent taffy style updates | Rebuild vs patch style structs | Benchmark |
@@ -808,7 +808,7 @@ or a measurement.
 | 5 | Subpixel text | Grayscale vs LCD subpixel | Platform/quality study |
 | 5 | Font loading | Bundle vs system vs both | Decide with test font |
 | 6 | Dispatch tree vs parent walk | Portals and logical parents | Prototype portal |
-| 6 | Gesture scope | Click/drag/wheel vs double/pinch/long-press | Decide v1 scope |
+| 6 | Gesture scope | Click/drag/wheel vs double/pinch/long-press | Decide v0.1 scope |
 | 6 | A11y tree build cost | Full vs incremental when active | Measure with AccessKit |
 | 6 | Cursor/tooltip layers | Separate vs shared overlay layer | Hit-test prototype |
 | 7 | Store persistent vector vs copy-on-write | O(n) writes vs dependency/API | 10k-row benchmark |
@@ -834,14 +834,14 @@ merge criterion, re-ask detection, and `is_pending` in a held frame. Phase 3 add
 the renderer `NodeId` contract and event model. Everything later is phase-local:
 props variants and component state (Phase 4/8), layout/text (Phase 5), input/a11y
 (Phase 6), stores (Phase 7), and macro syntax (Phase 8). `on` full semantics is
-v2 and `view_builder!` is a stretch goal, so neither is a v1 blocker.
+v0.2 and `view_builder!` is a stretch goal, so neither is a v0.1 blocker.
 
-### Deferred (not open for v1)
+### Deferred (not open for v0.1)
 
 - `on` full re-arm, actions, `latest`, `affects`, optimism, lanes.
-- `DynamicStore` unless a v1 app needs it.
+- `DynamicStore` unless a v0.1 app needs it.
 - Store projections / async derived stores.
-- `KeepAlive` if not in v1.
+- `KeepAlive` if not in v0.1.
 - `view_builder!`.
 - Incremental layout beyond layout roots.
 - True partial present (native backend).

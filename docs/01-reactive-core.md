@@ -1,7 +1,7 @@
 # 01 — Reactive Core
 
 **Crate:** `reactive-core`
-**Depends on:** nothing (arena and ownership may be modules in v1)
+**Depends on:** nothing (arena and ownership may be modules in v0.1)
 **Owns:** node graph, dependency edges, dirty propagation, the compute heap,
 signals, memos, effects, batching, and the read/write contract.
 
@@ -34,7 +34,7 @@ We adopt:
 - split effects: compute phase then apply phase (`signals.ts`);
 - owner-scoped disposal and cleanup;
 - the observable rules `F-1`, `F-2`, `F-3`, `F-4`, `F-5`, `F-9`, `F-10`, `F-12`
-  for v1 (see [04-async-model.md](04-async-model.md)).
+  for v0.1 (see [04-async-model.md](04-async-model.md)).
 
 We do not adopt:
 
@@ -503,7 +503,7 @@ Frame batching is the only model that makes `F-1` (the screen is whole), async
 holds, and one paint per frame fall out of the same checkpoint. It also makes
 tests deterministic. The price is that imperative code must call `flush(fn)` (or
 run a frame) when it needs to read its own write. There is no separate `batch`
-API in v1: the tick is the batch.
+API in v0.1: the tick is the batch.
 
 ## 11. Equality
 
@@ -550,7 +550,7 @@ let (read, write) = create_signal_with(cx, value, equals); // custom
 A comparator panic is a compute error: the value is replaced by the error, and
 the error boundary / root error hook handles it (Solid's A3 rule).
 
-## 12. API surface (v1)
+## 12. API surface (v0.1)
 
 ```rust
 // Sources — split by default
@@ -621,7 +621,7 @@ WriteSignal<T>)` pair. `Signal<T>` in the node-model sections is the internal
 full node handle; application and library code uses the halves.
 
 **Read representation.** `get` clones and `with` borrows. There is no public
-guard type in v1:
+guard type in v0.1:
 
 ```rust
 impl<T: Clone> ReadSignal<T> {

@@ -130,7 +130,7 @@ The last rule keeps dispatch single-threaded and avoids reentrant tree mutation.
 ## 4. Style in the contract
 
 A full style object in the universal trait would force every backend to
-understand our layout properties. We accept that cost in v1 for a simple,
+understand our layout properties. We accept that cost in v0.1 for a simple,
 object-safe call: `ResolvedStyle` is a plain struct of layout and paint fields.
 `renderer-api` owns the wire types; the view layer converts its internal `Style`
 into them.
@@ -337,12 +337,12 @@ and monomorphized for the native path. This is the same pattern as Tachys'
 
 1. **Full style vs property diffs.** Full `ResolvedStyle` is simple; a diffing
    API is faster for DOM. Could the runtime compute a diff and call a narrower
-   method? (Leaning: full struct in v1, diff adapter later.)
+   method? (Leaning: full struct in v0.1, diff adapter later.)
 2. **Text capability ownership.** Does the renderer own shaping, or does the
    shared text system? For native, shared; for DOM, the browser. The capability
    reports which.
 3. **Event model.** Node-relative coordinates and a generic `Event` are enough
-   for v1. A richer event enum (pointer, wheel, key, IME) will be needed; keep it
+   for v0.1. A richer event enum (pointer, wheel, key, IME) will be needed; keep it
    in `renderer-api` so all backends agree.
 4. **Frame hooks.** Do we need `begin_frame`/`end_frame` for batching, or is
    per-op batching enough? (Leaning: keep the hooks optional; the native path

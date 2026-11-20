@@ -1,21 +1,22 @@
 #![forbid(unsafe_code)]
-//! `view!` first cut.
+//! `view!` authoring macro.
 //!
 //! Supported surface:
 //!
 //! ```ignore
 //! view! {
-//!     <Column>
-//!         <Text>"count"</Text>
-//!         <Button on_click=move |cx| { ... }>"+"</Button>
+//!     <Column style={stack}>
+//!         <Text>{format!("count {}", count.get(cx))}</Text>
+//!         <Button style={button} on_click={move |cx| { ... }}>"+"</Button>
+//!         <For each={move |cx| rows.get(cx)} key={|row: &String| row.clone()}
+//!              children={move |cx, row| view! { <Text>{row.clone()}</Text> }} />
 //!     </Column>
 //! }
 //! ```
 //!
-//! Tags map to `view::column`, `view::row`, `view::text`, and `view::button`.
-//! Text content is a string literal. `Button` accepts `on_click`; other
-//! attributes are rejected for now. Dynamic text and styles use the builder
-//! API (`text_fn`, `column`, `row`, `button`) until the macro grows.
+//! Attributes map to builder methods (`style`, `hover_style`, `focus_style`,
+//! `cursor`, `tooltip`, `disabled_when`, `tab_index`, `focusable`, `disabled`).
+//! `Button` requires `on_click`. `For` expands to `view::keyed_list`.
 
 use proc_macro::TokenStream;
 use proc_macro2::{TokenStream as TokenStream2, TokenTree};
@@ -47,9 +48,14 @@ impl Parse for Child {
     }
 }
 
+struct Attr {
+    key: Ident,
+    value: Expr,
+}
+
 struct Node {
     tag: Ident,
-    on_click: Option<Expr>,
+    attrs: Vec<Attr>,
     children: Vec<Child>,
 }
 
@@ -57,25 +63,35 @@ impl Parse for Node {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
         input.parse::<Token![<]>()?;
         let tag: Ident = input.parse()?;
-        let mut on_click = None;
+        let mut attrs = Vec::new();
 
         while !input.peek(Token![>]) {
+            if input.peek(Token![/]) {
+                input.parse::<Token![/]>()?;
+                input.parse::<Token![>]>()?;
+                return Ok(Self {
+                    tag,
+                    attrs,
+                    children: Vec::new(),
+                });
+            }
             let key: Ident = input.parse()?;
             input.parse::<Token![=]>()?;
-            if key == "on_click" {
+            let value: Expr = if input.peek(syn::token::Brace) {
+                let content;
+                syn::braced!(content in input);
+                content.parse()?
+            } else if key == "on_click" {
                 let mut tokens = TokenStream2::new();
-                while !input.peek(Token![>]) {
+                while !input.peek(Token![>]) && !input.peek(Token![/]) {
                     let token: TokenTree = input.parse()?;
                     tokens.extend(std::iter::once(token));
                 }
-                on_click = Some(syn::parse2(tokens)?);
+                syn::parse2(tokens)?
             } else {
-                let _: Expr = input.parse()?;
-                return Err(syn::Error::new_spanned(
-                    key,
-                    "only on_click is supported by the first view! cut",
-                ));
-            }
+                input.parse()?
+            };
+            attrs.push(Attr { key, value });
         }
         input.parse::<Token![>]>()?;
 
@@ -102,7 +118,7 @@ impl Parse for Node {
 
         Ok(Self {
             tag,
-            on_click,
+            attrs,
             children,
         })
     }
@@ -115,6 +131,59 @@ fn child_tokens(child: &Child) -> Result<TokenStream2> {
         Child::Expr(expr) => Ok(quote! { ::view::text_fn(move |cx| (#expr).to_string()) }),
     }
 }
+
+fn attr<'a>(node: &'a Node, name: &str) -> Option<&'a Expr> {
+    node.attrs
+        .iter()
+        .find(|attr| attr.key == name)
+        .map(|attr| &attr.value)
+}
+
+fn apply_attrs(
+    mut tokens: TokenStream2,
+    node: &Node,
+    skip: &[&str],
+    allowed: &[&str],
+) -> Result<TokenStream2> {
+    for attr in &node.attrs {
+        let name = attr.key.to_string();
+        if skip.contains(&name.as_str()) {
+            continue;
+        }
+        if !allowed.contains(&name.as_str()) {
+            return Err(syn::Error::new_spanned(
+                &attr.key,
+                format!("unsupported attribute `{name}`"),
+            ));
+        }
+        let value = &attr.value;
+        tokens = match name.as_str() {
+            "style" => quote! { (#tokens).style(#value) },
+            "hover_style" => quote! { (#tokens).hover_style(#value) },
+            "focus_style" => quote! { (#tokens).focus_style(#value) },
+            "cursor" => quote! { (#tokens).cursor(#value) },
+            "tooltip" => quote! { (#tokens).tooltip(#value) },
+            "disabled_when" => quote! { (#tokens).disabled_when(#value) },
+            "tab_index" => quote! { (#tokens).tab_index(#value) },
+            "focusable" => quote! { (#tokens).focusable(#value) },
+            "disabled" => quote! { (#tokens).disabled(#value) },
+            _ => unreachable!(),
+        };
+    }
+    Ok(tokens)
+}
+
+const NODE_ATTRS: &[&str] = &[
+    "style",
+    "hover_style",
+    "focus_style",
+    "cursor",
+    "tooltip",
+    "disabled_when",
+    "tab_index",
+    "focusable",
+    "disabled",
+];
 
 fn node_tokens(node: &Node) -> Result<TokenStream2> {
     let tag = node.tag.to_string();
@@ -131,33 +200,68 @@ fn node_tokens(node: &Node) -> Result<TokenStream2> {
             } else {
                 quote! { ::view::row }
             };
-            Ok(quote! { #constructor(vec![#(#children),*]) })
+            let base = quote! { #constructor(vec![#(#children),*]) };
+            apply_attrs(base, node, &[], NODE_ATTRS)
         }
         "Text" => {
             if node.children.len() != 1 {
                 return Err(syn::Error::new_spanned(
                     &node.tag,
-                    "Text expects one string literal",
+                    "Text expects one string literal or {expression}",
                 ));
             }
-            match &node.children[0] {
-                Child::Text(text) => Ok(quote! { ::view::text(#text) }),
-                Child::Expr(expr) => Ok(quote! { ::view::text_fn(move |cx| (#expr).to_string()) }),
-                Child::Node(_) => Err(syn::Error::new_spanned(
-                    &node.tag,
-                    "Text cannot contain an element",
-                )),
-            }
+            let base = match &node.children[0] {
+                Child::Text(text) => quote! { ::view::text(#text) },
+                Child::Expr(expr) => quote! { ::view::text_fn(move |cx| (#expr).to_string()) },
+                Child::Node(_) => {
+                    return Err(syn::Error::new_spanned(
+                        &node.tag,
+                        "Text cannot contain an element",
+                    ))
+                }
+            };
+            apply_attrs(base, node, &[], NODE_ATTRS)
         }
         "Button" => {
-            let on_click = node.on_click.as_ref().ok_or_else(|| {
+            let on_click = attr(node, "on_click").ok_or_else(|| {
                 syn::Error::new_spanned(&node.tag, "Button requires on_click=...")
             })?;
-            Ok(quote! { ::view::button(vec![#(#children),*], #on_click) })
+            let base = quote! { ::view::button(vec![#(#children),*], #on_click) };
+            let mut allowed = NODE_ATTRS.to_vec();
+            allowed.push("on_click");
+            apply_attrs(base, node, &["on_click"], &allowed)
+        }
+        "Embed" => {
+            let expr = attr(node, "expr")
+                .ok_or_else(|| syn::Error::new_spanned(&node.tag, "Embed requires expr=..."))?;
+            if !node.children.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    &node.tag,
+                    "Embed is self-closing; put expr=... on the tag",
+                ));
+            }
+            let mut allowed = NODE_ATTRS.to_vec();
+            allowed.push("expr");
+            apply_attrs(quote! { #expr }, node, &["expr"], &allowed)
+        }
+        "For" => {
+            let each = attr(node, "each")
+                .ok_or_else(|| syn::Error::new_spanned(&node.tag, "For requires each=..."))?;
+            let key = attr(node, "key")
+                .ok_or_else(|| syn::Error::new_spanned(&node.tag, "For requires key=..."))?;
+            let children = attr(node, "children")
+                .ok_or_else(|| syn::Error::new_spanned(&node.tag, "For requires children=..."))?;
+            if !node.children.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    &node.tag,
+                    "For is self-closing; put children=... on the tag",
+                ));
+            }
+            Ok(quote! { ::view::keyed_list(#each, #key, #children) })
         }
         _ => Err(syn::Error::new_spanned(
             &node.tag,
-            "unknown tag; expected Column, Row, Text, or Button",
+            "unknown tag; expected Column, Row, Text, Button, Embed, or For",
         )),
     }
 }

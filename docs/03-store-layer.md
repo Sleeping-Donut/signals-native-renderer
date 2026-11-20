@@ -206,12 +206,12 @@ store.user().update(|user| { user.age += 1; });
 `update` clones `T` (requires `T: Clone`), applies the closure, then diffs or
 replaces. For large values, prefer leaf writes or `patch`. A future `Draft<T>`
 guard can mutate in place behind a `RwLock` write guard and mark on drop; that is
-the closest safe analogue to Solid's draft, and it is the recommended v2
+the closest safe analogue to Solid's draft, and it is the recommended v0.2
 addition.
 
 Why not hand out `&mut T` directly? Because a long-lived guard blocks all reads
 of the store while the user holds it, and a panic or early return must still mark
-the right paths. A guard with a recorded set of writes is safer. For v1,
+the right paths. A guard with a recorded set of writes is safer. For v0.1,
 clone-modify-swap is predictable.
 
 ## 4. Keyed collections
@@ -307,8 +307,8 @@ allocates and hashes a long key on every access); a trie (good for prefixes and
 subtree invalidation, more pointer chasing); string paths (easy, slow); static
 macro-generated paths (fastest, but not dynamic).
 
-**v1 decision:** the static `#[derive(Store)]` path is v1; `DynamicStore` with
-interning is v2 unless a real app needs it. Static stores avoid the question
+**v0.1 decision:** the static `#[derive(Store)]` path is v0.1; `DynamicStore` with
+interning is v0.2 unless a real app needs it. Static stores avoid the question
 entirely: the macro generates a const field index/path, so there is no runtime
 interning or hash lookup.
 
@@ -349,7 +349,7 @@ types, but it keeps the dynamic API and the typed store unchanged.
   compile-time field checking.
 - Use for plugins, inspectors, and configuration editors, not for app state.
 
-## 6. Async derived stores and projections (v2)
+## 6. Async derived stores and projections (v0.2)
 
 Solid's `createProjection` / `createStore(fn)` are the store analogue of
 `Memo`/writable derived signal. The key idea: a derive function receives a draft
@@ -374,8 +374,8 @@ impl<T: Patch + Clone> Projection<T> {
 - Do not catch `NotReady` inside a derive: it is how the projection learns to
   retry (Solid #3073; the same rule applies here).
 
-This is deferred to v2 because it depends on the full async hold model. The
-store layer in v1 supports `Memo<Vec<T>>` and explicit `LoadingBoundary` at
+This is deferred to v0.2 because it depends on the full async hold model. The
+store layer in v0.1 supports `Memo<Vec<T>>` and explicit `LoadingBoundary` at
 the view level, which covers most list/loading cases.
 
 ## 7. Interaction with the graph
@@ -484,13 +484,13 @@ struct with a handful of fields does not need a store.
 1. **Persistent vector vs copy-on-write.** Decide in Phase 7 with a 10k-row
    benchmark. If we add `im`, it becomes a public dependency; if we hide it, we
    own the implementation.
-2. **Draft API.** Is clone-modify-swap enough for v1, or do we need a `Draft`
-   guard? (Leaning: clone-modify-swap for v1, draft in v2.)
+2. **Draft API.** Is clone-modify-swap enough for v0.1, or do we need a `Draft`
+   guard? (Leaning: clone-modify-swap for v0.1, draft in v0.2.)
 3. **Field API naming.** `state.user().name()` vs `state.user.name()`. The
    method-call form is Rust-idiomatic and composes with `Field`; keep it.
-4. **Dynamic store in v1.** Probably defer; a config editor can use a `create_signal()` pair
+4. **Dynamic store in v0.1.** Probably defer; a config editor can use a `create_signal()` pair
    and rebuild bindings.
 5. **`Patch` for arbitrary types.** Require `PartialEq`; provide a manual
    `Patch` trait for types that cannot derive it.
-6. **Async projections.** v2, with the hold model. v1 uses async memos over
+6. **Async projections.** v0.2, with the hold model. v0.1 uses async memos over
    `Vec<T>`.

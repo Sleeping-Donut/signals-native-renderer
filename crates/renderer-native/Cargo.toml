@@ -18,6 +18,7 @@ winit = { version = "0.30.5", optional = true }
 accesskit_winit = { version = "0.34.2", optional = true }
 
 [dev-dependencies]
+macros = { path = "../macros" }
 layout = { path = "../layout" }
 reactive-core = { path = "../reactive-core" }
 renderer-null = { path = "../renderer-null" }

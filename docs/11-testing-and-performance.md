@@ -33,7 +33,7 @@ The oracle is Solid 2.0's rule documents:
 - `SCENARIOS.md` (`S-<n>`)
 - `SPEC-ASYNC-SEMANTICS.md` (`A<nn>`, history and mechanism)
 
-We do not port every rule. The v1 subset is defined in
+We do not port every rule. The v0.1 subset is defined in
 [04-async-model.md](04-async-model.md). For each adopted rule, write both a
 **positive** test (the expected frame) and a **negative** test (the rejected
 temptation). Example:
@@ -80,7 +80,7 @@ F-10 tests/rules/f10_flush.rs
 F-12 tests/rules/f12_error.rs
 ```
 
-A CI check fails if a rule in the v1 subset has no test. This prevents the
+A CI check fails if a rule in the v0.1 subset has no test. This prevents the
 "documented but unverified" drift that the reference docs warn about.
 
 ### 2.3 App-level reference demos
@@ -273,7 +273,7 @@ CI on a dedicated runner. Local runs report, CI enforces.
 | Gate | Blocks |
 |---|---|
 | `cargo test` (unit + integration) | merge |
-| Reactive rule suite (v1 subset) | merge |
+| Reactive rule suite (v0.1 subset) | merge |
 | Renderer conformance (null + native adapter) | merge |
 | Differential/fuzz smoke (fixed seed, 1000 cases) | merge |
 | Miri on `reactive-core` | merge |

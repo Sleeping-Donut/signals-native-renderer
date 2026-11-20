@@ -1,6 +1,6 @@
 # 08 — Layout and Text
 
-**Crates:** `layout`, `text` (may be modules of `renderer-native` in v1)
+**Crates:** `layout`, `text` (may be modules of `renderer-native` in v0.1)
 **Depends on:** `view` types; taffy; a platform text backend
 **Owns:** style resolution, layout computation, text measurement/shaping,
 text caching, images, and scroll geometry.
@@ -146,7 +146,7 @@ The available space for a root:
 Taffy does not offer a general "recompute only this subtree" API. Options:
 
 1. **Layout roots**: fixed-size components recompute independently. This is the
-   v1 optimization and covers most app structure.
+   v0.1 optimization and covers most app structure.
 2. **Measure cache**: text/image measurement is cached; a re-layout of unchanged
    text is cheap.
 3. **Dirty subtree layout**: for a node whose size is independent of its children
@@ -154,9 +154,9 @@ Taffy does not offer a general "recompute only this subtree" API. Options:
    up if it changed. This requires a custom layout pass or taffy's low-level API;
    prototype in Phase 8.
 4. **Full layout**: always correct, O(n) per layout-dirty frame. Acceptable for
-   v1.
+   v0.1.
 
-Do not promise incremental flex/grid layout in v1. Measure the demo: if layout is
+Do not promise incremental flex/grid layout in v0.1. Measure the demo: if layout is
 < 20% of frame time, the complexity is not justified.
 
 ### 1.6 Pixel snapping
@@ -180,7 +180,7 @@ This avoids blurry 1px borders at 1.5×/2× and keeps adjacent edges closed.
 - Scrolling changes only the offset; children are laid out once and translated
   by `-offset` during paint. It does not re-run layout.
 - Scrollbars are painted by the renderer, not the layout engine. A scrollbar
-  consumes no layout space in v1 (overlay style); later, `scrollbar-gutter` can
+  consumes no layout space in v0.1 (overlay style); later, `scrollbar-gutter` can
   reserve space.
 - Virtual lists use the content size to compute the visible range.
 
@@ -237,7 +237,7 @@ Candidates: `parley` + `swash` + `fontique` (the Druid/Xilem lineage),
 APIs (CoreText, DirectWrite, fontconfig) and shapes with a platform shaper; that
 is the fastest path on each OS but triples the implementation.
 
-Recommendation for v1:
+Recommendation for v0.1:
 
 - Use **parley/fontique/swash** for cross-platform shaping and fallback.
 - Keep a `TextSystem` trait so a platform-specific backend can replace it later.
@@ -329,7 +329,7 @@ pub trait TextInputHandler {
 - `ObjectFit` (fill/contain/cover/scale-down/none) computes the painted rect
   without affecting layout (unless the image has an intrinsic size in layout).
 - SVG: rasterize at the needed size, cache by `(asset, size, scale)`. GPUI has
-  `svg_renderer.rs`; we can use `resvg`/`usvg` for v1.
+  `svg_renderer.rs`; we can use `resvg`/`usvg` for v0.1.
 
 ## 4. Style resolution details
 

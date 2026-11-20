@@ -1,6 +1,6 @@
 # 02 — Ownership and Lifetimes
 
-**Crate:** `reactive-core` (module `ownership` in v1; extract to
+**Crate:** `reactive-core` (module `ownership` in v0.1; extract to
 `reactive-ownership` if it grows)
 **Owns:** arenas, generational handles, the owner tree, cleanup, context, RAII
 guards, and memory reclamation.
@@ -51,7 +51,7 @@ pub struct Arena<T> {
 - Generation wraps at `u32::MAX`; on wrap, skip the slot (do not reuse) to avoid
   ABA. In practice a slot would need 4 billion reuse cycles.
 
-Arena operations are the only `unsafe`-eligible code, and v1 can implement them
+Arena operations are the only `unsafe`-eligible code, and v0.1 can implement them
 with `Vec<Option<T>>` and safe indexing. Measure before adding `unsafe`.
 
 ### 2.2 Multiple arenas
@@ -196,7 +196,7 @@ impl EffectHandle {
   slot is freed.
 - `dispose` during a flush removes the effect from the heap and queues edge
   unlinks for the end of the pass, never during iteration.
-- There is no pause/resume in v1, and no `detach`. An effect that must outlive
+- There is no pause/resume in v0.1, and no `detach`. An effect that must outlive
   its current owner is created under a longer-lived owner.
 
 ## 5. Reclamation
@@ -281,7 +281,7 @@ pub fn expect_context<T: Clone + 'static>(cx: &Cx) -> T; // panics/errors if abs
   Disposal is allowed; the flight becomes inert.
 - A boundary owner owns its fallback/content subtrees; switching to the fallback
   disposes the content's bindings but may keep the content's *state* if the
-  design says so. In our v1, content is disposed on fallback entry and rebuilt on
+  design says so. In our v0.1, content is disposed on fallback entry and rebuilt on
   reveal; this is simpler and predictable. (Solid keeps it alive but off screen;
   see [04-async-model.md](04-async-model.md) for the trade.)
 - `on_cleanup` runs on cancellation if the async body registered it; the
@@ -348,7 +348,7 @@ let theme = use_context::<Theme>(cx);
 
 ## 11. Open questions
 
-1. Should `Owner` be `Send`? No in v1 (UI thread). A background owner would need
+1. Should `Owner` be `Send`? No in v0.1 (UI thread). A background owner would need
    a separate graph or a message boundary.
 2. Do we expose `OwnerId` publicly? Prefer opaque `Scope` handles; `OwnerId` for
    diagnostics only.

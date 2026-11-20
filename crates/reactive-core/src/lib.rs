@@ -25,3 +25,27 @@ pub use graph::{
 };
 pub use id::{AccessError, Handle, NodeId};
 pub use spawner::{LocalBoxFuture, ManualSpawner, Spawner};
+
+/// Create a plain signal pair.
+///
+/// `signal!(cx, value)` is `create_signal(cx, value)`.
+#[macro_export]
+macro_rules! signal {
+    ($cx:expr, $value:expr $(,)?) => {
+        $crate::create_signal($cx, $value)
+    };
+}
+
+/// Create a memo.
+///
+/// `memo!(cx, compute)` is `create_memo(cx, compute)`. Pass a third
+/// argument to use a custom comparator: `memo!(cx, compute, equals)`.
+#[macro_export]
+macro_rules! memo {
+    ($cx:expr, $compute:expr $(,)?) => {
+        $crate::create_memo($cx, $compute)
+    };
+    ($cx:expr, $compute:expr, $equals:expr $(,)?) => {
+        $crate::create_memo_with($cx, $compute, $equals)
+    };
+}

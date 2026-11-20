@@ -48,7 +48,8 @@ fn Counter(cx: &mut Cx) -> impl View {
 For users, the syntax looks similar; the semantics are more like Solid's compiled
 output than its component function.
 
-**Conventions in this document.** Reactive constructors use one `create_*` family:
+**Conventions in this document.** Reactive constructors use one `create_*` family,
+with `signal!(cx, v)` and `memo!(cx, compute)` as the common authoring forms:
 `create_signal(cx, v) -> (ReadSignal<T>, WriteSignal<T>)`,
 `create_derived_signal(cx, ...)`, `create_async_derived_signal(cx, ...)`,
 `create_memo(cx, ...)`, `create_async_memo(cx, ...)`, `create_derived(cx, ...)`.
@@ -70,6 +71,13 @@ vocabulary; use native style properties (`gap`, `padding`, colors). The builder
 form uses `ElementKind::Row`, `ElementKind::Text`, `ElementKind::Button`, etc.
 
 ## 2. `view!`
+
+**Current implementation.** The macro supports `Column`, `Row`, `Text`,
+`Button`, `For`, and `Embed`; literal or `{expression}` text; and attributes for
+`style`, `hover_style`, `focus_style`, `cursor`, `tooltip`, `disabled_when`,
+`tab_index`, `focusable`, and `disabled`. `Button` requires `on_click`. `For`
+expands to `keyed_list`; `Embed` inserts an existing `View`. Components, props,
+`Show`, slots, and the full control-flow surface are not implemented yet.
 
 ### 2.1 Syntax
 
@@ -437,7 +445,7 @@ example: a button, a popup, and a `For` list, with no backend changes.
 - `fallback` is optional.
 - The child is a `ViewFn` and is mounted only when true.
 - Flipping disposes one branch and mounts the other.
-- `keep_alive=true` (v1.1) caches the inactive branch.
+- `keep_alive=true` (v0.1.1) caches the inactive branch.
 
 ### 4.2 `For`
 
@@ -464,7 +472,7 @@ example: a button, a popup, and a `For` list, with no backend changes.
 Only the first matching branch is mounted. Branches are keyed by their position;
 use explicit keys if the order can change.
 
-### 4.4 `KeepAlive` (v1.1)
+### 4.4 `KeepAlive` (v0.1.1)
 
 ```rust
 <KeepAlive when=move || tab.is_settings()>
@@ -622,7 +630,7 @@ the low-level operations they call.
 should be the default API. Reach for a `ViewSlot` for dynamic component/view
 switching, plugin UIs, or whole-subtree replacement.
 
-**Semantics (v1):**
+**Semantics (v0.1):**
 
 - The host node is stable; its active child subtree is replaced.
 - The old child owner, view nodes, and bindings are disposed.
@@ -786,12 +794,12 @@ What runs when a todo is toggled:
 1. **Syntax.** How close to JSX should `view!` be? A tag syntax is familiar but
    requires a proc macro parser; a builder API is simpler but more verbose. We
    can ship both: `view!` for apps, builders for libraries.
-2. **Reactive attribute detection.** The v1 decision is syntactic: closures are
+2. **Reactive attribute detection.** The v0.1 decision is syntactic: closures are
    memos, handles pass through, other expressions become static (`Prop::Static`
    or a constant signal). The open part is how much type information the macro
    can use without hurting error messages. Do not add a blanket `IntoSignal`
    trait; Rust coherence rejects it.
-3. **Props defaults.** `Prop<T>` is the v1 decision: `Static`, `Reactive`, or
+3. **Props defaults.** `Prop<T>` is the v0.1 decision: `Static`, `Reactive`, or
    `Derived`; no bare `T` for values that may change. The open part is whether
    `Prop<T>` should also support optional/`Option` convenience or a separate
    `MaybeProp<T>`.

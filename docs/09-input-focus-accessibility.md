@@ -100,7 +100,7 @@ correctly.
 
 If a node has a transform, the point is inverse-transformed into the node's local
 space before the bounds test. Store the transform on the hitbox or resolve it
-during hit testing. v1: support translation and scale; rotation later.
+during hit testing. v0.1: support translation and scale; rotation later.
 
 ### 2.3 Overlays and layers
 
@@ -423,8 +423,8 @@ Handlers receive an `A11yAction` and stage writes like any other event.
    are there cases where a separate dispatch tree is needed (e.g. portals)?
    Resolve by storing the logical parent separately from the paint parent.
 2. **Focus restoration.** How much state should survive a remount? Parent/sibling
-   fallback is the v1 rule; `KeepAlive` is the opt-in.
-3. **Gesture library.** Do we implement double-click, long-press, pinch in v1, or
+   fallback is the v0.1 rule; `KeepAlive` is the opt-in.
+3. **Gesture library.** Do we implement double-click, long-press, pinch in v0.1, or
    only click/drag/wheel? Start with the basics, add gestures as a layer.
 4. **A11y tree build cost.** Build incrementally from dirty nodes or rebuild the
    whole tree when a11y is active? Start with a full build when active, measure.

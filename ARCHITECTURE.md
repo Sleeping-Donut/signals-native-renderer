@@ -108,7 +108,7 @@ tree and styles alone; this is the invariant that keeps caching honest.
 
 ```
 reactive-core
-  ├── reactive-ownership      (may be a module of core in v1)
+  ├── reactive-ownership      (may be a module of core in v0.1)
   ├── reactive-stores         (depends on core; macro crate separate)
   ├── renderer-api            (no dependency on core)
   ├── view                    (core + renderer-api)
@@ -146,7 +146,7 @@ Workspace layout:
 ```
 crates/
 ├── reactive-core/          # graph, edges, heap, signals, memos, effects
-│   └── ownership/          # arena, owners, cleanup, context (module in v1)
+│   └── ownership/          # arena, owners, cleanup, context (module in v0.1)
 ├── reactive-stores/        # Store, Field, Patch, keyed collections
 ├── reactive-stores-macro/  # #[derive(Store)], #[derive(Patch)]
 ├── renderer-api/           # object-safe Renderer + capabilities
@@ -232,7 +232,7 @@ pub enum NodeKind {
 
 Notes:
 
-- `value` is `Option<Box<dyn Any>>` in v1. A later optimization can add typed
+- `value` is `Option<Box<dyn Any>>` in v0.1. A later optimization can add typed
   slots or `SmallBox` without changing the handle API.
 - `cold` holds async and diagnostic data that most nodes never use, mirroring
   Solid's node extension (`refs/solid/packages/signals/docs/NODE-SHAPE.md`).
@@ -393,7 +393,7 @@ runtime never polls.
 ## 6. Threading
 
 - The graph, view tree, layout, and scene are **thread-affine to the UI thread**.
-- Handles are `Copy` but not `Send` in v1. A background task may return a plain
+- Handles are `Copy` but not `Send` in v0.1. A background task may return a plain
   value; the continuation is posted to the UI queue, and the value becomes a
   staged write there.
 - `Spawner` is a trait implemented by the host:
@@ -556,4 +556,4 @@ Crate names:
 - It does not use a global thread-local graph; multiple runtimes can exist in one
   process (important for tests and embedded use).
 - It does not require `Send`/`Sync` for UI state.
-- It does not implement optimistic lanes in v1.
+- It does not implement optimistic lanes in v0.1.

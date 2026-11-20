@@ -1984,6 +1984,7 @@ dependencies = [
  "accesskit",
  "accesskit_winit",
  "layout",
+ "macros",
  "pollster",
  "reactive-core",
  "renderer-api",
