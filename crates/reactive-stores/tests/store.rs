@@ -1,8 +1,16 @@
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use reactive_core::{create_memo, Cx, Runtime};
-use reactive_stores::{store, Store, StoreDiagnostics, StorePatch};
+use reactive_stores::{store, DynamicValue, Store, StoreDiagnostics, StorePatch};
+
+#[derive(Clone, Debug, PartialEq, reactive_stores::Store)]
+enum Status {
+    Idle,
+    Ready(u32),
+    Pair(u32, u32),
+}
 
 #[derive(Clone, Debug, PartialEq, reactive_stores::Store, reactive_stores::Patch)]
 struct User {
@@ -210,4 +218,60 @@ fn top_level_patch_marks_only_changed_fields() {
     assert_eq!(name.get(&cx), "app");
     assert_eq!(count_runs.get(), 2);
     assert_eq!(name_runs.get(), 1);
+}
+
+#[test]
+fn enum_variants_are_addressable_fields() {
+    let runtime = Runtime::new();
+    let cx = runtime.cx();
+    let store = Store::new(&cx, Status::Idle);
+    let idle = store.is_idle();
+    let ready = store.as_ready();
+    assert!(idle.get(&cx));
+    assert_eq!(ready.get(&cx), None);
+
+    ready.set(&cx, Some(7));
+    cx.flush().unwrap();
+    assert_eq!(store.snapshot(&cx), Status::Ready(7));
+    assert!(!idle.get(&cx));
+    assert_eq!(ready.get(&cx), Some(7));
+
+    let pair = store.as_pair();
+    pair.set(&cx, Some((1, 2)));
+    cx.flush().unwrap();
+    assert_eq!(store.snapshot(&cx), Status::Pair(1, 2));
+    assert_eq!(pair.get(&cx), Some((1, 2)));
+}
+
+#[test]
+fn dynamic_store_supports_maps_lists_and_path_isolation() {
+    let runtime = Runtime::new();
+    let cx = runtime.cx();
+    let store = Store::new(&cx, DynamicValue::Map(BTreeMap::new()));
+    let name = store.field("name");
+    let score = store.field("score");
+    let name_for_count = name.clone();
+    let (name_value, name_runs) = counter(&cx, move |cx| name_for_count.get(cx));
+    let score_for_count = score.clone();
+    let (score_value, score_runs) = counter(&cx, move |cx| score_for_count.get(cx));
+    assert_eq!(name_value.get(&cx), DynamicValue::Null);
+    assert_eq!(score_value.get(&cx), DynamicValue::Null);
+
+    name.set(&cx, DynamicValue::String("Ada".to_string()));
+    cx.flush().unwrap();
+    assert_eq!(name_value.get(&cx), DynamicValue::String("Ada".to_string()));
+    assert_eq!(score_value.get(&cx), DynamicValue::Null);
+    assert_eq!(name_runs.get(), 2);
+    assert_eq!(score_runs.get(), 1);
+
+    store
+        .field("tags")
+        .index(1)
+        .set(&cx, DynamicValue::String("math".to_string()));
+    cx.flush().unwrap();
+    assert_eq!(
+        store.field("tags").index(1).get(&cx),
+        DynamicValue::String("math".to_string())
+    );
+    assert_eq!(store.field("tags").index(0).get(&cx), DynamicValue::Null);
 }

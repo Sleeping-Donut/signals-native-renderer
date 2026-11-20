@@ -677,6 +677,18 @@ impl<'a> Cx<'a> {
         self.rt.spawner.pending()
     }
 
+    /// Number of live graph nodes.
+    #[must_use]
+    pub fn live_nodes(self) -> usize {
+        self.rt.nodes.borrow().len()
+    }
+
+    /// Number of live owners.
+    #[must_use]
+    pub fn live_owners(self) -> usize {
+        self.rt.owners.borrow().len()
+    }
+
     /// Run a closure, then flush.
     pub fn flush_with<R>(self, f: impl FnOnce() -> R) -> Result<R, FlushError> {
         let value = f();
@@ -1676,7 +1688,9 @@ impl Runtime {
     }
 
     fn dispose_owner(&self, id: OwnerId) {
-        let owner = self.owner(id);
+        let Some(owner) = self.owners.borrow().get(id.id).cloned() else {
+            return;
+        };
         if owner.borrow().disposed {
             return;
         }
@@ -1707,6 +1721,9 @@ impl Runtime {
                 .borrow_mut()
                 .children
                 .retain(|child| *child != id);
+        }
+        if id != self.root {
+            self.owners.borrow_mut().remove(id.id);
         }
     }
 

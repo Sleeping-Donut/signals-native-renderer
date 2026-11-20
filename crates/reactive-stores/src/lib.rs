@@ -7,7 +7,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -64,6 +64,7 @@ impl<T> StoreAccess for StoreInner<T> {
         for key in keys {
             let descendant = key == path
                 || key.starts_with(&format!("{path}."))
+                || key.starts_with(&format!("{path}["))
                 || key.starts_with(&format!("{path}#"));
             if descendant || ancestors.contains(&key) {
                 if let Some(trigger) = self.triggers.borrow().get(&key) {
@@ -118,9 +119,7 @@ fn ancestors(path: &str) -> Vec<String> {
     let mut current = path.to_string();
     loop {
         out.push(current.clone());
-        if let Some(index) = current.rfind('.') {
-            current.truncate(index);
-        } else if let Some(index) = current.find('#') {
+        if let Some(index) = current.rfind(['.', '[', '#']) {
             current.truncate(index);
         } else {
             break;
@@ -529,6 +528,141 @@ impl<T: Clone + 'static> Drop for Draft<T> {
     fn drop(&mut self) {
         let cx = self.runtime.cx();
         self.field.set(&cx, self.value.clone());
+    }
+}
+
+/// A schema-less value for dynamic stores.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum DynamicValue {
+    /// Null.
+    #[default]
+    Null,
+    /// Boolean.
+    Bool(bool),
+    /// Number.
+    Number(f64),
+    /// String.
+    String(String),
+    /// List.
+    List(Vec<DynamicValue>),
+    /// Map.
+    Map(BTreeMap<String, DynamicValue>),
+}
+
+impl DynamicValue {
+    fn child(&self, key: &str) -> DynamicValue {
+        match self {
+            Self::Map(map) => map.get(key).cloned().unwrap_or_default(),
+            _ => DynamicValue::Null,
+        }
+    }
+
+    fn set_child(&mut self, key: &str, value: DynamicValue) {
+        if !matches!(self, Self::Map(_)) {
+            *self = Self::Map(BTreeMap::new());
+        }
+        if let Self::Map(map) = self {
+            map.insert(key.to_string(), value);
+        }
+    }
+
+    fn element(&self, index: usize) -> DynamicValue {
+        match self {
+            Self::List(list) => list.get(index).cloned().unwrap_or_default(),
+            _ => DynamicValue::Null,
+        }
+    }
+
+    fn set_element(&mut self, index: usize, value: DynamicValue) {
+        if !matches!(self, Self::List(_)) {
+            *self = Self::List(Vec::new());
+        }
+        if let Self::List(list) = self {
+            if list.len() <= index {
+                list.resize(index + 1, DynamicValue::Null);
+            }
+            list[index] = value;
+        }
+    }
+}
+
+impl Store<DynamicValue> {
+    fn project_dynamic(
+        &self,
+        path: String,
+        read: impl Fn(&DynamicValue) -> DynamicValue + 'static,
+        write: impl Fn(&mut DynamicValue, DynamicValue) + 'static,
+    ) -> Field<DynamicValue> {
+        let inner = Rc::clone(&self.inner);
+        let read = Rc::new(read);
+        let write = Rc::new(write);
+        let read_inner = Rc::clone(&inner);
+        let write_inner = Rc::clone(&inner);
+        Field {
+            inner: Rc::new(FieldInner {
+                store: inner,
+                path,
+                read: Rc::new(move || read(&read_inner.value.borrow())),
+                write: Rc::new(move |value| {
+                    write(&mut write_inner.value.borrow_mut(), value);
+                }),
+            }),
+        }
+    }
+
+    /// A dynamic map field.
+    #[must_use]
+    pub fn field(&self, key: &str) -> Field<DynamicValue> {
+        let key_for_read = key.to_string();
+        let key_for_write = key.to_string();
+        self.project_dynamic(
+            key.to_string(),
+            move |value| value.child(&key_for_read),
+            move |value, next| value.set_child(&key_for_write, next),
+        )
+    }
+
+    /// A dynamic list element.
+    #[must_use]
+    pub fn index(&self, index: usize) -> Field<DynamicValue> {
+        self.project_dynamic(
+            format!("[{index}]"),
+            move |value| value.element(index),
+            move |value, next| value.set_element(index, next),
+        )
+    }
+}
+
+impl Field<DynamicValue> {
+    fn project_dynamic(
+        &self,
+        path: String,
+        read: impl Fn(&DynamicValue) -> DynamicValue + 'static,
+        write: impl Fn(&mut DynamicValue, DynamicValue) + 'static,
+    ) -> Field<DynamicValue> {
+        self.project_with(path, read, write)
+    }
+
+    /// A dynamic map field below this field.
+    #[must_use]
+    pub fn field(&self, key: &str) -> Field<DynamicValue> {
+        let key_for_read = key.to_string();
+        let key_for_write = key.to_string();
+        self.project_dynamic(
+            format!("{}.{}", self.path(), key),
+            move |value| value.child(&key_for_read),
+            move |value, next| value.set_child(&key_for_write, next),
+        )
+    }
+
+    /// A dynamic list element below this field.
+    #[must_use]
+    pub fn index(&self, index: usize) -> Field<DynamicValue> {
+        self.project_dynamic(
+            format!("{}[{}]", self.path(), index),
+            move |value| value.element(index),
+            move |value, next| value.set_element(index, next),
+        )
     }
 }
 
