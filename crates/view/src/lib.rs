@@ -1225,6 +1225,45 @@ impl ViewTree {
         self.mark_paint_dirty(id);
     }
 
+    /// Set a node's display mode.
+    pub fn set_display(&self, id: ViewNodeId, display: Display) {
+        let style = {
+            let nodes = self.inner.nodes.borrow();
+            let Some(node) = nodes.get(id) else {
+                return;
+            };
+            if node.style.display == display {
+                return;
+            }
+            node.style
+        };
+        let mut style = style;
+        style.display = display;
+        self.set_style(id, style);
+    }
+
+    /// Effect handles for a node and every descendant.
+    #[must_use]
+    pub fn bindings_under(&self, id: ViewNodeId) -> Vec<EffectHandle> {
+        let mut out = Vec::new();
+        self.collect_bindings(id, &mut out);
+        out
+    }
+
+    fn collect_bindings(&self, id: ViewNodeId, out: &mut Vec<EffectHandle>) {
+        let (children, bindings) = {
+            let nodes = self.inner.nodes.borrow();
+            let Some(node) = nodes.get(id) else {
+                return;
+            };
+            (node.children.clone(), node.bindings.clone())
+        };
+        out.extend(bindings);
+        for child in children {
+            self.collect_bindings(child, out);
+        }
+    }
+
     /// Replace the text of a text node.
     pub fn set_view_text(&self, id: ViewNodeId, text: String) {
         let (layout_id, style) = {
@@ -1496,11 +1535,19 @@ impl ViewTree {
     }
 
     fn hit_test_node(&self, node: ViewNodeId, x: f32, y: f32) -> Option<ViewNodeId> {
-        let (children, interactive, disabled) = {
+        let (children, interactive, disabled, display) = {
             let nodes = self.inner.nodes.borrow();
             let node = nodes.get(node)?;
-            (node.children.clone(), node.interactive, node.disabled)
+            (
+                node.children.clone(),
+                node.interactive,
+                node.disabled,
+                node.style.display,
+            )
         };
+        if display == Display::None {
+            return None;
+        }
         for child in children.iter().rev() {
             if let Some(hit) = self.hit_test_node(*child, x, y) {
                 return Some(hit);
@@ -3406,6 +3453,12 @@ pub enum Prop<T> {
     Dynamic(Rc<dyn Fn(&reactive_core::Cx<'_>) -> T>),
 }
 
+impl<T: Default> Default for Prop<T> {
+    fn default() -> Self {
+        Self::Static(T::default())
+    }
+}
+
 impl<T: Clone + 'static> Prop<T> {
     /// A static prop.
     #[must_use]
@@ -3609,6 +3662,49 @@ where
     })
 }
 
+/// A view-aware loading boundary with automatic readiness detection.
+///
+/// Content mounts immediately under `display: none`; the fallback covers it
+/// until every binding mounted in the content subtree has applied at least
+/// once. The fallback is then hidden and the content retained.
+pub fn loading_auto<F, C>(fallback: F, content: C) -> View
+where
+    F: Fn(&reactive_core::Cx<'_>) -> View + 'static,
+    C: Fn(&reactive_core::Cx<'_>) -> View + 'static,
+{
+    let fallback = Rc::new(fallback);
+    let content = Rc::new(content);
+    view(move |cx, tree| {
+        let root = tree.create_fragment();
+        let content_node = content(cx).mount(cx, tree);
+        tree.insert_child(root, content_node, None);
+        tree.set_display(content_node, Display::None);
+
+        let bindings = tree.bindings_under(content_node);
+
+        let fallback_node = fallback(cx).mount(cx, tree);
+        tree.insert_child(root, fallback_node, None);
+
+        let tree_for_effect = tree.clone();
+        let binding = render_effect(
+            cx,
+            move |cx| bindings.iter().all(|binding| binding.is_ready(cx)),
+            move |_cx, ready| {
+                tree_for_effect.set_display(
+                    content_node,
+                    if *ready { Display::Flex } else { Display::None },
+                );
+                tree_for_effect.set_display(
+                    fallback_node,
+                    if *ready { Display::None } else { Display::Flex },
+                );
+            },
+        );
+        tree.add_binding(root, binding);
+        root
+    })
+}
+
 /// A dynamic branch keyed by a value. A key change replaces the branch.
 pub fn view_slot<K, F, B>(key: F, build: B) -> View
 where
@@ -3778,6 +3874,13 @@ impl PaintTree for ViewPaintTree<'_> {
     }
 
     fn children(&self, node: Self::Node) -> Vec<Self::Node> {
+        let nodes = self.tree.inner.nodes.borrow();
+        if nodes
+            .get(node)
+            .is_none_or(|node| node.style.display == Display::None)
+        {
+            return Vec::new();
+        }
         self.tree.children(node)
     }
 
@@ -3790,6 +3893,16 @@ impl PaintTree for ViewPaintTree<'_> {
     }
 
     fn paint(&self, node: Self::Node, out: &mut Vec<Primitive>) {
+        if self
+            .tree
+            .inner
+            .nodes
+            .borrow()
+            .get(node)
+            .is_none_or(|node| node.style.display == Display::None)
+        {
+            return;
+        }
         let Some((renderer_id, style, view_text, rect)) = ({
             let nodes = self.tree.inner.nodes.borrow();
             nodes.get(node).map(|view| {

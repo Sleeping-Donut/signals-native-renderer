@@ -506,6 +506,15 @@ impl EffectHandle {
     pub fn is_disposed(self, cx: &Cx<'_>) -> bool {
         cx.rt.is_disposed(self.id)
     }
+
+    /// Whether the effect has computed and applied at least once.
+    #[must_use]
+    pub fn is_ready(self, cx: &Cx<'_>) -> bool {
+        if let Some(token) = cx.rt.effect_tokens.borrow().get(&self.id).copied() {
+            cx.rt.track(token);
+        }
+        cx.rt.effect_ready(self.id)
+    }
 }
 
 /// An owned graph runtime handle. Cloning is cheap and keeps the runtime
@@ -719,6 +728,7 @@ pub struct Runtime {
     clock: VirtualClock,
     dirty_visits: Cell<u64>,
     pending_tokens: RefCell<HashMap<NodeId, NodeId>>,
+    effect_tokens: RefCell<HashMap<NodeId, NodeId>>,
     pending_probe: Cell<bool>,
     pending_probe_found: Cell<bool>,
 }
@@ -766,6 +776,7 @@ impl Runtime {
             clock: VirtualClock::new(),
             dirty_visits: Cell::new(0),
             pending_tokens: RefCell::new(HashMap::new()),
+            effect_tokens: RefCell::new(HashMap::new()),
             pending_probe: Cell::new(false),
             pending_probe_found: Cell::new(false),
         }
@@ -1050,6 +1061,37 @@ impl Runtime {
         if let Some(token) = self.pending_tokens.borrow().get(&id).copied() {
             self.track(token);
         }
+    }
+
+    fn register_effect_token(&self, cx: &Cx<'_>, id: NodeId) {
+        let (token, _) = create_signal(cx, 0_u64);
+        self.effect_tokens.borrow_mut().insert(id, token.id());
+    }
+
+    fn effect_ready(&self, id: NodeId) -> bool {
+        self.node(id).is_some_and(|node| {
+            let node = node.borrow();
+            node.computed.get() && node.value.borrow().is_some()
+        })
+    }
+
+    fn bump_effect(&self, id: NodeId) {
+        let Some(token) = self.effect_tokens.borrow().get(&id).copied() else {
+            return;
+        };
+        let Some(node) = self.node(token) else {
+            return;
+        };
+        let next = node
+            .borrow()
+            .value
+            .borrow()
+            .as_ref()
+            .and_then(|value| value.downcast_ref::<u64>())
+            .copied()
+            .unwrap_or(0)
+            .wrapping_add(1);
+        self.stage(token, Box::new(next));
     }
 
     fn bump_pending(&self, id: NodeId) {
@@ -1573,8 +1615,12 @@ impl Runtime {
         }
         self.observer.set(previous_observer);
         self.tracking.set(previous_tracking);
+        let applied = value.is_some();
         node.borrow_mut().apply.borrow_mut().replace(apply);
         *node.borrow_mut().value.borrow_mut() = value;
+        if applied {
+            self.bump_effect(id);
+        }
     }
 
     fn run_applies(&self) {
@@ -2155,6 +2201,7 @@ pub fn effect<T: 'static>(
         .borrow_mut()
         .state
         .set(DirtyState::Dirty);
+    cx.rt.register_effect_token(cx, id);
     cx.rt.schedule(id);
     EffectHandle { id }
 }
@@ -2182,6 +2229,7 @@ pub fn render_effect<T: 'static>(
         .borrow_mut()
         .state
         .set(DirtyState::Dirty);
+    cx.rt.register_effect_token(cx, id);
     cx.rt.recompute(id);
     cx.rt.dequeue_apply(id);
     cx.rt.apply_effect(id);

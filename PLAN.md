@@ -429,12 +429,13 @@ probe), a component/props macro, incremental layout experiments, damage regions,
 text cache eviction, arena compaction only if measurements demand it, fuzzers,
 benchmarks, devtools.
 
-**Status (2026-11-20): hardening slice implemented.** Enum and dynamic stores,
-`Draft` guards, store diagnostics, and the store-backed app are implemented.
-The churn harness and a published performance report are in
+**Status (2026-11-20): implementation complete; 24-hour wall-clock run remains.**
+Enum and dynamic stores, `Draft` guards, store diagnostics, the store-backed app,
+automatic view-aware `Loading`, and the component/props macro are implemented.
+The churn harness and published performance report are in
 [`docs/14-performance-report.md`](docs/14-performance-report.md) and
-[`soak.rs`](crates/reactive-core/tests/soak.rs). Automatic `Loading` and the
-component/props macro remain future authoring work.
+[`soak.rs`](crates/reactive-core/tests/soak.rs). The checked-in 24-hour harness
+has been exercised for a short interval; the full wall-clock run remains.
 
 **Exit:** published performance report; no unbounded growth in a 24-hour churn
 test; third-party null renderer conformance suite is green.

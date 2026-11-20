@@ -284,14 +284,7 @@ mod signals {
         set_city: WriteSignal<String>,
     ) -> View {
         view! {
-            <Loading
-                ready={move |cx| {
-                    let _ = states.get(cx);
-                    let _ = cities.get(cx);
-                    true
-                }}
-                fallback={|_cx| loading_view()}
-            >
+            <Loading fallback={|_cx| loading_view()}>
                 <Embed expr={content_view(cx, states, cities, state, city, set_state, set_city)} />
             </Loading>
         }

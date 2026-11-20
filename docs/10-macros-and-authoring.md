@@ -94,8 +94,10 @@ detection from the mounted content is explicitly Phase 8 work.
 </Loading>
 ```
 
-Components, props, `Show`, slots, and the rest of the control-flow surface are
-not implemented yet.
+Component tags are supported by convention: `<Badge label={...} />` expands to
+`Badge(&cx, BadgeProps { label: ... })`; mark the function with
+`#[component]`. Component props can use `Prop<T>` for static/reactive values.
+Slots and the rest of the control-flow surface are not implemented yet.
 
 ### 2.1 Syntax
 

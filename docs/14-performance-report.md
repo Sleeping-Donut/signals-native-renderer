@@ -66,5 +66,7 @@ during the run.
 - A full 24-hour wall-clock run has not been executed locally; the harness is
   checked in and parameterized by `SOAK_SECONDS`.
 - Incremental layout and damage scissoring remain future optimizations.
-- Enum/dynamic stores are implemented for v0.1; automatic `Loading` detection
-  and a component/props macro remain future authoring work.
+- Enum/dynamic stores, automatic `Loading` detection, and the component/props
+  macro are implemented for v0.1.
+- The 24-hour soak harness is checked in; only a short wall-clock interval was
+  run in this session.

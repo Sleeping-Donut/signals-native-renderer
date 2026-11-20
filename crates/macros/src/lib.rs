@@ -249,8 +249,6 @@ fn node_tokens(node: &Node) -> Result<TokenStream2> {
             })
         }
         "Loading" => {
-            let ready = attr(node, "ready")
-                .ok_or_else(|| syn::Error::new_spanned(&node.tag, "Loading requires ready=..."))?;
             let fallback = attr(node, "fallback").ok_or_else(|| {
                 syn::Error::new_spanned(&node.tag, "Loading requires fallback=...")
             })?;
@@ -265,9 +263,15 @@ fn node_tokens(node: &Node) -> Result<TokenStream2> {
             } else {
                 quote! { ::view::fragment(vec![#(#children),*]) }
             };
-            Ok(quote! {
-                ::view::loading_when(#ready, #fallback, move |cx| #body)
-            })
+            if let Some(ready) = attr(node, "ready") {
+                Ok(quote! {
+                    ::view::loading_when(#ready, #fallback, move |cx| #body)
+                })
+            } else {
+                Ok(quote! {
+                    ::view::loading_auto(#fallback, move |cx| #body)
+                })
+            }
         }
         "Embed" => {
             let expr = attr(node, "expr")
@@ -297,9 +301,25 @@ fn node_tokens(node: &Node) -> Result<TokenStream2> {
             }
             Ok(quote! { ::view::keyed_list(#each, #key, #children) })
         }
+        tag if tag.chars().next().is_some_and(char::is_uppercase) => {
+            if !node.children.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    &node.tag,
+                    "component tags are self-closing",
+                ));
+            }
+            let props = syn::Ident::new(&format!("{tag}Props"), node.tag.span());
+            let tag_ident = &node.tag;
+            let fields = node.attrs.iter().map(|attr| {
+                let key = &attr.key;
+                let value = &attr.value;
+                quote! { #key: #value }
+            });
+            Ok(quote! { #tag_ident(&cx, #props { #(#fields),* }) })
+        }
         _ => Err(syn::Error::new_spanned(
             &node.tag,
-            "unknown tag; expected Column, Row, Text, Button, Show, Loading, Embed, or For",
+            "unknown tag; expected a component or Column, Row, Text, Button, Show, Loading, Embed, or For",
         )),
     }
 }
@@ -311,4 +331,19 @@ pub fn view(input: TokenStream) -> TokenStream {
         Ok(tokens) => tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }
+}
+
+/// Mark a function as a component.
+///
+/// Components take `cx` first and optionally a props struct. Component tags in
+/// `view!` expand to `Name(cx, NameProps { ... })`.
+#[proc_macro_attribute]
+pub fn component(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let function = parse_macro_input!(item as syn::ItemFn);
+    if function.sig.inputs.is_empty() {
+        return syn::Error::new_spanned(&function.sig.ident, "a component requires a Cx parameter")
+            .to_compile_error()
+            .into();
+    }
+    quote! { #[allow(non_snake_case)] #function }.into()
 }

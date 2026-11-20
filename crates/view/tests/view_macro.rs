@@ -1,11 +1,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use macros::view;
-use reactive_core::{memo, signal, Runtime};
+use macros::{component, view};
+use std::future::poll_fn;
+use std::task::Poll;
+
+use reactive_core::{create_async_memo, memo, signal, Runtime};
 use renderer_api::ResolvedStyle;
 use renderer_null::{NullRenderer, SharedNullRenderer};
-use view::ViewTree;
+use view::{Prop, View, ViewTree};
 
 #[test]
 fn view_macro_builds_a_counter() {
@@ -146,5 +149,78 @@ fn view_macro_show_switches_branches() {
     tree.frame(&cx, 1);
     let node = tree.renderer_id(tree.children(root)[0]).unwrap();
     assert_eq!(renderer.borrow().text_of(node), Some("yes"));
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn view_macro_loading_detects_pending_content_without_ready() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let renderer = Rc::new(RefCell::new(NullRenderer::new()));
+    let tree = ViewTree::new(
+        Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
+        runtime.clone(),
+    );
+    let data = create_async_memo(&cx, |_cx, _: Option<&String>| {
+        Box::pin(poll_fn(|_| Poll::Ready(Ok("loaded".to_string() as String))))
+    });
+
+    let root = tree.mount(
+        &cx,
+        view! {
+            <Loading fallback={|_cx| view! { <Text>"loading"</Text> }}>
+                <Text>{data.get(cx)}</Text>
+            </Loading>
+        },
+    );
+    tree.frame(&cx, 0);
+    let fallback = tree.children(root)[1];
+    let node = tree.renderer_id(fallback).unwrap();
+    assert_eq!(renderer.borrow().text_of(node), Some("loading"));
+
+    for frame in 1..8 {
+        runtime.pump();
+        cx.flush().unwrap();
+        tree.frame(&cx, frame);
+    }
+    let content = tree.children(root)[0];
+    let node = tree.renderer_id(content).unwrap();
+    assert_eq!(renderer.borrow().text_of(node), Some("loaded"));
+    tree.unmount(&cx, root);
+}
+
+#[derive(Default)]
+struct BadgeProps {
+    label: Prop<String>,
+}
+
+#[component]
+fn Badge(cx: &reactive_core::Cx<'_>, props: BadgeProps) -> View {
+    let _ = cx;
+    let label = props.label;
+    view::text_fn(move |cx| label.get(cx))
+}
+
+#[test]
+fn view_macro_component_and_props() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let renderer = Rc::new(RefCell::new(NullRenderer::new()));
+    let tree = ViewTree::new(
+        Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
+        runtime.clone(),
+    );
+    let root = tree.mount(
+        &cx,
+        view! {
+            <Column>
+                <Badge label={Prop::static_value("badge".to_string())} />
+            </Column>
+        },
+    );
+    tree.frame(&cx, 0);
+    let badge = tree.children(root)[0];
+    let text = tree.renderer_id(badge).unwrap();
+    assert_eq!(renderer.borrow().text_of(text), Some("badge"));
     tree.unmount(&cx, root);
 }
