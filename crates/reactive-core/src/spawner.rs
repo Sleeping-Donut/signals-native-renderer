@@ -24,6 +24,11 @@ pub trait Spawner {
     /// Poll queued tasks once. Hosts with their own loop may leave this as a
     /// no-op; [`ManualSpawner`] overrides it.
     fn pump(&self) {}
+
+    /// Number of queued tasks, when the host can report it.
+    fn pending(&self) -> usize {
+        0
+    }
 }
 
 /// A deterministic executor for tests and the default graph runtime.
@@ -103,6 +108,10 @@ impl Spawner for ManualSpawner {
     fn pump(&self) {
         let _ = ManualSpawner::pump(self);
     }
+
+    fn pending(&self) -> usize {
+        ManualSpawner::pending(self)
+    }
 }
 
 impl<S: Spawner + ?Sized> Spawner for std::rc::Rc<S> {
@@ -116,6 +125,10 @@ impl<S: Spawner + ?Sized> Spawner for std::rc::Rc<S> {
 
     fn pump(&self) {
         (**self).pump();
+    }
+
+    fn pending(&self) -> usize {
+        (**self).pending()
     }
 }
 

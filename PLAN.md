@@ -405,11 +405,12 @@ complete under the hardware-adapted M3 Pro baseline.
 ### Phase 7 — Stores and authoring (3–4 weeks)
 
 **Status (2026-11-20): authoring slice started.** `signal!` and `memo!` exist;
-`view!` now supports attributes, `For`, and `Embed`; both demo files are split
-into `model`/`styles`/`signals`/`app` modules and use the authoring macros. Store
-derives, fields, patches, keyed stores, and store diagnostics remain. The
-states/cities demo does not depend on stores; it builds on the Phase 2 async
-primitives and the Phase 4–6 view/input layers.
+`view!` now supports attributes, `Loading`, `For`, and `Embed`; both demo files
+are split into `model`/`styles`/`signals`/`app` modules and use the authoring
+macros. The states/cities UI uses the view-aware `<Loading>` form instead of the
+`bool + view_slot` bridge. Store derives, fields, patches, keyed stores, and
+store diagnostics remain. The states/cities demo does not depend on stores; it
+builds on the Phase 2 async primitives and the Phase 4–6 view/input layers.
 
 **Build:** `#[derive(Store)]`, `Field`/`Subfield`, `Patch`, keyed collections,
 `store!`/`view!` ergonomics, props as signals, diagnostics for strict reads and

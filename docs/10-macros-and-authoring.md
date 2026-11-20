@@ -49,14 +49,18 @@ For users, the syntax looks similar; the semantics are more like Solid's compile
 output than its component function.
 
 **Conventions in this document.** Reactive constructors use one `create_*` family,
-with `signal!(cx, v)` and `memo!(cx, compute)` as the common authoring forms:
+with `signal!(cx, v)`, `signal!(derive cx, compute)`,
+`signal!(async cx, compute)`, `memo!(cx, compute)`, and
+`memo!(async cx, compute)` as the common authoring forms:
 `create_signal(cx, v) -> (ReadSignal<T>, WriteSignal<T>)`,
 `create_derived_signal(cx, ...)`, `create_async_derived_signal(cx, ...)`,
 `create_memo(cx, ...)`, `create_async_memo(cx, ...)`, `create_derived(cx, ...)`.
 Types with a single, non-combinatoric constructor use `Type::new`
 (`Store::new`, `ViewSlot::new`). Every writable source and memo has
-`_unchecked` (always notify) and `_with` (custom comparator) forms; the macros
-expose only the default. All reactive operations take `&Cx`. There is no global
+`_unchecked` (always notify) and `_with` (custom comparator) forms. The macros
+expose the default, derived (`signal!(derive ...)`), async
+(`signal!(async ...)`, `memo!(async ...)`), and comparator (`memo!(..., eq)`)
+forms. All reactive operations take `&Cx`. There is no global
 graph; the context resolves the runtime and owner. Every component takes `cx` as
 its first parameter; `view!` expressions use that same `cx`.
 
@@ -73,11 +77,24 @@ form uses `ElementKind::Row`, `ElementKind::Text`, `ElementKind::Button`, etc.
 ## 2. `view!`
 
 **Current implementation.** The macro supports `Column`, `Row`, `Text`,
-`Button`, `For`, and `Embed`; literal or `{expression}` text; and attributes for
-`style`, `hover_style`, `focus_style`, `cursor`, `tooltip`, `disabled_when`,
-`tab_index`, `focusable`, and `disabled`. `Button` requires `on_click`. `For`
-expands to `keyed_list`; `Embed` inserts an existing `View`. Components, props,
-`Show`, slots, and the full control-flow surface are not implemented yet.
+`Button`, `Loading`, `For`, and `Embed`; literal or `{expression}` text; and
+attributes for `style`, `hover_style`, `focus_style`, `cursor`, `tooltip`,
+`disabled_when`, `tab_index`, `focusable`, and `disabled`. `Button` requires
+`on_click`. `For` expands to `keyed_list`; `Embed` inserts an existing `View`.
+`Loading` takes `ready={...}` and `fallback={...}` and expands to the
+view-aware loading boundary:
+
+```rust
+<Loading
+    ready={move |cx| { let _ = states.get(cx); true }}
+    fallback={|_cx| loading_view()}
+>
+    <Embed expr={content_view(...)} />
+</Loading>
+```
+
+Components, props, `Show`, slots, and the rest of the control-flow surface are
+not implemented yet.
 
 ### 2.1 Syntax
 

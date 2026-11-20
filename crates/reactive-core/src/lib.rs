@@ -31,6 +31,12 @@ pub use spawner::{LocalBoxFuture, ManualSpawner, Spawner};
 /// `signal!(cx, value)` is `create_signal(cx, value)`.
 #[macro_export]
 macro_rules! signal {
+    (derive $cx:expr, $compute:expr $(,)?) => {
+        $crate::create_derived_signal($cx, $compute)
+    };
+    (async $cx:expr, $compute:expr $(,)?) => {
+        $crate::create_async_derived_signal($cx, $compute)
+    };
     ($cx:expr, $value:expr $(,)?) => {
         $crate::create_signal($cx, $value)
     };
@@ -42,6 +48,9 @@ macro_rules! signal {
 /// argument to use a custom comparator: `memo!(cx, compute, equals)`.
 #[macro_export]
 macro_rules! memo {
+    (async $cx:expr, $compute:expr $(,)?) => {
+        $crate::create_async_memo($cx, $compute)
+    };
     ($cx:expr, $compute:expr $(,)?) => {
         $crate::create_memo($cx, $compute)
     };

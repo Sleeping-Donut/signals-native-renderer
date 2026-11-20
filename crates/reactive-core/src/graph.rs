@@ -665,6 +665,12 @@ impl<'a> Cx<'a> {
         self.rt.pump();
     }
 
+    /// Number of queued local tasks, when the host can report it.
+    #[must_use]
+    pub fn pending_tasks(self) -> usize {
+        self.rt.spawner.pending()
+    }
+
     /// Run a closure, then flush.
     pub fn flush_with<R>(self, f: impl FnOnce() -> R) -> Result<R, FlushError> {
         let value = f();
@@ -1000,7 +1006,9 @@ impl Runtime {
     fn is_pending_probe<T>(&self, read: impl FnOnce(&Cx<'_>) -> T) -> bool {
         let previous_probe = self.pending_probe.replace(true);
         let previous_found = self.pending_probe_found.replace(false);
+        let previous_class = self.reader_class.replace(ReaderClass::Display);
         let result = catch_unwind(AssertUnwindSafe(|| read(&self.cx())));
+        self.reader_class.set(previous_class);
         let found = self.pending_probe_found.get();
         self.pending_probe.set(previous_probe);
         self.pending_probe_found.set(previous_found);
@@ -1172,11 +1180,18 @@ impl Runtime {
             (compute, old)
         };
 
+        let is_effect = node.borrow().kind.is_effect();
         let previous_observer = self.observer.replace(Some(id));
         let previous_tracking = self.tracking.replace(true);
+        let previous_class = self.reader_class.replace(if is_effect {
+            ReaderClass::Display
+        } else {
+            ReaderClass::Derive
+        });
         let result = catch_unwind(AssertUnwindSafe(|| {
             compute(&self.cx(), old.as_ref().map(|value| &**value as &dyn Any))
         }));
+        self.reader_class.set(previous_class);
         self.observer.set(previous_observer);
         self.tracking.set(previous_tracking);
 
@@ -1279,9 +1294,11 @@ impl Runtime {
 
         let previous_observer = self.observer.replace(Some(id));
         let previous_tracking = self.tracking.replace(true);
+        let previous_class = self.reader_class.replace(ReaderClass::Derive);
         let result = catch_unwind(AssertUnwindSafe(|| {
             compute(&self.cx(), old.as_ref().map(|value| &**value as &dyn Any))
         }));
+        self.reader_class.set(previous_class);
         self.observer.set(previous_observer);
         self.tracking.set(previous_tracking);
 

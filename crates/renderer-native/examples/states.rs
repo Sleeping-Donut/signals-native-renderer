@@ -7,8 +7,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use reactive_core::{
-    create_async_memo, create_derived_signal, is_pending, loading_boundary, LoadingBoundary, Memo,
-    ReadSignal, Runtime, RuntimeHandle, WriteSignal,
+    is_pending, memo, signal, Memo, ReadSignal, Runtime, RuntimeHandle, WriteSignal,
 };
 use renderer_api::{
     Color, CursorIcon, DefiniteLength, Edges, KeyEvent, Length, PointerEvent, ResolvedStyle, Size,
@@ -179,7 +178,7 @@ mod signals {
     use super::styles;
     use super::*;
     use macros::view;
-    use reactive_core::create_memo;
+    use reactive_core::memo;
     use view::View;
 
     fn state_row(name: &str, state: ReadSignal<String>, set_state: WriteSignal<String>) -> View {
@@ -243,12 +242,8 @@ mod signals {
         set_state: WriteSignal<String>,
         set_city: WriteSignal<String>,
     ) -> View {
-        let selection = create_memo(cx, move |cx, previous: Option<&String>| {
-            if is_pending(cx, move |cx| cities.get(cx)) {
-                previous.cloned().unwrap_or_default()
-            } else {
-                format!("Selection: {}, {}", city.get(cx), state.get(cx))
-            }
+        let selection = memo!(cx, move |cx, _previous: Option<&String>| {
+            format!("Selection: {}, {}", city.get(cx), state.get(cx))
         });
 
         view! {
@@ -280,6 +275,28 @@ mod signals {
         }
     }
 
+    pub fn app_view(
+        states: Memo<Vec<String>>,
+        cities: Memo<Vec<String>>,
+        state: ReadSignal<String>,
+        city: ReadSignal<String>,
+        set_state: WriteSignal<String>,
+        set_city: WriteSignal<String>,
+    ) -> View {
+        view! {
+            <Loading
+                ready={move |cx| {
+                    let _ = states.get(cx);
+                    let _ = cities.get(cx);
+                    true
+                }}
+                fallback={|_cx| loading_view()}
+            >
+                <Embed expr={content_view(cx, states, cities, state, city, set_state, set_city)} />
+            </Loading>
+        }
+    }
+
     pub fn loading_view() -> View {
         view! {
             <Column style={styles::loading_root()}>
@@ -294,15 +311,11 @@ mod app {
     use super::signals;
     use super::*;
     use renderer_native::{PaintBackend, WgpuBackend};
-    use view::view_slot;
 
     pub struct StatesApp {
         runtime: RuntimeHandle,
         tree: ViewTree,
         root: reactive_core::NodeId,
-        states: Memo<Vec<String>>,
-        cities: Memo<Vec<String>>,
-        ready: LoadingBoundary<bool>,
         frames: u64,
     }
 
@@ -317,7 +330,7 @@ mod app {
             );
             let cx = runtime.cx();
 
-            let states = create_async_memo(&cx, |_cx, _: Option<&Vec<String>>| {
+            let states = memo!(async &cx, |_cx, _: Option<&Vec<String>>| {
                 Box::pin(async move {
                     model::sleep(model::DELAY_MS).await;
                     Ok(model::STATES
@@ -326,48 +339,27 @@ mod app {
                         .collect())
                 })
             });
-            let (state, set_state) = create_derived_signal(&cx, move |cx, _| {
+            let (state, set_state) = signal!(derive & cx, move |cx, _| {
                 states.get(cx).first().cloned().unwrap_or_default()
             });
-            let cities = create_async_memo(&cx, move |cx, _: Option<&Vec<String>>| {
+            let cities = memo!(async &cx, move |cx, _: Option<&Vec<String>>| {
                 let state_name = state.get(cx);
                 Box::pin(async move {
                     model::sleep(model::DELAY_MS).await;
                     Ok(model::cities_for(&state_name))
                 })
             });
-            let (city, set_city) = create_derived_signal(&cx, move |cx, _| {
+            let (city, set_city) = signal!(derive & cx, move |cx, _| {
                 cities.get(cx).first().cloned().unwrap_or_default()
             });
-            let ready = loading_boundary(
+            let root = tree.mount(
                 &cx,
-                None,
-                move |cx| {
-                    let _ = states.get(cx);
-                    let _ = cities.get(cx);
-                    true
-                },
-                |_| false,
+                signals::app_view(states, cities, state, city, set_state, set_city),
             );
-
-            let app = view_slot(
-                move |cx| ready.get(cx),
-                move |cx| {
-                    if ready.get(cx) {
-                        signals::content_view(cx, states, cities, state, city, set_state, set_city)
-                    } else {
-                        signals::loading_view()
-                    }
-                },
-            );
-            let root = tree.mount(&cx, app);
             Self {
                 runtime,
                 tree,
                 root,
-                states,
-                cities,
-                ready,
                 frames: 0,
             }
         }
@@ -420,16 +412,7 @@ mod app {
         }
 
         fn wants_frame(&self) -> bool {
-            let cx = self.runtime.cx();
-            if !self.ready.get(&cx) {
-                return true;
-            }
-            let states = self.states;
-            let cities = self.cities;
-            is_pending(&cx, move |cx| {
-                let _ = states.get(cx);
-                let _ = cities.get(cx);
-            })
+            self.runtime.cx().pending_tasks() > 0
         }
 
         fn accesskit_update(&self) -> Option<accesskit::TreeUpdate> {

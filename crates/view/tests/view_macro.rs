@@ -84,3 +84,38 @@ fn view_macro_attributes_and_for() {
 
     tree.unmount(&cx, root);
 }
+
+#[test]
+fn view_macro_loading_switches_from_fallback_to_content() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let renderer = Rc::new(RefCell::new(NullRenderer::new()));
+    let tree = ViewTree::new(
+        Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
+        runtime.clone(),
+    );
+    let (ready, set_ready) = signal!(&cx, false);
+
+    let root = tree.mount(
+        &cx,
+        view! {
+            <Loading
+                ready={move |cx| ready.get(cx)}
+                fallback={|_cx| view! { <Text>"loading"</Text> }}
+            >
+                <Text>"content"</Text>
+            </Loading>
+        },
+    );
+    tree.frame(&cx, 0);
+    let fallback = tree.renderer_id(tree.children(root)[0]).unwrap();
+    assert_eq!(renderer.borrow().text_of(fallback), Some("loading"));
+
+    set_ready.set(&cx, true);
+    cx.flush().unwrap();
+    tree.frame(&cx, 1);
+    let content = tree.renderer_id(tree.children(root)[0]).unwrap();
+    assert_eq!(renderer.borrow().text_of(content), Some("content"));
+
+    tree.unmount(&cx, root);
+}

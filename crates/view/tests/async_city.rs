@@ -34,7 +34,6 @@ struct Harness {
     set_state: reactive_core::WriteSignal<String>,
     set_city: reactive_core::WriteSignal<String>,
     cities: reactive_core::Memo<Vec<String>>,
-    pending: reactive_core::Memo<bool>,
     frames: u64,
 }
 
@@ -78,19 +77,14 @@ fn setup() -> Harness {
     let (city, set_city) = create_derived_signal(&cx, move |cx, _| {
         cities.get(cx).first().cloned().unwrap_or_default()
     });
-    let pending = create_memo(&cx, move |cx, _| is_pending(cx, move |cx| cities.get(cx)));
-    let selection = create_memo(&cx, move |cx, previous: Option<&String>| {
-        if is_pending(cx, move |cx| cities.get(cx)) {
-            previous.cloned().unwrap_or_default()
-        } else {
-            format!(
-                "{}|{}|{}|{}",
-                states.get(cx).len(),
-                state.get(cx),
-                cities.get(cx).len(),
-                city.get(cx)
-            )
-        }
+    let selection = create_memo(&cx, move |cx, _previous: Option<&String>| {
+        format!(
+            "{}|{}|{}|{}",
+            states.get(cx).len(),
+            state.get(cx),
+            cities.get(cx).len(),
+            city.get(cx)
+        )
     });
     let ready = loading_boundary(
         &cx,
@@ -122,7 +116,6 @@ fn setup() -> Harness {
         set_state,
         set_city,
         cities,
-        pending,
         frames: 0,
     }
 }
@@ -188,10 +181,6 @@ fn async_city_selection_waits_pends_and_resets() {
         cx.flush().unwrap();
         let cities = harness.cities;
         assert!(is_pending(&cx, move |cx| cities.get(cx)));
-        assert!(
-            harness.pending.get(&cx),
-            "pending memo observes flight start"
-        );
         harness.frames += 1;
         harness.tree.frame(&cx, harness.frames);
         let content = harness.tree.children(harness.root)[0];

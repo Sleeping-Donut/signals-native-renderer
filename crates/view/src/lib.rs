@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 
 use layout::{LayoutEngine, LayoutId, LayoutStats, Rect, TextContent};
 use reactive_core::{
-    render_effect, EffectHandle, NodeId as ViewNodeId, OwnerHandle, ReadSignal, RuntimeHandle,
+    loading_boundary, render_effect, EffectHandle, NodeId as ViewNodeId, OwnerHandle, ReadSignal,
+    RuntimeHandle,
 };
 use renderer_api::{
     A11yRole, Color, CursorIcon, Display, Edges, ElementTag, FlexDirection, FrameInfo, Key,
@@ -3520,6 +3521,53 @@ where
             }
         },
     )
+}
+
+/// Mount a list of views under one structural fragment.
+#[must_use]
+pub fn fragment(children: Vec<View>) -> View {
+    view(move |cx, tree| {
+        let id = tree.create_fragment();
+        for child in children {
+            let node = child.mount(cx, tree);
+            tree.insert_child(id, node, None);
+        }
+        id
+    })
+}
+
+/// A view-aware loading boundary.
+///
+/// `ready` is the verdict probe: it returns `true` once the content's async
+/// reads have a committed answer. It normally reads the same async values the
+/// content will read. `fallback` mounts on the first load; once content has
+/// appeared it is retained while later refetches are pending.
+pub fn loading_when<R, F, C>(ready: R, fallback: F, content: C) -> View
+where
+    R: Fn(&reactive_core::Cx<'_>) -> bool + 'static,
+    F: Fn(&reactive_core::Cx<'_>) -> View + 'static,
+    C: Fn(&reactive_core::Cx<'_>) -> View + 'static,
+{
+    let ready = Rc::new(ready);
+    let fallback = Rc::new(fallback);
+    let content = Rc::new(content);
+    view(move |cx, tree| {
+        let ready_for_boundary = Rc::clone(&ready);
+        let boundary = loading_boundary(cx, None, move |cx| ready_for_boundary(cx), |_| false);
+        let fallback = Rc::clone(&fallback);
+        let content = Rc::clone(&content);
+        let slot = view_slot(
+            move |cx| boundary.get(cx),
+            move |cx| {
+                if boundary.get(cx) {
+                    content(cx)
+                } else {
+                    fallback(cx)
+                }
+            },
+        );
+        slot.mount(cx, tree)
+    })
 }
 
 /// A dynamic branch keyed by a value. A key change replaces the branch.
