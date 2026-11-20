@@ -358,17 +358,17 @@ impl<T: 'static> Memo<T> {
     /// a value.
     pub fn get(&self, cx: &Cx) -> T;
 
-    /// Verdict only: is a new question still in flight or staged?
-    pub fn is_pending(&self, cx: &Cx) -> bool;
-
     pub fn with<R>(&self, cx: &Cx, f: impl FnOnce(&T) -> R) -> R;
 }
 
 impl<T: 'static> ReadSignal<T> {
     pub fn get(&self, cx: &Cx) -> T;
-    pub fn is_pending(&self, cx: &Cx) -> bool;
     pub fn with<R>(&self, cx: &Cx, f: impl FnOnce(&T) -> R) -> R;
 }
+
+/// Evaluated in a pending-probe context. Any async read in the expression
+/// that is replacing a committed value makes the verdict true.
+pub fn is_pending<T>(cx: &Cx, read: impl FnOnce(&Cx) -> T) -> bool;
 
 impl<T: 'static> WriteSignal<T> {
     pub fn set(&self, cx: &Cx, value: T);
@@ -510,12 +510,12 @@ fn greeting(user: &User) -> String {
 let text = create_memo(cx, move |cx| greeting(&user.get(cx)));
 
 // 4. Imperative edge: read only when the value is ready.
-if !count.is_pending(cx) {
+if !is_pending(cx, |cx| count.get(cx)) {
     log_click(count.get(cx));
 }
 
-// 5. Verdict only; no value read.
-if !user.is_pending(cx) {
+// 5. Verdict only; no value read. The probe can combine any expressions.
+if !is_pending(cx, |cx| user.get(cx).id) {
     let user = user.get(cx);
     open_profile(cx, user.id);
 }
@@ -1157,10 +1157,12 @@ These are direct translations of `F-4`/`F-5`/`F-9`.
 ### 7.1 `isPending`
 
 ```rust
-pub fn is_pending<T>(cx: &Cx, memo: Memo<T>) -> bool
+pub fn is_pending<T>(cx: &Cx, read: impl FnOnce(&Cx) -> T) -> bool
 ```
 
-Returns true iff a **new question** has no committed answer:
+The closure is evaluated in a probe context. It may combine signals, memos,
+props, helper calls, or plain expressions; no specific handle type is required.
+Returns true iff a **new question** in the expression has no committed answer:
 
 - a dependency changed and the new flight has not landed;
 - a landed value is staged in an open txn.

@@ -9,8 +9,8 @@ use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use reactive_core::{
-    create_async_memo, create_derived_signal, loading_boundary, Memo, ReadSignal, Runtime,
-    RuntimeHandle, WriteSignal,
+    create_async_memo, create_derived_signal, create_memo, is_pending, loading_boundary,
+    LoadingBoundary, Memo, ReadSignal, Runtime, RuntimeHandle, WriteSignal,
 };
 use renderer_api::{
     Color, CursorIcon, DefiniteLength, Edges, KeyEvent, Length, PointerEvent, ResolvedStyle, Size,
@@ -38,6 +38,7 @@ struct StatesApp {
     root: reactive_core::NodeId,
     states: Memo<Vec<String>>,
     cities: Memo<Vec<String>>,
+    ready: LoadingBoundary<bool>,
     frames: u64,
 }
 
@@ -155,6 +156,7 @@ fn loading_view() -> View {
 }
 
 fn content_view(
+    cx: &reactive_core::Cx<'_>,
     states: Memo<Vec<String>>,
     cities: Memo<Vec<String>>,
     state: ReadSignal<String>,
@@ -162,6 +164,13 @@ fn content_view(
     set_state: WriteSignal<String>,
     set_city: WriteSignal<String>,
 ) -> View {
+    let selection = create_memo(cx, move |cx, previous: Option<&String>| {
+        if is_pending(cx, move |cx| cities.get(cx)) {
+            previous.cloned().unwrap_or_default()
+        } else {
+            format!("Selection: {}, {}", city.get(cx), state.get(cx))
+        }
+    });
     let state_rows = keyed_list(
         move |cx| states.get(cx),
         |name| name.clone(),
@@ -205,7 +214,7 @@ fn content_view(
             .hover_style(HOVER)
             .focus_style(FOCUS)
             .cursor(CursorIcon::Pointer)
-            .disabled_when(move |cx| cities.is_pending(cx))
+            .disabled_when(move |cx| is_pending(cx, move |cx| cities.get(cx)))
         },
     );
 
@@ -237,8 +246,7 @@ fn content_view(
             },
             ..ResolvedStyle::default()
         }),
-        text_fn(move |cx| format!("Selection: {}, {}", city.get(cx), state.get(cx)))
-            .style(text_style()),
+        text_fn(move |cx| selection.get(cx)).style(text_style()),
     ])
     .style(root)
 }
@@ -288,7 +296,7 @@ impl StatesApp {
             move |cx| ready.get(cx),
             move |cx| {
                 if ready.get(cx) {
-                    content_view(states, cities, state, city, set_state, set_city)
+                    content_view(cx, states, cities, state, city, set_state, set_city)
                 } else {
                     loading_view()
                 }
@@ -301,6 +309,7 @@ impl StatesApp {
             root,
             states,
             cities,
+            ready,
             frames: 0,
         }
     }
@@ -354,7 +363,15 @@ impl WindowApp for StatesApp {
 
     fn wants_frame(&self) -> bool {
         let cx = self.runtime.cx();
-        self.states.is_pending(&cx) || self.cities.is_pending(&cx)
+        if !self.ready.get(&cx) {
+            return true;
+        }
+        let states = self.states;
+        let cities = self.cities;
+        is_pending(&cx, move |cx| {
+            let _ = states.get(cx);
+            let _ = cities.get(cx);
+        })
     }
 
     fn accesskit_update(&self) -> Option<accesskit::TreeUpdate> {

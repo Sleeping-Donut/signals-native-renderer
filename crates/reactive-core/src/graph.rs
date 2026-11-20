@@ -184,10 +184,14 @@ impl<T: 'static> ReadSignal<T> {
     /// A tracked read that borrows the value for the closure's lifetime.
     pub fn with<R>(self, cx: &Cx<'_>, f: impl FnOnce(&T) -> R) -> R {
         cx.rt.track(self.id);
+        if cx.rt.pending_probe.get() {
+            cx.rt.track_pending(self.id);
+        }
         cx.rt.ensure_clean(self.id);
         if cx.rt.reader_class.get() == ReaderClass::Derive && cx.rt.is_pending_node(self.id) {
             cx.rt.raise_pending(self.id);
         }
+        cx.rt.note_pending_read(self.id);
         let node = cx.rt.node(self.id).expect("signal was disposed");
         let node = node.borrow();
         let value = node.value.borrow();
@@ -200,12 +204,6 @@ impl<T: 'static> ReadSignal<T> {
             }
         };
         f(value)
-    }
-
-    /// Whether the node has a new answer in flight or waiting to commit.
-    #[must_use]
-    pub fn is_pending(self, cx: &Cx<'_>) -> bool {
-        cx.rt.is_pending_node(self.id)
     }
 }
 
@@ -315,10 +313,14 @@ impl<T: 'static> Memo<T> {
     /// A tracked read that borrows the cached value.
     pub fn with<R>(self, cx: &Cx<'_>, f: impl FnOnce(&T) -> R) -> R {
         cx.rt.track(self.id);
+        if cx.rt.pending_probe.get() {
+            cx.rt.track_pending(self.id);
+        }
         cx.rt.ensure_clean(self.id);
         if cx.rt.reader_class.get() == ReaderClass::Derive && cx.rt.is_pending_node(self.id) {
             cx.rt.raise_pending(self.id);
         }
+        cx.rt.note_pending_read(self.id);
         let node = cx.rt.node(self.id).expect("memo was disposed");
         let node = node.borrow();
         let value = node.value.borrow();
@@ -331,12 +333,6 @@ impl<T: 'static> Memo<T> {
             }
         };
         f(value)
-    }
-
-    /// Whether a new answer is in flight or waiting to commit.
-    #[must_use]
-    pub fn is_pending(self, cx: &Cx<'_>) -> bool {
-        cx.rt.is_pending_node(self.id)
     }
 }
 
@@ -395,16 +391,14 @@ impl<T: 'static> LoadingBoundary<T> {
         cx.rt.is_disposed(self.id)
     }
 
-    /// Whether the content has a new answer in flight.
-    #[must_use]
-    pub fn is_pending(self, cx: &Cx<'_>) -> bool {
-        cx.rt.is_pending_node(self.id)
-    }
-
     /// A tracked read of the boundary value.
     pub fn with<R>(self, cx: &Cx<'_>, f: impl FnOnce(&T) -> R) -> R {
         cx.rt.track(self.id);
+        if cx.rt.pending_probe.get() {
+            cx.rt.track_pending(self.id);
+        }
         cx.rt.ensure_clean(self.id);
+        cx.rt.note_pending_read(self.id);
         let node = cx.rt.node(self.id).expect("boundary was disposed");
         let node = node.borrow();
         let value = node.value.borrow();
@@ -700,6 +694,9 @@ pub struct Runtime {
     reader_class: Cell<ReaderClass>,
     clock: VirtualClock,
     dirty_visits: Cell<u64>,
+    pending_tokens: RefCell<HashMap<NodeId, NodeId>>,
+    pending_probe: Cell<bool>,
+    pending_probe_found: Cell<bool>,
 }
 
 impl Default for Runtime {
@@ -744,6 +741,9 @@ impl Runtime {
             reader_class: Cell::new(ReaderClass::Display),
             clock: VirtualClock::new(),
             dirty_visits: Cell::new(0),
+            pending_tokens: RefCell::new(HashMap::new()),
+            pending_probe: Cell::new(false),
+            pending_probe_found: Cell::new(false),
         }
     }
 
@@ -995,6 +995,54 @@ impl Runtime {
             }
             stack.extend(subs);
         }
+    }
+
+    fn is_pending_probe<T>(&self, read: impl FnOnce(&Cx<'_>) -> T) -> bool {
+        let previous_probe = self.pending_probe.replace(true);
+        let previous_found = self.pending_probe_found.replace(false);
+        let result = catch_unwind(AssertUnwindSafe(|| read(&self.cx())));
+        let found = self.pending_probe_found.get();
+        self.pending_probe.set(previous_probe);
+        self.pending_probe_found.set(previous_found);
+        match result {
+            Ok(_) => found,
+            // A suspended read with no committed value is loading, not a new
+            // question. Pending is the verdict that an old value is being
+            // replaced by a newer answer.
+            Err(payload) if is_suspension(&*payload) => found,
+            Err(payload) => resume_unwind(payload),
+        }
+    }
+
+    fn note_pending_read(&self, id: NodeId) {
+        if self.pending_probe.get() && self.is_pending_node(id) {
+            self.pending_probe_found.set(true);
+        }
+    }
+
+    fn track_pending(&self, id: NodeId) {
+        if let Some(token) = self.pending_tokens.borrow().get(&id).copied() {
+            self.track(token);
+        }
+    }
+
+    fn bump_pending(&self, id: NodeId) {
+        let Some(token) = self.pending_tokens.borrow().get(&id).copied() else {
+            return;
+        };
+        let Some(node) = self.node(token) else {
+            return;
+        };
+        let next = node
+            .borrow()
+            .value
+            .borrow()
+            .as_ref()
+            .and_then(|value| value.downcast_ref::<u64>())
+            .copied()
+            .unwrap_or(0)
+            .wrapping_add(1);
+        self.stage(token, Box::new(next));
     }
 
     fn mark_subs(&self, id: NodeId) {
@@ -1262,6 +1310,10 @@ impl Runtime {
                 }
                 drop(node_ref);
                 self.spawn_flight(id, flight, slot, cancel);
+                // Pending is observable state: readers of `is_pending`
+                // (disabled controls, held display text) must re-run when a
+                // flight starts, not only when it commits.
+                self.bump_pending(id);
             }
             Err(payload) => {
                 node.borrow_mut().computing.set(false);
@@ -1731,6 +1783,7 @@ impl Runtime {
                     if changed {
                         self.mark_subs(id);
                     }
+                    self.bump_pending(id);
                 }
                 Err(error) => {
                     let node_ref = node.borrow();
@@ -1741,6 +1794,7 @@ impl Runtime {
                     node_ref.last_changed.set(revision);
                     drop(node_ref);
                     self.mark_subs(id);
+                    self.bump_pending(id);
                 }
             }
         }
@@ -1815,6 +1869,16 @@ fn create_signal_impl<T: 'static>(
         .replace(Box::new(value));
     node.borrow().computed.set(true);
     (ReadSignal::new(id), WriteSignal::new(id))
+}
+
+/// Whether any computation read by `read` has a newer answer in flight.
+///
+/// The closure is evaluated in a pending-probe context: async reads with a
+/// committed value report their old value but mark the probe; reads with no
+/// committed value suspend and count as pending. This accepts any expression,
+/// not a specific signal type.
+pub fn is_pending<T>(cx: &Cx<'_>, read: impl FnOnce(&Cx<'_>) -> T) -> bool {
+    cx.rt.is_pending_probe(read)
 }
 
 /// Create a writable derived signal.
@@ -1919,6 +1983,8 @@ where
         .borrow_mut()
         .replace(async_compute);
     node.borrow_mut().state.set(DirtyState::Dirty);
+    let (pending, _) = create_signal(cx, 0_u64);
+    cx.rt.pending_tokens.borrow_mut().insert(id, pending.id());
     Memo::new(id)
 }
 
@@ -1948,6 +2014,8 @@ where
         .borrow_mut()
         .replace(async_compute);
     node.borrow_mut().state.set(DirtyState::Dirty);
+    let (pending, _) = create_signal(cx, 0_u64);
+    cx.rt.pending_tokens.borrow_mut().insert(id, pending.id());
     (ReadSignal::new(id), WriteSignal::new(id))
 }
 

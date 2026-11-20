@@ -208,7 +208,8 @@ and frame loop.
 owner, observer, and frame phase. All reactive operations take `&Cx`.
 
 **Signal** — an internal full node handle. Public code gets the split pair from
-`create_signal()`: `ReadSignal<T>` (get/with/is_pending) and `WriteSignal<T>`
+`create_signal()`: `ReadSignal<T>` (get/with) and `WriteSignal<T>`; pending is
+read with `is_pending(cx, |cx| ...)`
 (set/update). There is no combined public signal and no `RwSignal`.
 
 **Core constructor** — reactive constructors use one `create_*` family:

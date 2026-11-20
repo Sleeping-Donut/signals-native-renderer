@@ -6,10 +6,11 @@ use std::rc::Rc;
 use std::task::Poll;
 
 use reactive_core::{
-    create_async_memo, create_derived_signal, loading_boundary, AsyncError, Runtime, RuntimeHandle,
+    create_async_memo, create_derived_signal, create_memo, is_pending, loading_boundary,
+    AsyncError, Runtime, RuntimeHandle,
 };
 use renderer_null::{NullRenderer, SharedNullRenderer};
-use view::{text, text_fn, view_slot, ViewTree};
+use view::{column, text, text_fn, view_slot, ViewTree};
 
 type Fut<T> = std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, AsyncError>>>>;
 
@@ -33,6 +34,7 @@ struct Harness {
     set_state: reactive_core::WriteSignal<String>,
     set_city: reactive_core::WriteSignal<String>,
     cities: reactive_core::Memo<Vec<String>>,
+    pending: reactive_core::Memo<bool>,
     frames: u64,
 }
 
@@ -76,6 +78,20 @@ fn setup() -> Harness {
     let (city, set_city) = create_derived_signal(&cx, move |cx, _| {
         cities.get(cx).first().cloned().unwrap_or_default()
     });
+    let pending = create_memo(&cx, move |cx, _| is_pending(cx, move |cx| cities.get(cx)));
+    let selection = create_memo(&cx, move |cx, previous: Option<&String>| {
+        if is_pending(cx, move |cx| cities.get(cx)) {
+            previous.cloned().unwrap_or_default()
+        } else {
+            format!(
+                "{}|{}|{}|{}",
+                states.get(cx).len(),
+                state.get(cx),
+                cities.get(cx).len(),
+                city.get(cx)
+            )
+        }
+    });
     let ready = loading_boundary(
         &cx,
         None,
@@ -90,15 +106,9 @@ fn setup() -> Harness {
         move |cx| ready.get(cx),
         move |cx| {
             if ready.get(cx) {
-                text_fn(move |cx| {
-                    format!(
-                        "{}|{}|{}|{}",
-                        states.get(cx).len(),
-                        state.get(cx),
-                        cities.get(cx).len(),
-                        city.get(cx)
-                    )
-                })
+                let cities = cities;
+                column(vec![text_fn(move |cx| selection.get(cx))])
+                    .disabled_when(move |cx| is_pending(cx, move |cx| cities.get(cx)))
             } else {
                 text("Loading")
             }
@@ -112,6 +122,7 @@ fn setup() -> Harness {
         set_state,
         set_city,
         cities,
+        pending,
         frames: 0,
     }
 }
@@ -173,19 +184,32 @@ fn async_city_selection_waits_pends_and_resets() {
         let cx = harness.runtime.cx();
         harness.set_state.set(&cx, "Florida".to_string());
         cx.flush().unwrap();
-        assert!(harness.cities.is_pending(&cx));
+        harness.runtime.pump();
+        cx.flush().unwrap();
+        let cities = harness.cities;
+        assert!(is_pending(&cx, move |cx| cities.get(cx)));
+        assert!(
+            harness.pending.get(&cx),
+            "pending memo observes flight start"
+        );
         harness.frames += 1;
         harness.tree.frame(&cx, harness.frames);
+        let content = harness.tree.children(harness.root)[0];
+        assert!(harness.tree.is_disabled(content));
     }
     let pending = scene_text(&harness.tree);
     assert!(
-        pending.contains("Los Angeles"),
-        "old city stays committed while Florida loads: {pending}"
+        pending.contains("3|California|3|Los Angeles"),
+        "selection holds the committed state and city while Florida loads: {pending}"
     );
 
     settle(&mut harness, |tree| {
         scene_text(tree).contains("3|Florida|3|Miami")
     });
+    {
+        let content = harness.tree.children(harness.root)[0];
+        assert!(!harness.tree.is_disabled(content));
+    }
 
     {
         let cx = harness.runtime.cx();

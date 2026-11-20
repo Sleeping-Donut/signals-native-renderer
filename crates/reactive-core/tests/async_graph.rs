@@ -9,8 +9,8 @@ use std::rc::Rc;
 use std::task::Poll;
 
 use reactive_core::{
-    create_async_memo, create_derived_signal, create_signal, error_boundary, loading_boundary,
-    AsyncError, LocalBoxFuture, ManualSpawner, ReaderClass, Runtime, Spawner,
+    create_async_memo, create_derived_signal, create_signal, error_boundary, is_pending,
+    loading_boundary, AsyncError, LocalBoxFuture, ManualSpawner, ReaderClass, Runtime, Spawner,
 };
 
 type Fut<T> = Pin<Box<dyn Future<Output = Result<T, AsyncError>>>>;
@@ -51,7 +51,7 @@ fn first_load_shows_fallback_then_content() {
 
     assert_eq!(boundary.get(&cx), "loading");
     assert!(
-        !boundary.is_pending(&cx),
+        !is_pending(&cx, |cx| boundary.get(cx)),
         "first load is loading, not pending"
     );
     runtime.pump();
@@ -94,7 +94,7 @@ fn navigation_keeps_old_content_until_the_new_answer_is_ready() {
     set_page.set(&cx, 2);
     cx.flush().unwrap();
     // The new question is in flight; the old page stays whole.
-    assert!(data.is_pending(&cx));
+    assert!(is_pending(&cx, |cx| data.get(cx)));
     assert_eq!(boundary.get(&cx), "data-1");
 
     runtime.pump();
@@ -301,7 +301,10 @@ fn sync_derived_over_async_reads_holds_without_a_new_constructor() {
 
     set_page.set(&cx, 2);
     cx.flush().unwrap();
-    assert!(state.is_pending(&cx), "the sync derivation is pending");
+    assert!(
+        is_pending(&cx, |cx| state.get(cx)),
+        "the sync derivation is pending"
+    );
     assert_eq!(boundary.get(&cx), "data-1");
 
     runtime.pump();

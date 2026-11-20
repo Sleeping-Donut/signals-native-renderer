@@ -399,7 +399,7 @@ For a plain `ReadSignal<i32>`, `get` is correct and never suspends. At an impera
 edge, check the verdict first rather than inventing a default:
 
 ```rust
-if !counter.count.is_pending(cx) {
+if !is_pending(cx, |cx| counter.count.get(cx)) {
     let current = counter.count.get(cx);
     log_count(current);
 }

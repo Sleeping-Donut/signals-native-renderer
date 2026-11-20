@@ -557,7 +557,8 @@ the error boundary / root error hook handles it (Solid's A3 rule).
 let (count, set_count) = create_signal(cx, v);                 // ReadSignal<T>, WriteSignal<T>
 let (value, set_value) = create_derived_signal(cx, |cx, prev| ...); // writable derived
 let (value, set_value) = create_async_derived_signal(cx, |cx| ...);         // writable derived, async
-count.get(cx) / count.is_pending(cx)
+count.get(cx)
+is_pending(cx, |cx| count.get(cx))   // closure probe; combines any reads
 set_count.set(cx, v)                 // replace; compares (T: PartialEq)
 set_count.update_with(cx, |&v| v)    // old -> new; compares, no clone
 set_count.update(cx, |v| ...)        // in place; always notifies
@@ -573,8 +574,9 @@ set_count.update(cx, |v| ...)        // in place; always notifies
 create_memo(cx, |cx, prev| ...) -> Memo<T>         // sync
 create_async_memo(cx, |cx| ...) -> Memo<T>         // async
 create_lazy_memo(cx, |cx, prev| ...) -> Memo<T>
-memo.get(cx) / memo.is_pending(cx)
+memo.get(cx)
 memo.with(cx, |v| ...)
+is_pending(cx, |cx| memo.get(cx))
 
 // Uncached read-only derivation
 create_derived(cx, |cx| ...) -> Derived<T>         // no node, no cache, sync only

@@ -1324,3 +1324,28 @@ fn keyed_row_a11y_id_and_focus_survive_reorder() {
 
     tree.unmount(&cx, root);
 }
+
+#[test]
+fn disabled_when_tracks_a_signal() {
+    let (runtime, tree, _renderer) = setup();
+    let cx = runtime.cx();
+    let (disabled, set_disabled) = create_signal(&cx, false);
+    let root = tree.mount(
+        &cx,
+        button_text("toggle", |_| {})
+            .style(px(80.0, 20.0))
+            .disabled_when(move |cx| disabled.get(cx)),
+    );
+    tree.set_viewport(200.0, 100.0);
+    tree.frame(&cx, 0);
+    assert!(!tree.is_disabled(root));
+    set_disabled.set(&cx, true);
+    cx.flush().unwrap();
+    tree.frame(&cx, 1);
+    assert!(tree.is_disabled(root));
+    set_disabled.set(&cx, false);
+    cx.flush().unwrap();
+    tree.frame(&cx, 2);
+    assert!(!tree.is_disabled(root));
+    tree.unmount(&cx, root);
+}

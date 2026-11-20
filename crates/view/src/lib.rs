@@ -1295,6 +1295,16 @@ impl ViewTree {
         self.set_focus(Some(handle.node()));
     }
 
+    /// Whether a node is currently disabled.
+    #[must_use]
+    pub fn is_disabled(&self, id: ViewNodeId) -> bool {
+        self.inner
+            .nodes
+            .borrow()
+            .get(id)
+            .is_some_and(|node| node.disabled)
+    }
+
     /// Whether a node is focused.
     #[must_use]
     pub fn is_focused(&self, id: ViewNodeId) -> bool {
