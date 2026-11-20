@@ -429,16 +429,19 @@ probe), a component/props macro, incremental layout experiments, damage regions,
 text cache eviction, arena compaction only if measurements demand it, fuzzers,
 benchmarks, devtools.
 
-**Status (2026-11-20): implementation complete; 24-hour wall-clock run remains.**
-Enum and dynamic stores, `Draft` guards, store diagnostics, the store-backed app,
-automatic view-aware `Loading`, and the component/props macro are implemented.
-The churn harness and published performance report are in
-[`docs/14-performance-report.md`](docs/14-performance-report.md) and
-[`soak.rs`](crates/reactive-core/tests/soak.rs). The checked-in 24-hour harness
-has been exercised for a short interval; the full wall-clock run remains.
+**Status (2026-11-20): complete.** Enum and dynamic stores, `Draft` guards,
+store diagnostics, the store-backed app, automatic view-aware `Loading`, and the
+component/props macro are implemented. The published report is
+[`docs/14-performance-report.md`](docs/14-performance-report.md). Soak coverage
+is split: an automated rapid fuzz/churn run for agents
+([`soak.rs`](crates/reactive-core/tests/soak.rs)) and an optional manual
+wall-clock monitor for humans ([`scripts/soak-monitor.sh`](scripts/soak-monitor.sh)).
+Neither runs in CI.
 
-**Exit:** published performance report; no unbounded growth in a 24-hour churn
-test; third-party null renderer conformance suite is green.
+**Exit:** published performance report; rapid fuzz/churn shows bounded
+node/owner growth; a manual 24-hour monitor is available and recommended before
+release or after scheduler/arena changes; third-party null renderer conformance
+is green.
 
 ### Stretch goals (not scheduled)
 

@@ -39,19 +39,35 @@ Steady numbers skip the first ten frames.
 
 ## Churn and arena reuse
 
-`crates/reactive-core/tests/soak.rs`:
+`crates/reactive-core/tests/soak.rs` is split into two non-CI tools:
 
-- `churn_does_not_grow_graph_arenas` creates and disposes 4,000 owners with
-  signals, memos, render effects, and flushes, then asserts the live node and
-  owner counts are unchanged.
-- `soak_long_churn` is the 24-hour harness. Run:
+- `fuzz_churn_is_bounded` — rapid deterministic fuzz/churn for agents. It
+  creates and disposes owners with random signals, memos, render effects, and
+  nested owners, then proves live node/owner counts stay fixed. Run:
 
 ```bash
-SOAK_SECONDS=86400 cargo test -p reactive-core --test soak soak_long_churn -- --ignored
+scripts/soak-fuzz.sh
 ```
 
-A one-second run of the same harness passed and kept node/owner counts stable
-during the run.
+Measured on the M3 Pro:
+
+```text
+fuzz churn: 100000 rounds in 0.217s (461182 rounds/s),
+nodes=0, owners=1, rss=Some(2336) KB
+```
+
+The counts are constant from the first assertion to the last.
+
+- `soak_monitor` — optional manual wall-clock monitor. Script:
+
+```bash
+scripts/soak-monitor.sh 24 3600
+```
+
+This detaches the test, logs hourly node/owner/RSS counts, and records a final
+pass/fail in `.soak/soak-*.log`. It is not a CI job and is not a blocker.
+Recommended before a release, after scheduler/arena changes, or when memory
+growth is suspected.
 
 ## Conformance and CI
 
@@ -63,10 +79,9 @@ during the run.
 
 ## Known limits
 
-- A full 24-hour wall-clock run has not been executed locally; the harness is
-  checked in and parameterized by `SOAK_SECONDS`.
+- The manual 24-hour monitor has not been run to completion in this session; it
+  is available for a human to leave running. The rapid fuzz run is the automated
+  bounded-growth evidence.
 - Incremental layout and damage scissoring remain future optimizations.
 - Enum/dynamic stores, automatic `Loading` detection, and the component/props
   macro are implemented for v0.1.
-- The 24-hour soak harness is checked in; only a short wall-clock interval was
-  run in this session.

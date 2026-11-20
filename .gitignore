@@ -3,3 +3,4 @@ refs/*
 /result
 /.direnv
 Cargo.lock.orig
+.soak/
