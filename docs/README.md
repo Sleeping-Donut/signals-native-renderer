@@ -22,6 +22,8 @@ just once.
 | [11-testing-and-performance.md](11-testing-and-performance.md) | Conformance suites, fuzzers, benchmarks. |
 | [12-decisions-and-risks.md](12-decisions-and-risks.md) | ADR log, risk detail, unresolved questions. |
 | [13-reference-apps.md](13-reference-apps.md) | Solid demo programs to port as end-to-end sanity checks. |
+| [14-performance-report.md](14-performance-report.md) | v0.1 frame times, churn, and known limits. |
+| [15-api-stability.md](15-api-stability.md) | Stable and experimental v0.1 API surfaces. |
 
 ## Conventions
 

@@ -224,3 +224,36 @@ fn view_macro_component_and_props() {
     assert_eq!(renderer.borrow().text_of(text), Some("badge"));
     tree.unmount(&cx, root);
 }
+
+struct PanelProps {
+    children: View,
+}
+
+#[component]
+fn Panel(_cx: &reactive_core::Cx<'_>, props: PanelProps) -> View {
+    props.children
+}
+
+#[test]
+fn view_macro_component_children() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let renderer = Rc::new(RefCell::new(NullRenderer::new()));
+    let tree = ViewTree::new(
+        Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
+        runtime.clone(),
+    );
+    let root = tree.mount(
+        &cx,
+        view! {
+            <Panel>
+                <Text>"inside"</Text>
+            </Panel>
+        },
+    );
+    tree.frame(&cx, 0);
+    let child = tree.children(root)[0];
+    let text = tree.renderer_id(child).unwrap();
+    assert_eq!(renderer.borrow().text_of(text), Some("inside"));
+    tree.unmount(&cx, root);
+}

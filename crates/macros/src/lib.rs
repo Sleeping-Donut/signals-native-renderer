@@ -302,19 +302,28 @@ fn node_tokens(node: &Node) -> Result<TokenStream2> {
             Ok(quote! { ::view::keyed_list(#each, #key, #children) })
         }
         tag if tag.chars().next().is_some_and(char::is_uppercase) => {
-            if !node.children.is_empty() {
-                return Err(syn::Error::new_spanned(
-                    &node.tag,
-                    "component tags are self-closing",
-                ));
-            }
             let props = syn::Ident::new(&format!("{tag}Props"), node.tag.span());
             let tag_ident = &node.tag;
-            let fields = node.attrs.iter().map(|attr| {
-                let key = &attr.key;
-                let value = &attr.value;
-                quote! { #key: #value }
-            });
+            let mut fields: Vec<TokenStream2> = node
+                .attrs
+                .iter()
+                .map(|attr| {
+                    let key = &attr.key;
+                    let value = &attr.value;
+                    quote! { #key: #value }
+                })
+                .collect();
+            if !node.children.is_empty() {
+                if node.attrs.iter().any(|attr| attr.key == "children") {
+                    return Err(syn::Error::new_spanned(
+                        &node.tag,
+                        "component children cannot be both an attribute and content",
+                    ));
+                }
+                fields.push(quote! {
+                    children: ::view::fragment(vec![#(#children),*])
+                });
+            }
             Ok(quote! { #tag_ident(&cx, #props { #(#fields),* }) })
         }
         _ => Err(syn::Error::new_spanned(

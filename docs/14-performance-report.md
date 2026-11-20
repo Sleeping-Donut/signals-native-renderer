@@ -69,6 +69,22 @@ pass/fail in `.soak/soak-*.log`. It is not a CI job and is not a blocker.
 Recommended before a release, after scheduler/arena changes, or when memory
 growth is suspected.
 
+## Release-mode budget measurements
+
+Measured with `scripts/perf-budgets.sh` on the M3 Pro (release build,
+10,000-row keyed list):
+
+| Measurement | Result | Budget | Status |
+|---|---|---|---|
+| Mount + first 10k layout | 122.672 ms | < 150 ms | met |
+| Single-row update frame | 3.901 ms | < 1 ms | **not met** |
+| Paint-only frame | 0.032 ms | < 2 ms | met |
+| 10k reorder | 75.571 ms | — | recorded |
+
+The single-row update includes a layout pass for the changed text. Closing that
+gap needs incremental layout or layout boundaries; it is tracked as a Phase 8
+follow-up optimization rather than a correctness issue.
+
 ## Conformance and CI
 
 - `renderer-null` conformance covers structure, text, styles, events, errors,

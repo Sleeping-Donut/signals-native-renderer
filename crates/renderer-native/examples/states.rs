@@ -53,7 +53,6 @@ mod model {
 
 mod styles {
     use super::*;
-    use view::StateStyle;
 
     pub fn text() -> ResolvedStyle {
         ResolvedStyle {
@@ -167,11 +166,6 @@ mod styles {
             ..ResolvedStyle::default()
         }
     }
-
-    pub const HOVER: StateStyle = StateStyle::new().background(Color::new(0.3, 0.36, 0.46, 1.0));
-    pub const FOCUS: StateStyle = StateStyle::new()
-        .background(Color::new(0.2, 0.42, 0.62, 1.0))
-        .border_color(Color::new(0.62, 0.82, 1.0, 1.0));
 }
 
 mod signals {
@@ -179,59 +173,7 @@ mod signals {
     use super::*;
     use macros::view;
     use reactive_core::memo;
-    use view::View;
-
-    fn state_row(name: &str, state: ReadSignal<String>, set_state: WriteSignal<String>) -> View {
-        let label = name.to_string();
-        let label_for_text = label.clone();
-        let target = label.clone();
-        view! {
-            <Button
-                style={styles::row()}
-                hover_style={styles::HOVER}
-                focus_style={styles::FOCUS}
-                cursor={CursorIcon::Pointer}
-                on_click={move |cx| set_state.set(cx, target.clone())}
-            >
-                <Text style={styles::row_label()}>
-                    {format!(
-                        "{}{}",
-                        if state.get(cx) == label_for_text { "▶ " } else { "   " },
-                        label
-                    )}
-                </Text>
-            </Button>
-        }
-    }
-
-    fn city_row(
-        name: &str,
-        city: ReadSignal<String>,
-        cities: Memo<Vec<String>>,
-        set_city: WriteSignal<String>,
-    ) -> View {
-        let label = name.to_string();
-        let label_for_text = label.clone();
-        let target = label.clone();
-        view! {
-            <Button
-                style={styles::row()}
-                hover_style={styles::HOVER}
-                focus_style={styles::FOCUS}
-                cursor={CursorIcon::Pointer}
-                on_click={move |cx| set_city.set(cx, target.clone())}
-                disabled_when={move |cx| is_pending(cx, move |cx| cities.get(cx))}
-            >
-                <Text style={styles::row_label()}>
-                    {format!(
-                        "{}{}",
-                        if city.get(cx) == label_for_text { "▶ " } else { "   " },
-                        label
-                    )}
-                </Text>
-            </Button>
-        }
-    }
+    use view::{select, View};
 
     pub fn content_view(
         cx: &reactive_core::Cx<'_>,
@@ -251,23 +193,27 @@ mod signals {
                 <Row style={styles::row_container()}>
                     <Column style={styles::panel()}>
                         <Text style={styles::text()}>"States"</Text>
-                        <For
-                            each={move |cx| states.get(cx)}
-                            key={|name: &String| name.clone()}
-                            children={move |_cx, name: &String| {
-                                state_row(name, state, set_state)
-                            }}
-                        />
+                        <Embed expr={select(
+                            move |cx| states.get(cx),
+                            |name: &String| name.clone(),
+                            |name: &String| name.clone(),
+                            move |cx| state.get(cx),
+                            move |cx, item| set_state.set(cx, item),
+                            styles::row(),
+                            |_cx| false,
+                        )} />
                     </Column>
                     <Column style={styles::panel()}>
                         <Text style={styles::text()}>"Cities"</Text>
-                        <For
-                            each={move |cx| cities.get(cx)}
-                            key={|name: &String| name.clone()}
-                            children={move |_cx, name: &String| {
-                                city_row(name, city, cities, set_city)
-                            }}
-                        />
+                        <Embed expr={select(
+                            move |cx| cities.get(cx),
+                            |name: &String| name.clone(),
+                            |name: &String| name.clone(),
+                            move |cx| city.get(cx),
+                            move |cx, item| set_city.set(cx, item),
+                            styles::row(),
+                            move |cx| is_pending(cx, move |cx| cities.get(cx)),
+                        )} />
                     </Column>
                 </Row>
                 <Text style={styles::text()}>{selection.get(cx)}</Text>

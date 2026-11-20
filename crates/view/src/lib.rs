@@ -3740,6 +3740,59 @@ where
     })
 }
 
+/// A selectable list of rows.
+///
+/// This is the component-layer fallback for platforms without a native popup
+/// select. Items are keyed, the selected row is marked, and `disabled` gates
+/// every row. Use [`select`] with `|_cx| false` when the control is always
+/// enabled.
+pub fn select<T, K, F, L, S, C, D>(
+    items: F,
+    key: impl Fn(&T) -> K + 'static,
+    label: L,
+    selected: S,
+    on_select: C,
+    row: ResolvedStyle,
+    disabled: D,
+) -> View
+where
+    T: Clone + PartialEq + 'static,
+    K: Eq + Hash + Clone + 'static,
+    F: Fn(&reactive_core::Cx<'_>) -> Vec<T> + 'static,
+    L: Fn(&T) -> String + 'static,
+    S: Fn(&reactive_core::Cx<'_>) -> T + Clone + 'static,
+    C: Fn(&reactive_core::Cx<'_>, T) + Clone + 'static,
+    D: Fn(&reactive_core::Cx<'_>) -> bool + Clone + 'static,
+{
+    keyed_list(items, key, move |_cx, item| {
+        let item = item.clone();
+        let item_for_text = item.clone();
+        let item_for_click = item.clone();
+        let selected = selected.clone();
+        let on_select = on_select.clone();
+        let disabled = disabled.clone();
+        let label = label(&item);
+        let text_style = ResolvedStyle {
+            text: row.text,
+            ..ResolvedStyle::default()
+        };
+        button(
+            vec![text_fn(move |cx| {
+                let marker = if selected(cx) == item_for_text {
+                    "▶ "
+                } else {
+                    "  "
+                };
+                format!("{marker}{label}")
+            })
+            .style(text_style)],
+            move |cx| on_select(cx, item_for_click.clone()),
+        )
+        .style(row)
+        .disabled_when(move |cx| disabled(cx))
+    })
+}
+
 /// A keyed list. Existing keys keep their mounted view and owner when reordered.
 pub fn keyed_list<T, K, E, G, R>(each: E, key: G, row: R) -> View
 where

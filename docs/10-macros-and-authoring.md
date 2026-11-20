@@ -97,7 +97,9 @@ detection from the mounted content is explicitly Phase 8 work.
 Component tags are supported by convention: `<Badge label={...} />` expands to
 `Badge(&cx, BadgeProps { label: ... })`; mark the function with
 `#[component]`. Component props can use `Prop<T>` for static/reactive values.
-Slots and the rest of the control-flow surface are not implemented yet.
+Component content is passed as a `children: View` prop; named slots are ordinary
+props of type `Option<View>` or `Prop<View>`. Named slots have no special macro
+syntax yet. `view::select` provides a keyed selectable-list component.
 
 ### 2.1 Syntax
 
