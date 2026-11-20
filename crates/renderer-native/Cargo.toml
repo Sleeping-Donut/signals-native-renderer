@@ -36,6 +36,10 @@ required-features = ["window"]
 name = "counter"
 required-features = ["window"]
 
+[[example]]
+name = "states"
+required-features = ["window"]
+
 [features]
 default = []
 window = ["dep:winit", "dep:accesskit_winit"]

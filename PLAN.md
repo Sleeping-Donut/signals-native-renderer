@@ -210,8 +210,13 @@ a host `Spawner`; `ManualSpawner` is the default and the runtime crate re-export
 the contract ([`graph_spawner.rs`](crates/runtime/tests/graph_spawner.rs)). The
 navigation, no-partial-frame, stale-flight, virtual-clock, reader-class, and
 spawner tests are in
-[`async_graph.rs`](crates/reactive-core/tests/async_graph.rs). The full multi-node
-transaction model remains a v2 refinement.
+[`async_graph.rs`](crates/reactive-core/tests/async_graph.rs). The states-and-
+cities wiring runs on the retained view tree in
+[`async_city.rs`](crates/view/tests/async_city.rs) and as a native app in
+[`examples/states.rs`](crates/renderer-native/examples/states.rs), covering
+first-load sequencing, pending refetch, derived selection reset, manual city
+selection, and supersession. The full multi-node transaction model remains a v2
+refinement.
 
 ### Phase 3 — Renderer contract and null renderer (2 weeks)
 
@@ -398,6 +403,10 @@ complete. The remaining acceptance step is a manual OS screen-reader pass
 complete under the hardware-adapted M3 Pro baseline.
 
 ### Phase 7 — Stores and authoring (3–4 weeks)
+
+**Status (2026-11-19): not started.** The states/cities demo does not depend on
+stores; it builds directly on the Phase 2 async primitives and the Phase 4–6
+view/input layers.
 
 **Build:** `#[derive(Store)]`, `Field`/`Subfield`, `Patch`, keyed collections,
 `store!`/`view!` ergonomics, props as signals, diagnostics for strict reads and

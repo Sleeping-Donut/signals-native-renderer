@@ -151,6 +151,9 @@ impl<A: WindowApp> WindowRunner<A> {
                 if let Some(update) = state.driver.accesskit_update().cloned() {
                     state.adapter.update_if_active(|| update);
                 }
+                if state.driver.app().wants_frame() {
+                    state.window.request_redraw();
+                }
             }
             Err(BackendError::Outdated | BackendError::Lost) => {
                 let _ = state.driver.backend_mut().recover();

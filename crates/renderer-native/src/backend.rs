@@ -187,6 +187,10 @@ pub trait WindowApp {
     fn cursor_icon(&self) -> CursorIcon {
         CursorIcon::Default
     }
+    /// Whether async work or animation needs another frame immediately.
+    fn wants_frame(&self) -> bool {
+        false
+    }
 }
 
 /// Drives an application and a backend through resize and redraw steps.

@@ -3142,6 +3142,28 @@ impl View {
         })
     }
 
+    /// Disable pointer and keyboard interaction from a reactive predicate.
+    #[must_use]
+    pub fn disabled_when(
+        self,
+        predicate: impl Fn(&reactive_core::Cx<'_>) -> bool + 'static,
+    ) -> Self {
+        let mount = self.mount;
+        view(move |cx, tree| {
+            let id = mount(cx, tree);
+            let tree_for_effect = tree.clone();
+            let binding = render_effect(
+                cx,
+                move |cx| predicate(cx),
+                move |_cx, disabled| {
+                    tree_for_effect.set_disabled(id, *disabled);
+                },
+            );
+            tree.add_binding(id, binding);
+            id
+        })
+    }
+
     /// Disable pointer and keyboard interaction.
     #[must_use]
     pub fn disabled(self, disabled: bool) -> Self {

@@ -391,6 +391,20 @@ Notes:
    lands; Florida's answer never commits; the selection resets from Texas's
    list.
 
+**Implementation status.** The async wiring is covered headlessly in
+[`view/tests/async_city.rs`](../crates/view/tests/async_city.rs):
+`async_city_selection_waits_pends_and_resets` and
+`async_city_supersession_drops_the_old_flight`. They cover first-load fallback,
+committed values during a pending refetch, derived reset after commit, manual
+city selection, source-change reset, and stale-flight supersession.
+
+[`renderer-native/examples/states.rs`](../crates/renderer-native/examples/states.rs)
+is the native app: two selectable lists, loading fallback, pending city rows,
+derived selections, AccessKit exposure, and a frame pump that keeps running
+while async work is in flight. The remaining acceptance checks are the typed
+`Memo`/read-write-pair assertion and a frame-integrity sweep across the whole
+timeline.
+
 **Milestone:** M2 headless (holds, boundaries, pending), M4 on the null renderer
 (lists and bindings), M5–M6 natively (controls and keyboard).
 
