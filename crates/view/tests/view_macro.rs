@@ -119,3 +119,32 @@ fn view_macro_loading_switches_from_fallback_to_content() {
 
     tree.unmount(&cx, root);
 }
+
+#[test]
+fn view_macro_show_switches_branches() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let renderer = Rc::new(RefCell::new(NullRenderer::new()));
+    let tree = ViewTree::new(
+        Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
+        runtime.clone(),
+    );
+    let (flag, set_flag) = signal!(&cx, false);
+    let root = tree.mount(
+        &cx,
+        view! {
+            <Show when={move |cx| flag.get(cx)} fallback={|_cx| view! { <Text>"no"</Text> }}>
+                <Text>"yes"</Text>
+            </Show>
+        },
+    );
+    tree.frame(&cx, 0);
+    let node = tree.renderer_id(tree.children(root)[0]).unwrap();
+    assert_eq!(renderer.borrow().text_of(node), Some("no"));
+    set_flag.set(&cx, true);
+    cx.flush().unwrap();
+    tree.frame(&cx, 1);
+    let node = tree.renderer_id(tree.children(root)[0]).unwrap();
+    assert_eq!(renderer.borrow().text_of(node), Some("yes"));
+    tree.unmount(&cx, root);
+}

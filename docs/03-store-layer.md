@@ -5,6 +5,15 @@
 **Owns:** field-granular derived state, patches, keyed collections, and the
 `#[derive(Store)]` / `#[derive(Patch)]` macros.
 
+**Current implementation (v0.1).** `Store<T>`, `Field<T>`, `#[derive(Store)]`,
+`#[derive(Patch)]`, `store!`, nested field projection, keyed handles
+(`at`, `at_key`, `iter_keyed`), `patch_keyed`, and `StoreDiagnostics` are
+implemented in [`reactive-stores`](../crates/reactive-stores/src/lib.rs).
+Reads track one path; writes mark that path, its ancestors, and descendants when
+a whole subtree is replaced. Keyed patches use shallow list writes so unchanged
+key handles are not invalidated. Enum variant stores, dynamic stores, and the
+draft guard remain future work.
+
 ---
 
 ## 1. Why a store layer at all

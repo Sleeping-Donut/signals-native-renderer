@@ -1919,6 +1919,23 @@ name = "reactive-core"
 version = "0.1.0"
 
 [[package]]
+name = "reactive-stores"
+version = "0.1.0"
+dependencies = [
+ "reactive-core",
+ "reactive-stores-macro",
+]
+
+[[package]]
+name = "reactive-stores-macro"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "read-fonts"
 version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

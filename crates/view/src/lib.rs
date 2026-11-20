@@ -3397,6 +3397,44 @@ where
     }
 }
 
+/// A component prop that is either a static value or a reactive read.
+#[derive(Clone)]
+pub enum Prop<T> {
+    /// A value captured at mount time.
+    Static(T),
+    /// A tracked read evaluated on demand.
+    Dynamic(Rc<dyn Fn(&reactive_core::Cx<'_>) -> T>),
+}
+
+impl<T: Clone + 'static> Prop<T> {
+    /// A static prop.
+    #[must_use]
+    pub fn static_value(value: T) -> Self {
+        Self::Static(value)
+    }
+
+    /// A reactive prop.
+    #[must_use]
+    pub fn dynamic(read: impl Fn(&reactive_core::Cx<'_>) -> T + 'static) -> Self {
+        Self::Dynamic(Rc::new(read))
+    }
+
+    /// Read the prop, tracking the underlying signals for a dynamic prop.
+    #[must_use]
+    pub fn get(&self, cx: &reactive_core::Cx<'_>) -> T {
+        match self {
+            Self::Static(value) => value.clone(),
+            Self::Dynamic(read) => read(cx),
+        }
+    }
+
+    /// Whether the prop is reactive.
+    #[must_use]
+    pub fn is_reactive(&self) -> bool {
+        matches!(self, Self::Dynamic(_))
+    }
+}
+
 /// A dynamic text source.
 pub struct TextSource(Box<dyn Fn(&reactive_core::Cx<'_>) -> String>);
 
@@ -3506,11 +3544,12 @@ pub fn button_text(
 /// A conditionally rendered branch.
 pub fn show<W, T, F>(when: W, then: T, fallback: F) -> View
 where
-    W: Fn(&reactive_core::Cx<'_>) -> bool + Clone + 'static,
+    W: Fn(&reactive_core::Cx<'_>) -> bool + 'static,
     T: Fn(&reactive_core::Cx<'_>) -> View + 'static,
     F: Fn(&reactive_core::Cx<'_>) -> View + 'static,
 {
-    let when_key = when.clone();
+    let when = Rc::new(when);
+    let when_key = Rc::clone(&when);
     view_slot(
         move |cx| when_key(cx),
         move |cx| {

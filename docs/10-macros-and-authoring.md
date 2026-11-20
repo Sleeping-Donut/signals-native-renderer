@@ -77,7 +77,7 @@ form uses `ElementKind::Row`, `ElementKind::Text`, `ElementKind::Button`, etc.
 ## 2. `view!`
 
 **Current implementation.** The macro supports `Column`, `Row`, `Text`,
-`Button`, `Loading`, `For`, and `Embed`; literal or `{expression}` text; and
+`Button`, `Show`, `Loading`, `For`, and `Embed`; literal or `{expression}` text; and
 attributes for `style`, `hover_style`, `focus_style`, `cursor`, `tooltip`,
 `disabled_when`, `tab_index`, `focusable`, and `disabled`. `Button` requires
 `on_click`. `For` expands to `keyed_list`; `Embed` inserts an existing `View`.

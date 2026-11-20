@@ -626,6 +626,12 @@ impl<'a> Cx<'a> {
         result
     }
 
+    /// Whether dependency tracking is currently enabled.
+    #[must_use]
+    pub fn is_tracking(self) -> bool {
+        self.rt.tracking.get()
+    }
+
     /// The current reader class.
     #[must_use]
     pub fn reader_class(self) -> ReaderClass {

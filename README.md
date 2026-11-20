@@ -93,7 +93,8 @@ order, key bindings, accessibility snapshots/actions, native winit input
 routing, content-mask clipping, translation/scale transforms, capture/bubble
 dispatch with default suppression, scroll state/wheel routing, typed
 drag/drop, focused text input/IME with painted composition and caret,
-AccessKit tree generation, OS adapter delivery, and action routing, hover
+field-granular stores and patches, AccessKit tree generation, OS adapter
+delivery, and action routing, hover
 cursors and delayed tooltips, hover/focus state styles, scroll-edge chaining and painted
 scrollbars, a native two-instance counter with click, keyboard, and AccessKit
 support, and a native states-and-cities async demo with loading, pending, and

@@ -231,6 +231,23 @@ fn node_tokens(node: &Node) -> Result<TokenStream2> {
             allowed.push("on_click");
             apply_attrs(base, node, &["on_click"], &allowed)
         }
+        "Show" => {
+            let when = attr(node, "when")
+                .ok_or_else(|| syn::Error::new_spanned(&node.tag, "Show requires when=..."))?;
+            let fallback = attr(node, "fallback")
+                .ok_or_else(|| syn::Error::new_spanned(&node.tag, "Show requires fallback=..."))?;
+            if node.children.is_empty() {
+                return Err(syn::Error::new_spanned(&node.tag, "Show requires children"));
+            }
+            let body = if node.children.len() == 1 {
+                child_tokens(&node.children[0])?
+            } else {
+                quote! { ::view::fragment(vec![#(#children),*]) }
+            };
+            Ok(quote! {
+                ::view::show(#when, move |cx| #body, #fallback)
+            })
+        }
         "Loading" => {
             let ready = attr(node, "ready")
                 .ok_or_else(|| syn::Error::new_spanned(&node.tag, "Loading requires ready=..."))?;
@@ -282,7 +299,7 @@ fn node_tokens(node: &Node) -> Result<TokenStream2> {
         }
         _ => Err(syn::Error::new_spanned(
             &node.tag,
-            "unknown tag; expected Column, Row, Text, Button, Loading, Embed, or For",
+            "unknown tag; expected Column, Row, Text, Button, Show, Loading, Embed, or For",
         )),
     }
 }

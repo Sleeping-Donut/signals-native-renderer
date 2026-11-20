@@ -404,15 +404,16 @@ complete under the hardware-adapted M3 Pro baseline.
 
 ### Phase 7 — Stores and authoring (3–4 weeks)
 
-**Status (2026-11-20): authoring slice started.** `signal!` and `memo!` exist;
-`view!` now supports attributes, `Loading`, `For`, and `Embed`; both demo files
-are split into `model`/`styles`/`signals`/`app` modules and use the authoring
-macros. The states/cities UI uses the view-aware `<Loading>` form instead of the
-`bool + view_slot` bridge. That `<Loading>` still takes an explicit
-`ready={...}` probe; removing it is a required Phase 7 authoring follow-up once
-the view boundary can observe pending reads while mounting content. Store
-derives, fields, patches, keyed stores, and store diagnostics remain. The states/cities demo does not depend on stores; it
-builds on the Phase 2 async primitives and the Phase 4–6 view/input layers.
+**Status (2026-11-20): Phase 7 exit criteria met.** The store layer lives in
+[`reactive-stores`](crates/reactive-stores/src/lib.rs) with
+`Store<T>`, `Field<T>`, `#[derive(Store)]`, `#[derive(Patch)]`, `store!`, nested
+projection, keyed handles (`at`, `at_key`, `iter_keyed`), `patch_keyed`, strict
+reads, and diagnostics. Field writes are sibling-isolated; nested patches and
+keyed patches invalidate only changed paths; the store tests use no manual
+notify. Authoring now has `signal!`/`memo!`, `view!` attributes, `Show`,
+`Loading`, `For`, `Embed`, `Prop<T>`, and module-organized demos. Remaining
+future items, outside the Phase 7 exit: enum/dynamic stores, draft guards, the
+automatic (no-`ready`) view-aware `Loading`, and a component/props macro.
 
 **Build:** `#[derive(Store)]`, `Field`/`Subfield`, `Patch`, keyed collections,
 `store!`/`view!` ergonomics, props as signals, diagnostics for strict reads and

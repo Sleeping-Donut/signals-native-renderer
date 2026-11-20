@@ -1,0 +1,12 @@
+[package]
+name = "reactive-stores"
+description = "Field-granular stores, patches, and keyed collections"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+reactive-core = { path = "../reactive-core" }
+reactive-stores-macro = { path = "../reactive-stores-macro" }

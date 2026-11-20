@@ -9,6 +9,8 @@ members = [
     "crates/scene",
     "crates/renderer-native",
     "crates/runtime",
+    "crates/reactive-stores",
+    "crates/reactive-stores-macro",
     "crates/view",
     "crates/macros",
 ]
