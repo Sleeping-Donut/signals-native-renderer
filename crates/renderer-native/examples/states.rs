@@ -95,6 +95,18 @@ fn text_style() -> ResolvedStyle {
     }
 }
 
+fn row_label_style() -> ResolvedStyle {
+    ResolvedStyle {
+        text: TextStyle {
+            color: Color::new(0.92, 0.92, 0.95, 1.0),
+            font_size: 16.0,
+            line_height: 20.0,
+            weight: 400,
+        },
+        ..ResolvedStyle::default()
+    }
+}
+
 fn row_style() -> ResolvedStyle {
     ResolvedStyle {
         size: Size {
@@ -164,7 +176,8 @@ fn content_view(
                         "   "
                     };
                     format!("{marker}{label}")
-                })],
+                })
+                .style(row_label_style())],
                 move |cx| set_state.set(cx, target.clone()),
             )
             .style(row_style())
@@ -184,7 +197,8 @@ fn content_view(
                 vec![text_fn(move |cx| {
                     let marker = if city.get(cx) == label { "▶ " } else { "   " };
                     format!("{marker}{label}")
-                })],
+                })
+                .style(row_label_style())],
                 move |cx| set_city.set(cx, target.clone()),
             )
             .style(row_style())
