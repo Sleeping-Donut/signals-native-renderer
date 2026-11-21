@@ -453,8 +453,35 @@ split; renderer `NodeId` contract freeze; the decisions still listed as open in
 re-ask detection, held-frame verdict).
 
 **Status (2026-11-21): started.** v0.1.1 is tagged. The held-frame `is_pending`
-prototype is the first gate; the optimistic todos app is the acceptance target
-for guesses/actions.
+gate is closed: a display pass applies committed values with the pending verdict
+while a flight is out (`display_pass_shows_the_verdict_during_a_hold`). The
+optimistic todos app is the acceptance target for guesses/actions.
+
+**Work order:**
+
+1. ✅ **Held-frame verdict.** Display passes apply committed values plus the
+   pending verdict during a flight. Pinned by
+   `reactive-core/tests/pending_status.rs`.
+2. **Transaction merge + re-ask decisions.** Fuzz independent-widget shapes;
+   choose shared-reader vs shared-node merging and whether equal-input
+   recomputes are quiet. Record the ADR in docs/12. Gate: the Phase 2 open items
+   close with tests.
+3. **Lane/guess foundation + `latest`.** Introduce the lane txn over
+   “screen + guesses”; `latest` returns staged values; derived `latest` and
+   `is_pending` reads do not tear. Gate: lane tests for display vs derive reads.
+4. **`affects`.** Declared pending marks until commit. Gate: derived/store
+   readers observe pending without a value write.
+5. **Actions + `ActionCx`.** Explicit hold around a future; writes after
+   `await` join the action via the capability; `flush` inside an action is
+   refused. Gate: optimistic todos uses framework actions and its app-level
+   overlay is deleted.
+6. **Full `on` re-arm.** F-4/F-5 boundary behavior beyond keyed remount. Gate:
+   boundary tests for armed/disarmed content and held frames.
+7. **Damage scissoring** (parallel from step 2). Persistent offscreen target,
+   scissored `LoadOp::Load`, blit to the surface, full-clear fallbacks. Gate:
+   window backend consumes damage; snapshots still match; overdraw measured.
+8. **Renderer `NodeId` freeze + store field read/write split** (parallel, before
+   the v0.3 API freeze).
 
 **Exit:**
 
@@ -474,10 +501,10 @@ for guesses/actions.
 
 ### Phase 10 — v0.3: authoring and platform freeze (4–8 weeks)
 
-**Build:** props and macro ergonomics (`MaybeProp`/optional props, `For` key
-inference, `view!` strictness, `trybuild` diagnostics); decide `view_builder!`;
-`KeepAlive`; event-model breadth; text-engine decision; accessibility coverage;
-web target if it fits the version.
+**Build:** remaining props and macro ergonomics (`For` key inference, `view!`
+strictness, `trybuild` diagnostics; `MaybeProp` and optional props landed
+early); decide `view_builder!`; `KeepAlive`; event-model breadth; text-engine
+decision; accessibility coverage; web target if it fits the version.
 
 **Exit:**
 
