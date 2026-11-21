@@ -1235,17 +1235,25 @@ cx.flush().unwrap();             // verdict clears at the commit
 ```rust
 pub fn guess<T: Clone + 'static, H: NodeHandle>(cx: &Cx, node: &H, value: T);
 pub fn clear_guess<H: NodeHandle>(cx: &Cx, node: &H);
-pub fn refresh<T>(cx: &Cx, memo: Memo<T>);
+pub fn refresh(cx: &Cx, read: impl FnOnce(&Cx));
 ```
 
 A guess is a display-only overlay: `get` in a display pass returns it,
 derivations keep the committed value, and the node reports pending until
 `clear_guess`. `guesses_are_display_only_and_clear` pins the split.
 
-`refresh` re-runs an async memo's question without reporting pending
-(`quiet` flight). If the answer is equal, readers are not notified; a dependency
-change before the quiet flight lands starts a new question. Async results that
-are ready at one flush commit together, so readers see one merged update
+`refresh` runs `read` as a tracked display probe and re-asks every async node it
+touches, without reporting pending (`quiet` flight). It takes a closure like
+`is_pending`, so a memo, a store, or an accessor can be refreshed without
+handing its node to the caller:
+
+```rust
+refresh(&cx, |cx| { let _ = todos.get(cx); });
+```
+
+If the answer is equal, readers are not notified; a dependency change before the
+quiet flight lands starts a new question. Async results that are ready at one
+flush commit together, so readers see one merged update
 (`results_ready_in_one_flush_commit_together`).
 
 ## 8. Actions (v0.2, implemented)
@@ -1304,7 +1312,7 @@ so the store form puts each guess on the path node the read tracks. There is no
 store-wide carrier and no display-only side channel:
 
 ```rust
-let name = state.user().name().optimistic();       // OptimisticField<T>
+let name = state.user().name();
 let todos = state.todos().optimistic_list(|t| t.id);
 
 let runtime_for_action = runtime.clone();
@@ -1319,9 +1327,9 @@ runtime.action(move || {
 });
 ```
 
-- `OptimisticField::set`/`update` stage a guess on that field's node; `commit`
-  writes truth. Settle commits the guessed value on success and drops it on
-  failure. Disjoint paths entangle only with themselves.
+- `Field::set`/`update` on any field stage a guess while an action runs;
+  `commit` writes truth. Settle commits the guessed value on success and drops
+  it on failure. Disjoint paths entangle only with themselves.
 - `OptimisticList` stages structural `push`/`remove` as a `ListPatch` on the
   list's node, and row writes as guesses on keyed row paths (`list#hash(key)`).
   `get` composes truth, live patches, and live row guesses per key. A success
@@ -1342,12 +1350,13 @@ let todos = OptimisticStore::new(cx, Vec::new(), move || {
 let rows = todos.list(|row| row.id);
 
 // In the action, after the save:
-todos.refresh(&cx);
+refresh(&cx, |cx| { let _ = todos.get(cx); });
 ```
 
-`is_loading(cx)` is the readiness read for the loading boundary: it tracks the
-source and the store without suspending. The optimistic todos demo uses this
-shape; `error` stays a signal, and the fail-next switch is plain API state.
+`<Loading>` catches the source's first read, so the fallback covers the initial
+load; a `refresh` re-ask keeps the content visible. The optimistic todos demo
+uses this shape; `error` stays a signal, and the fail-next switch is plain API
+state.
 
 This mirrors Solid's carrier rule: `readersOf` dirties the leaves of the keys a
 carrier changed and the container for a structural guess

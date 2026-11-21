@@ -756,8 +756,8 @@ or a measurement.
   `ListPatch` on the list node and row writes on `list#hash(key)` paths; `get`
   composes truth, live patches, and row guesses. Success commits the delta
   against truth, not the display list. `OptimisticStore` derives the committed
-  value from an async source, with `refresh` for a re-ask and `is_loading` for
-  a loading boundary. Whole-subtree reads stay truth-only because Rust has no
+  value from an async source; `refresh(cx, |cx| ...)` re-asks the async node a
+  read touches, like `is_pending`'s probe. Whole-subtree reads stay truth-only because Rust has no
   proxy traps; the keyed path is the unit of optimism. Covered by the ten
   `optimistic::*` store tests and the demo snapshot.
 - Store field split: `Field::split` / `read_only` / `write_only` expose

@@ -10,7 +10,8 @@ in-tree apps and examples.
   - `signal!`, `memo!`
   - `effect`, `render_effect`, `Runtime`, `RuntimeHandle`, `Cx`
   - `loading_boundary`, `error_boundary`, `is_pending`, `affects`,
-    `latest`, `guess`, `clear_guess`, `refresh`, `OptimisticSignal`,
+    `latest`, `guess`, `clear_guess`, `refresh` (closure probe),
+    `OptimisticSignal`,
     `ActionHandle`, `RuntimeHandle::action`, `RuntimeHandle::action_with`
   - `OwnerHandle`, cleanup, disposal
 - `reactive-stores`
@@ -18,9 +19,8 @@ in-tree apps and examples.
     `DynamicValue`
   - `#[derive(Store)]`, `#[derive(Patch)]`, `store!`
   - keyed list handles and `patch_keyed`
-  - `OptimisticField` (`Field::optimistic`), `OptimisticList`
-    (`Field::optimistic_list`), and `OptimisticStore` (async source, `refresh`,
-    `is_loading`)
+  - `OptimisticList` (`Field::optimistic_list`) and `OptimisticStore`
+    (async source)
 - `renderer-api`
   - pointer/key/wheel/IME event types
   - resolved styles, transforms, overflow, a11y roles, cursor icons

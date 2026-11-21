@@ -465,9 +465,9 @@ that a carrier's readers are the leaves of the changed keys. `OptimisticList`
 stages structural `push`/`remove` patches on the list node and row writes on
 keyed `list#hash(key)` paths; reads compose truth, live patches, and row
 guesses, and success commits the delta against truth. `OptimisticStore` derives
-the committed list from an async source (`api.list()`), exposes `refresh` and
-`is_loading`, and the demo uses it instead of copying data in from a spawned
-task. Ten store tests cover display/derive split, per-path isolation,
+the committed list from an async source (`api.list()`), and the demo uses it
+with `<Loading>` instead of copying data in from a spawned task; `refresh` is a
+closure probe like `is_pending`. Ten store tests cover display/derive split, per-path isolation,
 overlapping actions, list patches, failure discard, reorder stability,
 late-commit safety, source loading, and refresh after an optimistic commit.
 

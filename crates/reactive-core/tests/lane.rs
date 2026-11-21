@@ -134,7 +134,9 @@ fn refresh_is_a_quiet_re_ask() {
     cx.flush().unwrap();
     let notified = seen.borrow().len();
 
-    refresh(&cx, data);
+    refresh(&cx, |cx| {
+        let _ = data.get(cx);
+    });
     assert!(!is_pending(&cx, |cx| data.get(cx)), "a re-ask is quiet");
     cx.flush().unwrap();
     assert!(!is_pending(&cx, |cx| data.get(cx)));
@@ -549,7 +551,9 @@ fn reask_fuzz_is_quiet() {
         let mut page_value = 0_u32;
         for _ in 0..30 {
             if next_random(&mut state, 2) == 0 {
-                refresh(&cx, data);
+                refresh(&cx, |cx| {
+                    let _ = data.get(cx);
+                });
                 assert!(
                     !is_pending(&cx, |cx| data.get(cx)),
                     "seed {seed}: a re-ask must be quiet"

@@ -13,8 +13,8 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use reactive_core::{
-    create_async_memo, create_signal, latest, refresh, render_effect, AsyncError, Cx, Memo,
-    NodeHandle, NodeId, OwnerHandle, ReadSignal, RuntimeHandle, WriteSignal,
+    create_async_memo, create_signal, latest, render_effect, AsyncError, Cx, Memo, NodeHandle,
+    NodeId, OwnerHandle, ReadSignal, RuntimeHandle, WriteSignal,
 };
 
 pub use reactive_stores_macro::{Patch, Store};
@@ -302,27 +302,10 @@ impl<T: Clone + PartialEq + 'static> OptimisticStore<T> {
         }
     }
 
-    /// Ask the source again. The store keeps its optimistic value until the
-    /// new answer lands.
-    pub fn refresh(&self, cx: &Cx<'_>) {
-        refresh(cx, self.source);
-    }
-
     /// The root field handle.
     #[must_use]
     pub fn root(&self) -> Field<T> {
         self.store.root()
-    }
-
-    /// Whether the first answer has landed.
-    ///
-    /// Tracks the source and the store without suspending, so a loading
-    /// boundary can gate content on it.
-    #[must_use]
-    pub fn is_loading(&self, cx: &Cx<'_>) -> bool {
-        let _ = latest(cx, self.source);
-        let _ = self.store.root().get(cx);
-        !self.initialized.get()
     }
 }
 
@@ -340,53 +323,6 @@ impl<T: Clone + PartialEq + 'static> OptimisticStore<Vec<T>> {
             source: Some(self.source),
             initialized: Some(Rc::clone(&self.initialized)),
         }
-    }
-}
-
-/// A field handle whose writes are per-action guesses.
-///
-/// The guess lives on the field's own path node, so a read inside an action
-/// dirties exactly the readers of that field. Settling the action drops only
-/// its guesses; a success also writes the guessed value to the committed
-/// store, a failure discards it.
-pub struct OptimisticField<T> {
-    field: Field<T>,
-}
-
-impl<T> Clone for OptimisticField<T> {
-    fn clone(&self) -> Self {
-        Self {
-            field: self.field.clone(),
-        }
-    }
-}
-
-impl<T: Clone + 'static> OptimisticField<T> {
-    /// Read the display value (the guess inside an action, else truth).
-    #[must_use]
-    pub fn get(&self, cx: &Cx<'_>) -> T {
-        self.field.get(cx)
-    }
-
-    /// Guess inside an action, write truth outside one.
-    pub fn set(&self, cx: &Cx<'_>, value: T) {
-        self.field.set(cx, value);
-    }
-
-    /// Update the display value.
-    pub fn update(&self, cx: &Cx<'_>, f: impl FnOnce(&mut T)) {
-        self.field.update(cx, f);
-    }
-
-    /// Write truth. Inside an action it lands when the action settles.
-    pub fn commit(&self, cx: &Cx<'_>, value: T) {
-        self.field.commit(cx, value);
-    }
-
-    /// The underlying field handle.
-    #[must_use]
-    pub fn field(&self) -> &Field<T> {
-        &self.field
     }
 }
 
@@ -471,7 +407,7 @@ impl<T: Clone + 'static, K: Clone + Eq + Hash + 'static> OptimisticList<T, K> {
     /// Returns `None` when no committed row carries `key`; a row that exists
     /// only in a structural guess is list-level until it lands.
     #[must_use]
-    pub fn at_key(&self, _cx: &Cx<'_>, key: &K) -> Option<OptimisticField<T>> {
+    pub fn at_key(&self, _cx: &Cx<'_>, key: &K) -> Option<Field<T>> {
         if !(self.list.inner.read)()
             .iter()
             .any(|row| (self.key)(row) == *key)
@@ -481,7 +417,7 @@ impl<T: Clone + 'static, K: Clone + Eq + Hash + 'static> OptimisticList<T, K> {
         let list = self.list.clone();
         let key_fn = Rc::clone(&self.key);
         let keyed = list.keyed(move |row| key_fn(row));
-        keyed.at_key(key).map(|field| field.optimistic())
+        keyed.at_key(key)
     }
 
     /// Append a row. Inside an action it is a patch; outside it is truth.
@@ -619,14 +555,6 @@ impl<T> Clone for WriteField<T> {
 }
 
 impl<T: Clone + 'static> Field<T> {
-    /// A handle whose writes are per-action guesses.
-    #[must_use]
-    pub fn optimistic(&self) -> OptimisticField<T> {
-        OptimisticField {
-            field: self.clone(),
-        }
-    }
-
     /// A handle that can only read this field.
     #[must_use]
     pub fn read_only(&self) -> ReadField<T> {

@@ -128,7 +128,7 @@ mod model {
 mod store {
     use std::rc::Rc;
 
-    use reactive_core::{create_signal, Cx, ReadSignal, RuntimeHandle, WriteSignal};
+    use reactive_core::{create_signal, refresh, Cx, ReadSignal, RuntimeHandle, WriteSignal};
     use reactive_stores::{OptimisticList, OptimisticStore};
 
     use crate::model::{Api, Todo};
@@ -193,10 +193,6 @@ mod store {
             self.error
         }
 
-        pub fn is_loading(&self, cx: &Cx<'_>) -> bool {
-            self.todos.is_loading(cx)
-        }
-
         pub fn set_fail_next(self: &Rc<Self>, _cx: &Cx<'_>, fail: bool) {
             self.api.set_fail_next(fail);
         }
@@ -228,7 +224,9 @@ mod store {
                         });
 
                         api.toggle(id).await?;
-                        todos.refresh(&rt.cx());
+                        refresh(&rt.cx(), |cx| {
+                            let _ = todos.get(cx);
+                        });
                         Ok::<(), String>(())
                     }
                 },
@@ -268,7 +266,9 @@ mod store {
                         })
                         .await?;
 
-                        todos.refresh(&rt.cx());
+                        refresh(&rt.cx(), |cx| {
+                            let _ = todos.get(cx);
+                        });
                         Ok::<(), String>(())
                     }
                 },
@@ -472,7 +472,7 @@ mod uicomponents {
     use macros::{component, view};
     use reactive_core::{Cx, RuntimeHandle};
     use renderer_api::CursorIcon;
-    use view::control::{For, LoadingWhen};
+    use view::control::{For, Loading};
     use view::{button, text_fn, Prop, TextInputState, View};
 
     use crate::basecomponents::{
@@ -492,14 +492,14 @@ mod uicomponents {
     }
 
     #[macros::props]
-    pub struct TodoRowProps {
+    pub struct TodoRowViewProps {
         pub id: u64,
         #[prop(raw)]
         pub store: Rc<TodosStore>,
     }
 
     #[component]
-    pub fn TodoRowView(cx: &Cx<'_>, props: TodoRowProps) -> View {
+    pub fn TodoRowView(cx: &Cx<'_>, props: TodoRowViewProps) -> View {
         let store = props.store;
         let id = props.id.get(cx);
         // The keyed list composes truth, live patches, and row guesses, so a
@@ -591,13 +591,11 @@ mod uicomponents {
                     each={move |cx: &Cx<'_>| store_for_rows.rows().get(cx)}
                     key={|row: &TodoRow| row.id}
                     children={move |cx: &Cx<'_>, row: &TodoRow| {
-                        TodoRowView(
-                            cx,
-                            TodoRowProps {
-                                id: Prop::static_value(row.id),
-                                store: Rc::clone(&store_for_children),
-                            },
-                        )
+                        let id = row.id;
+                        let store = Rc::clone(&store_for_children);
+                        view! {
+                            <TodoRowView id={id} store={store} />
+                        }
                     }}
                 />
                 <ActionButton
@@ -618,17 +616,11 @@ mod uicomponents {
         let runtime = cx.use_context::<RuntimeHandle>().expect("runtime context");
         let api = Rc::new(Api::new());
         let store = TodosStore::new(cx, runtime, api);
-        let store_for_ready = Rc::clone(&store);
 
-        // The store is the readiness source: its first read suspends until the
-        // source lands, so the fallback covers exactly the initial load.
         view! {
-            <LoadingWhen
-                ready={move |cx: &Cx<'_>| !store_for_ready.is_loading(cx)}
-                fallback={LoadingView}
-            >
+            <Loading fallback={LoadingView}>
                 <Content store={Rc::clone(&store)} />
-            </LoadingWhen>
+            </Loading>
         }
     }
 }

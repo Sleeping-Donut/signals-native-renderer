@@ -276,7 +276,7 @@ node is what made an earlier prototype fragile — effects saw the guess, memos
 did not, and notifications depended on how a reader was written.
 
 ```rust
-let name = state.user().name().optimistic();
+let name = state.user().name();
 
 let runtime_for_action = runtime.clone();
 runtime.action(move || {
@@ -289,10 +289,10 @@ runtime.action(move || {
 });
 ```
 
-- `Field::optimistic()` returns `OptimisticField<T>`. `get` shows the action's
+- A plain `Field<T>` is optimistic inside an action: `get` shows the action's
   guess in a display pass and the committed value in a derivation (signal
   parity); `set`/`update` stage a guess; `commit` writes truth, buffered while
-  an action runs.
+  an action runs. No wrapper or action argument is needed.
 - The guess notifies the path node, so only readers of that path rerun. Disjoint
   paths never entangle. Two actions on the same path are last-live-guess-wins;
   each settle removes only its own entry.
@@ -306,7 +306,7 @@ let todos = state.todos().optimistic_list(|todo| todo.id);
 
 todos.push(&cx, new_todo);          // structural patch
 todos.remove(&cx, &id);             // structural patch
-let row = todos.at_key(&cx, &id);   // Option<OptimisticField<Todo>>
+let row = todos.at_key(&cx, &id);   // Option<Field<Todo>>
 row.unwrap().update(&cx, |todo| todo.done = !todo.done);
 todos.get(&cx);                     // truth -> live patches -> row guesses
 ```
@@ -331,8 +331,7 @@ let todos = OptimisticStore::new(cx, Vec::new(), move || {
 });
 let rows = todos.list(|row| row.id);
 
-todos.refresh(&cx);       // re-ask the source after a save
-todos.is_loading(&cx)     // tracks the source and the store, never suspends
+refresh(&cx, |cx| { let _ = todos.get(cx); }); // re-ask the source
 ```
 
 - The source's first answer loads the store; `get` joins the source, so a
@@ -340,8 +339,9 @@ todos.is_loading(&cx)     // tracks the source and the store, never suspends
   load. After it lands, the store is the display value.
 - A successful action commits its per-key guess optimistically; `refresh`
   re-asks the source and replaces the optimistic value with server truth.
-- `is_loading` is the readiness read for a loading boundary. It uses
-  `latest`, so it tracks without raising a suspension.
+- `<Loading>` catches the first read of the derived store, so the fallback
+  covers the initial load. A `refresh` re-ask keeps the content visible and
+  corrects it when the answer lands.
 
 Boundary: a whole-subtree read (`Store::snapshot`, `state.user().get(cx)`) is
 truth-only. Rust has no proxy traps to re-derive a parent value from child

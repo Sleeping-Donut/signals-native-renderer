@@ -1002,6 +1002,8 @@ pub struct Runtime {
     effect_tokens: RefCell<HashMap<NodeId, NodeId>>,
     pending_probe: Cell<bool>,
     pending_probe_found: Cell<bool>,
+    read_probe: Cell<bool>,
+    read_probe_found: RefCell<Vec<NodeId>>,
     current_action: Cell<Option<ActionId>>,
     actions: RefCell<HashMap<ActionId, ActionState>>,
     next_action: Cell<u64>,
@@ -1057,6 +1059,8 @@ impl Runtime {
             effect_tokens: RefCell::new(HashMap::new()),
             pending_probe: Cell::new(false),
             pending_probe_found: Cell::new(false),
+            read_probe: Cell::new(false),
+            read_probe_found: RefCell::new(Vec::new()),
             current_action: Cell::new(None),
             actions: RefCell::new(HashMap::new()),
             next_action: Cell::new(0),
@@ -1217,6 +1221,9 @@ impl Runtime {
     }
 
     fn track(&self, dep: NodeId) {
+        if self.read_probe.get() {
+            self.read_probe_found.borrow_mut().push(dep);
+        }
         if !self.tracking.get() {
             return;
         }
@@ -1318,6 +1325,40 @@ impl Runtime {
             }
             stack.extend(subs);
         }
+    }
+
+    fn refresh_read(&self, read: impl FnOnce(&Cx<'_>)) -> usize {
+        let previous_probe = self.read_probe.replace(true);
+        self.read_probe_found.borrow_mut().clear();
+        let previous_class = self.reader_class.replace(ReaderClass::Display);
+        let result = catch_unwind(AssertUnwindSafe(|| read(&self.cx())));
+        self.reader_class.set(previous_class);
+        let ids: Vec<NodeId> = std::mem::take(&mut *self.read_probe_found.borrow_mut());
+        self.read_probe.set(previous_probe);
+        if let Err(payload) = result {
+            if !is_suspension(&*payload) {
+                resume_unwind(payload);
+            }
+        }
+        let mut refreshed = 0;
+        for id in ids {
+            if self
+                .node(id)
+                .is_some_and(|node| node.borrow().async_compute.borrow().is_some())
+            {
+                self.mark_refresh(id);
+                refreshed += 1;
+            }
+        }
+        refreshed
+    }
+
+    fn mark_refresh(&self, id: NodeId) {
+        self.refresh_nodes.borrow_mut().insert(id);
+        if let Some(node) = self.node(id) {
+            node.borrow().state.set(DirtyState::Dirty);
+        }
+        self.schedule(id);
     }
 
     fn is_pending_probe<T>(&self, read: impl FnOnce(&Cx<'_>) -> T) -> bool {
@@ -2520,17 +2561,21 @@ pub fn latest<T: Clone + 'static>(cx: &Cx<'_>, memo: Memo<T>) -> Result<T, Lates
     }
 }
 
-/// Ask an async memo to run its question again without reporting pending.
+/// Re-ask the async source that `read` reads, without reporting pending.
 ///
 /// This is the quiet re-ask path: `is_pending` stays false while the flight is
-/// out, and an equal answer does not notify readers.
-pub fn refresh<T>(cx: &Cx<'_>, memo: Memo<T>) {
-    let id = memo.id();
-    cx.rt.refresh_nodes.borrow_mut().insert(id);
-    if let Some(node) = cx.rt.node(id) {
-        node.borrow().state.set(DirtyState::Dirty);
-    }
-    cx.rt.schedule(id);
+/// out, and an equal answer does not notify readers. `read` is a tracked probe
+/// like [`is_pending`]'s, so a store, memo, or accessor can be refreshed
+/// without handing its node to the caller:
+///
+/// ```ignore
+/// refresh(cx, |cx| { let _ = todos.get(cx); });
+/// ```
+///
+/// Returns the number of async nodes re-asked. A plain signal or a first
+/// load starts normally and contributes nothing.
+pub fn refresh(cx: &Cx<'_>, read: impl FnOnce(&Cx<'_>)) -> usize {
+    cx.rt.refresh_read(read)
 }
 
 /// Show `value` in display passes without committing it.

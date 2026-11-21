@@ -300,7 +300,9 @@ mod optimistic {
     use std::rc::Rc;
     use std::task::Poll;
 
-    use reactive_core::{create_memo, loading_boundary, render_effect, Cx, Runtime, RuntimeHandle};
+    use reactive_core::{
+        create_memo, loading_boundary, refresh, render_effect, Cx, Runtime, RuntimeHandle,
+    };
 
     use crate::{app, store, AppStoreFields, Todo, UserStoreFields};
 
@@ -356,11 +358,9 @@ mod optimistic {
         let boundary =
             loading_boundary(&cx, None, move |cx| store_for_boundary.get(cx).len(), |_| 0);
         assert_eq!(boundary.get(&cx), 0, "the first read is loading");
-        assert!(store.is_loading(&cx));
 
         settle(&runtime, &cx);
         assert_eq!(boundary.get(&cx), 3, "the source answer loads the store");
-        assert!(!store.is_loading(&cx));
     }
 
     #[test]
@@ -394,7 +394,9 @@ mod optimistic {
             async move {
                 list_for_action.push(&rt.cx(), 3);
                 delayed(1).await;
-                store_for_action.refresh(&rt.cx());
+                refresh(&rt.cx(), |cx| {
+                    let _ = store_for_action.get(cx);
+                });
                 Ok::<(), String>(())
             }
         });
@@ -407,6 +409,10 @@ mod optimistic {
             list.get(&cx),
             vec![1, 2, 3],
             "the success commit and the refresh agree on the truth"
+        );
+        assert!(
+            calls.get() >= 2,
+            "the closure probe re-asked the async source"
         );
 
         let list_for_failure = list.clone();
@@ -431,7 +437,7 @@ mod optimistic {
         let runtime = Runtime::new().into_handle();
         let cx = runtime.cx();
         let store = store!(&cx, app());
-        let name = store.user().name().optimistic();
+        let name = store.user().name();
         let (seen, _runs, _effect) = effect_of(&cx, {
             let name = name.clone();
             move |cx| name.get(cx)
@@ -468,7 +474,7 @@ mod optimistic {
         let runtime = Runtime::new().into_handle();
         let cx = runtime.cx();
         let store = store!(&cx, app());
-        let name = store.user().name().optimistic();
+        let name = store.user().name();
         let (seen, _runs, _effect) = effect_of(&cx, {
             let name = name.clone();
             move |cx| name.get(cx)
@@ -512,8 +518,8 @@ mod optimistic {
         let runtime = Runtime::new().into_handle();
         let cx = runtime.cx();
         let store = store!(&cx, app());
-        let name = store.user().name().optimistic();
-        let age = store.user().age().optimistic();
+        let name = store.user().name();
+        let age = store.user().age();
         let name_for_read = name.clone();
         let age_for_read = age.clone();
         let (seen, _runs, _effect) =
@@ -567,8 +573,8 @@ mod optimistic {
         let runtime = Runtime::new().into_handle();
         let cx = runtime.cx();
         let store = store!(&cx, app());
-        let name = store.user().name().optimistic();
-        let age = store.user().age().optimistic();
+        let name = store.user().name();
+        let age = store.user().age();
         let name_for_effect = name.clone();
         let (_, name_runs, _name_effect) = effect_of(&cx, move |cx| name_for_effect.get(cx));
         let age_for_effect = age.clone();

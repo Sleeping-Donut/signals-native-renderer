@@ -25,9 +25,10 @@
   guesses; success commits the delta against truth, so overlapping actions do
   not clear or clobber each other.
 - `OptimisticStore` derives a store from an async source
-  (`OptimisticStore::new(cx, seed, || api.list())`), with `refresh` to re-ask
-  and `is_loading` as the readiness read. The todos demo now derives its rows
-  from the API instead of copying them in from a spawned task.
+  (`OptimisticStore::new(cx, seed, || api.list())`). `refresh(cx, |cx| ...)`
+  re-asks the async nodes a probe read touches, matching `is_pending`'s shape.
+  The todos demo derives its rows from the API and uses `<Loading>` for the
+  first load instead of copying data in from a spawned task.
 - `LoadingBoundary::on(cx, closure)` re-arms a loaded boundary when a tracked
   dependency changes, showing the fallback for the new question.
 - Renderer `NodeId` contract frozen: opaque non-zero ids, `INVALID_NODE_ID`
