@@ -750,6 +750,61 @@ pub struct Cx<'a> {
 }
 
 impl<'a> Cx<'a> {
+    /// Whether an action scope is active on this poll.
+    #[must_use]
+    pub fn in_action(&self) -> bool {
+        self.rt.current_action.get().is_some()
+    }
+
+    /// Whether this is a display pass, where guesses are visible.
+    #[must_use]
+    pub fn is_display(&self) -> bool {
+        self.rt.reader_class.get() == ReaderClass::Display
+    }
+
+    /// Stage a guess on `node` for the active action.
+    ///
+    /// Returns `false` outside an action. The guess is display state: it
+    /// notifies the node's readers and is dropped when the action settles.
+    pub fn stage_guess<T: Clone + 'static, H: NodeHandle>(&self, node: &H, value: T) -> bool {
+        let Some(action) = self.rt.current_action.get() else {
+            return false;
+        };
+        self.rt
+            .guess_for(Some(action), node.node_id(), Box::new(value));
+        true
+    }
+
+    /// The newest live guess on `node`, if one matches `T`.
+    #[must_use]
+    pub fn guess_value<T: Clone + 'static, H: NodeHandle>(&self, node: &H) -> Option<T> {
+        self.rt.guess_value(node.node_id())
+    }
+
+    /// Every live guess on `node` that matches `T`, oldest first.
+    #[must_use]
+    pub fn guess_values<T: Clone + 'static, H: NodeHandle>(&self, node: &H) -> Vec<T> {
+        self.rt.guess_values(node.node_id())
+    }
+
+    /// Register `write` to run when the active action succeeds.
+    ///
+    /// The callback runs outside the action scope, so its writes are
+    /// mainline. Returns `false` when no action is running.
+    pub fn defer_write(&self, write: impl for<'b> FnOnce(&Cx<'b>) + 'static) -> bool {
+        let Some(action) = self.rt.current_action.get() else {
+            return false;
+        };
+        self.rt
+            .actions
+            .borrow_mut()
+            .entry(action)
+            .or_default()
+            .writes
+            .push(Box::new(write));
+        true
+    }
+
     /// Enter a child owner for the duration of the closure.
     pub fn with_owner<R>(self, owner: OwnerHandle, f: impl FnOnce(&Cx<'a>) -> R) -> R {
         let previous = self.rt.current_owner.replace(owner.id);
@@ -2272,6 +2327,33 @@ impl Runtime {
         Ok(())
     }
 
+    fn guess_value<T: Clone + 'static>(&self, id: NodeId) -> Option<T> {
+        let node = self.node(id)?;
+        let node = node.borrow();
+        let guesses = node.guesses.borrow();
+        newest_guess::<T>(&guesses).cloned()
+    }
+
+    fn guess_values<T: Clone + 'static>(&self, id: NodeId) -> Vec<T> {
+        let Some(node) = self.node(id) else {
+            return Vec::new();
+        };
+        let node = node.borrow();
+        let mut values: Vec<(u64, T)> = node
+            .guesses
+            .borrow()
+            .iter()
+            .filter_map(|guess| {
+                guess
+                    .value
+                    .downcast_ref::<T>()
+                    .map(|value| (guess.seq, value.clone()))
+            })
+            .collect();
+        values.sort_by_key(|(seq, _)| *seq);
+        values.into_iter().map(|(_, value)| value).collect()
+    }
+
     fn latest_value<T: Clone + 'static>(&self, id: NodeId) -> Result<T, LatestError> {
         let Some(node_ref) = self.node(id) else {
             return Err(LatestError::Loading);
@@ -2397,6 +2479,12 @@ pub enum LatestError {
 pub trait NodeHandle {
     /// The graph node behind this handle.
     fn node_id(&self) -> NodeId;
+}
+
+impl NodeHandle for NodeId {
+    fn node_id(&self) -> NodeId {
+        *self
+    }
 }
 
 impl<T> NodeHandle for ReadSignal<T> {

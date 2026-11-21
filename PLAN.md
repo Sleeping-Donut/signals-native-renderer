@@ -459,6 +459,16 @@ freeze. The optimistic todos app runs on framework actions. Seeded fuzz covers
 random flight arrival orders and re-asks: 32 seeds x 40 flushes (297
 value-changing flushes) and 32 seeds x 30 re-ask steps, zero violations.
 
+**Follow-up (2026-11-21): per-key optimism.** Store guesses now live on the
+path node the read tracks (`Field::optimistic`), matching Solid's carrier rule
+that a carrier's readers are the leaves of the changed keys. `OptimisticList`
+stages structural `push`/`remove` patches on the list node and row writes on
+keyed `list#hash(key)` paths; reads compose truth, live patches, and row
+guesses, and success commits the delta against truth. Eight store tests cover
+display/derive split, per-path isolation, overlapping actions, list patches,
+failure discard, reorder stability, and late-commit safety; the demo snapshot is
+byte-identical.
+
 **Work order:**
 
 1. ✅ **Held-frame verdict.** Display passes apply committed values plus the

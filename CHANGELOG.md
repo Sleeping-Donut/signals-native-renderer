@@ -19,6 +19,11 @@
   guesses, plain writes are buffered until settle, and guesses are stored per
   action. `ActionHandle::result` reports completion; the todos demo uses the
   ambient form.
+- Per-key store optimism: `Field::optimistic` stages a guess on the field's own
+  path node, and `Field::optimistic_list` stages keyed `push`/`remove` patches
+  plus `list#hash(key)` row guesses. Reads compose truth, live patches, and row
+  guesses; success commits the delta against truth, so overlapping actions do
+  not clear or clobber each other. The todos demo runs on the keyed list.
 - `LoadingBoundary::on(cx, closure)` re-arms a loaded boundary when a tracked
   dependency changes, showing the fallback for the new question.
 - Renderer `NodeId` contract frozen: opaque non-zero ids, `INVALID_NODE_ID`

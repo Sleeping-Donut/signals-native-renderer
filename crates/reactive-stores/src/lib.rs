@@ -12,7 +12,9 @@ use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-use reactive_core::{create_signal, Cx, OwnerHandle, ReadSignal, RuntimeHandle, WriteSignal};
+use reactive_core::{
+    create_signal, Cx, NodeHandle, NodeId, OwnerHandle, ReadSignal, RuntimeHandle, WriteSignal,
+};
 
 pub use reactive_stores_macro::{Patch, Store};
 
@@ -34,7 +36,8 @@ pub struct StoreDiagnostics {
 }
 
 trait StoreAccess {
-    fn track(&self, cx: &Cx<'_>, path: &str);
+    /// Track `path` and return the node that carries its guesses.
+    fn track(&self, cx: &Cx<'_>, path: &str) -> NodeId;
     fn bump(&self, cx: &Cx<'_>, path: &str);
     fn bump_shallow(&self, cx: &Cx<'_>, path: &str);
     fn note_read(&self);
@@ -53,9 +56,10 @@ struct StoreInner<T> {
 }
 
 impl<T> StoreAccess for StoreInner<T> {
-    fn track(&self, cx: &Cx<'_>, path: &str) {
+    fn track(&self, cx: &Cx<'_>, path: &str) -> NodeId {
         let trigger = self.trigger(cx, path);
         trigger.0.get(cx);
+        trigger.0.node_id()
     }
 
     fn bump(&self, cx: &Cx<'_>, path: &str) {
@@ -204,6 +208,222 @@ impl<T: Clone + 'static> Store<T> {
     }
 }
 
+/// A field handle whose writes are per-action guesses.
+///
+/// The guess lives on the field's own path node, so a read inside an action
+/// dirties exactly the readers of that field. Settling the action drops only
+/// its guesses; a success also writes the guessed value to the committed
+/// store, a failure discards it.
+pub struct OptimisticField<T> {
+    field: Field<T>,
+}
+
+impl<T> Clone for OptimisticField<T> {
+    fn clone(&self) -> Self {
+        Self {
+            field: self.field.clone(),
+        }
+    }
+}
+
+impl<T: Clone + 'static> OptimisticField<T> {
+    /// Read the display value (the guess inside an action, else truth).
+    #[must_use]
+    pub fn get(&self, cx: &Cx<'_>) -> T {
+        self.field.get(cx)
+    }
+
+    /// Guess inside an action, write truth outside one.
+    pub fn set(&self, cx: &Cx<'_>, value: T) {
+        self.field.set(cx, value);
+    }
+
+    /// Update the display value.
+    pub fn update(&self, cx: &Cx<'_>, f: impl FnOnce(&mut T)) {
+        self.field.update(cx, f);
+    }
+
+    /// Write truth. Inside an action it lands when the action settles.
+    pub fn commit(&self, cx: &Cx<'_>, value: T) {
+        self.field.commit(cx, value);
+    }
+
+    /// The underlying field handle.
+    #[must_use]
+    pub fn field(&self) -> &Field<T> {
+        &self.field
+    }
+}
+
+/// A keyed list whose writes are per-action patches.
+///
+/// A structural change (`push`/`remove`) is a patch on the list's own path
+/// node; a row write through [`OptimisticList::at_key`] is a guess on that
+/// row's keyed path. Disjoint rows and disjoint keys do not entangle, and a
+/// read composes truth, live patches, and live row guesses per key.
+pub struct OptimisticList<T, K> {
+    list: Field<Vec<T>>,
+    key: Rc<dyn Fn(&T) -> K>,
+}
+
+impl<T, K> Clone for OptimisticList<T, K> {
+    fn clone(&self) -> Self {
+        Self {
+            list: self.list.clone(),
+            key: Rc::clone(&self.key),
+        }
+    }
+}
+
+/// One action's structural edit to a keyed list.
+#[derive(Clone)]
+struct ListPatch<T, K> {
+    added: Vec<T>,
+    removed: Vec<K>,
+}
+
+impl<T: Clone + 'static, K: Clone + Eq + Hash + 'static> OptimisticList<T, K> {
+    /// The composed display rows: truth, this list's live patches, and live
+    /// row guesses, per key. A derivation sees truth only.
+    #[must_use]
+    pub fn get(&self, cx: &Cx<'_>) -> Vec<T> {
+        let mut rows = self.list.get(cx);
+        if !cx.is_display() {
+            return rows;
+        }
+        let node = self.list.node(cx);
+        for patch in cx.guess_values::<ListPatch<T, K>, _>(&node) {
+            rows.retain(|row| !patch.removed.iter().any(|key| *key == (self.key)(row)));
+            rows.extend(patch.added);
+        }
+        for row in &mut rows {
+            let key = (self.key)(row);
+            let node = self.list.inner.store.track(cx, &self.row_path(&key));
+            if let Some(guess) = cx.guess_value::<T, _>(&node) {
+                *row = guess;
+            }
+        }
+        rows
+    }
+
+    /// Row count as displayed.
+    #[must_use]
+    pub fn len(&self, cx: &Cx<'_>) -> usize {
+        self.get(cx).len()
+    }
+
+    /// Whether the list is empty as displayed.
+    #[must_use]
+    pub fn is_empty(&self, cx: &Cx<'_>) -> bool {
+        self.len(cx) == 0
+    }
+
+    /// A stable keyed row handle.
+    ///
+    /// Returns `None` when no committed row carries `key`; a row that exists
+    /// only in a structural guess is list-level until it lands.
+    #[must_use]
+    pub fn at_key(&self, _cx: &Cx<'_>, key: &K) -> Option<OptimisticField<T>> {
+        if !(self.list.inner.read)()
+            .iter()
+            .any(|row| (self.key)(row) == *key)
+        {
+            return None;
+        }
+        let list = self.list.clone();
+        let key_fn = Rc::clone(&self.key);
+        let keyed = list.keyed(move |row| key_fn(row));
+        keyed.at_key(key).map(|field| field.optimistic())
+    }
+
+    /// Append a row. Inside an action it is a patch; outside it is truth.
+    pub fn push(&self, cx: &Cx<'_>, row: T) {
+        if self.stage_patch(
+            cx,
+            ListPatch {
+                added: vec![row.clone()],
+                removed: Vec::new(),
+            },
+        ) {
+            let list = self.list.clone();
+            let key = Rc::clone(&self.key);
+            let row_key = key(&row);
+            cx.defer_write(move |cx| {
+                let mut rows = (list.inner.read)();
+                if !rows.iter().any(|candidate| key(candidate) == row_key) {
+                    rows.push(row);
+                }
+                list.set(cx, rows);
+            });
+            return;
+        }
+        let mut rows = (self.list.inner.read)();
+        if !rows
+            .iter()
+            .any(|candidate| (self.key)(candidate) == (self.key)(&row))
+        {
+            rows.push(row);
+        }
+        self.list.set(cx, rows);
+    }
+
+    /// Remove the row with `key`. Inside an action it is a patch.
+    pub fn remove(&self, cx: &Cx<'_>, key: &K) {
+        if self.stage_patch(
+            cx,
+            ListPatch {
+                added: Vec::new(),
+                removed: vec![key.clone()],
+            },
+        ) {
+            let list = self.list.clone();
+            let key_fn = Rc::clone(&self.key);
+            let row_key = key.clone();
+            cx.defer_write(move |cx| {
+                let mut rows = (list.inner.read)();
+                rows.retain(|row| key_fn(row) != row_key);
+                list.set(cx, rows);
+            });
+            return;
+        }
+        let mut rows = (self.list.inner.read)();
+        rows.retain(|row| (self.key)(row) != *key);
+        self.list.set(cx, rows);
+    }
+
+    /// Whether `key` has a live guess (a row write or a structural patch).
+    #[must_use]
+    pub fn is_pending(&self, cx: &Cx<'_>, key: &K) -> bool {
+        let node = self.list.node(cx);
+        for patch in cx.guess_values::<ListPatch<T, K>, _>(&node) {
+            if patch.removed.iter().any(|removed| removed == key)
+                || patch.added.iter().any(|row| (self.key)(row) == *key)
+            {
+                return true;
+            }
+        }
+        let row_node = self.list.inner.store.track(cx, &self.row_path(key));
+        cx.guess_value::<T, _>(&row_node).is_some()
+    }
+
+    /// Write truth. Inside an action it lands when the action settles.
+    pub fn commit(&self, cx: &Cx<'_>, rows: Vec<T>) {
+        self.list.commit(cx, rows);
+    }
+
+    fn stage_patch(&self, cx: &Cx<'_>, patch: ListPatch<T, K>) -> bool {
+        if !cx.in_action() {
+            return false;
+        }
+        let node = self.list.node(cx);
+        cx.stage_guess(&node, patch)
+    }
+
+    fn row_path(&self, key: &K) -> String {
+        format!("{}#{}", self.list.path(), hash_key(key))
+    }
+}
+
 struct FieldInner<T> {
     store: Rc<dyn StoreAccess>,
     path: String,
@@ -251,6 +471,14 @@ impl<T> Clone for WriteField<T> {
 }
 
 impl<T: Clone + 'static> Field<T> {
+    /// A handle whose writes are per-action guesses.
+    #[must_use]
+    pub fn optimistic(&self) -> OptimisticField<T> {
+        OptimisticField {
+            field: self.clone(),
+        }
+    }
+
     /// A handle that can only read this field.
     #[must_use]
     pub fn read_only(&self) -> ReadField<T> {
@@ -307,8 +535,30 @@ impl<T: Clone + 'static> WriteField<T> {
 
 impl<T: Clone + 'static> Field<T> {
     /// Read the value at this path.
+    ///
+    /// In a display pass a live guess for this action shadows the committed
+    /// value; derivations keep the committed value. Either way the path's own
+    /// node is tracked, so a guess dirties exactly the readers of this field.
     #[must_use]
     pub fn get(&self, cx: &Cx<'_>) -> T {
+        let node = self.node(cx);
+        self.inner.store.note_read();
+        if cx.is_display() {
+            if let Some(guess) = cx.guess_value::<T, _>(&node) {
+                return guess;
+            }
+        }
+        (self.inner.read)()
+    }
+
+    /// The node a read of this path tracks.
+    fn node(&self, cx: &Cx<'_>) -> NodeId {
+        self.inner.store.track(cx, &self.inner.path)
+    }
+
+    /// Read the committed value, ignoring guesses and pending state.
+    #[must_use]
+    pub fn committed(&self, cx: &Cx<'_>) -> T {
         self.inner.store.track(cx, &self.inner.path);
         self.inner.store.note_read();
         (self.inner.read)()
@@ -335,16 +585,64 @@ impl<T: Clone + 'static> Field<T> {
     }
 
     /// Replace the value at this path.
+    ///
+    /// Inside an action this is a guess: the display shows it, the committed
+    /// value is untouched, and the write lands when the action succeeds.
     pub fn set(&self, cx: &Cx<'_>, value: T) {
-        (self.inner.write)(value);
-        self.inner.store.note_write();
-        self.inner.store.bump(cx, &self.inner.path);
+        if self.stage_guess(cx, &value) {
+            return;
+        }
+        self.write_committed(cx, value, false);
+    }
+
+    /// Stage a committed write. Inside an action it lands at settle; outside
+    /// it behaves like [`Field::set`].
+    pub fn commit(&self, cx: &Cx<'_>, value: T) {
+        if self.defer_commit(cx, value.clone()) {
+            return;
+        }
+        self.write_committed(cx, value, false);
     }
 
     fn set_shallow(&self, cx: &Cx<'_>, value: T) {
+        if self.stage_guess(cx, &value) {
+            return;
+        }
+        self.write_committed(cx, value, true);
+    }
+
+    fn stage_guess(&self, cx: &Cx<'_>, value: &T) -> bool {
+        if !cx.in_action() {
+            return false;
+        }
+        let node = self.node(cx);
+        if !cx.stage_guess(&node, value.clone()) {
+            return false;
+        }
+        self.inner.store.note_write();
+        self.defer_commit(cx, value.clone());
+        true
+    }
+
+    fn defer_commit(&self, cx: &Cx<'_>, value: T) -> bool {
+        let write = Rc::clone(&self.inner.write);
+        let store = Rc::clone(&self.inner.store);
+        let path = self.inner.path.clone();
+        cx.defer_write(move |cx| {
+            write(value);
+            store.note_write();
+            store.bump(cx, &path);
+        })
+    }
+
+    fn write_committed(&self, cx: &Cx<'_>, value: T, shallow: bool) {
         (self.inner.write)(value);
         self.inner.store.note_write();
-        self.inner.store.bump_shallow(cx, &self.inner.path);
+        if shallow {
+            self.inner.store.bump_shallow(cx, &self.inner.path);
+        } else {
+            self.inner.store.bump(cx, &self.inner.path);
+        }
     }
 
     /// Update through a clone-modify-swap.
@@ -456,6 +754,23 @@ impl<T: Clone + 'static> Field<Vec<T>> {
         )
     }
 
+    /// A keyed list whose writes are per-action patches.
+    ///
+    /// Row handles are keyed by `key`, so a guess follows its row across
+    /// reorders; a read composes truth, live structural patches, and live row
+    /// guesses per key.
+    #[must_use]
+    pub fn optimistic_list<K, F>(&self, key: F) -> OptimisticList<T, K>
+    where
+        K: Clone + Eq + Hash + 'static,
+        F: Fn(&T) -> K + 'static,
+    {
+        OptimisticList {
+            list: self.clone(),
+            key: Rc::new(key),
+        }
+    }
+
     /// Keyed access. The key function is stored per operation; handles are
     /// keyed by the hash of the key so reordering does not retarget them.
     pub fn keyed<K, F>(&self, key: F) -> KeyedField<T, K>
@@ -557,11 +872,14 @@ impl<T: Clone + 'static, K: Clone + Eq + Hash + 'static> KeyedField<T, K> {
                     .expect("keyed row")
             },
             move |rows, value| {
-                let index = rows
+                // A row removed by another action is not resurrected by a
+                // late settle; its write is simply dropped.
+                if let Some(index) = rows
                     .iter()
                     .position(|row| key_fn_write(row) == key_for_write)
-                    .expect("keyed row");
-                rows[index] = value;
+                {
+                    rows[index] = value;
+                }
             },
         ))
     }

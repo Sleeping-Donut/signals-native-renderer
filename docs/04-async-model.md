@@ -1297,10 +1297,51 @@ let handle = runtime.action_with(
   action's guesses, then runs the settle callback and publishes
   `ActionHandle::result`.
 
-Limits: guesses are whole values per node, not keyed patches, so two overlapping
-actions that build from the same committed list can still commit stale bases.
-Serializing per store or adding keyed patch guesses is the next step. Detached
-tasks do not inherit the action scope, and nested actions are separate scopes.
+### 8.1 Per-key store guesses (v0.2, implemented)
+
+A store path is already a node (the trigger map is Solid's per-property node),
+so the store form puts each guess on the path node the read tracks. There is no
+store-wide carrier and no display-only side channel:
+
+```rust
+let name = state.user().name().optimistic();       // OptimisticField<T>
+let todos = state.todos().optimistic_list(|t| t.id);
+
+let runtime_for_action = runtime.clone();
+runtime.action(move || {
+    let rt = runtime_for_action.clone();
+    async move {
+        name.update(&rt.cx(), |name| name.push_str("!"));
+        todos.push(&rt.cx(), new_todo);
+        api.save().await?;
+        Ok::<(), String>(())
+    }
+});
+```
+
+- `OptimisticField::set`/`update` stage a guess on that field's node; `commit`
+  writes truth. Settle commits the guessed value on success and drops it on
+  failure. Disjoint paths entangle only with themselves.
+- `OptimisticList` stages structural `push`/`remove` as a `ListPatch` on the
+  list's node, and row writes as guesses on keyed row paths (`list#hash(key)`).
+  `get` composes truth, live patches, and live row guesses per key. A success
+  commits the delta against truth, so overlapping actions cannot commit a stale
+  whole list.
+- A derivation still sees truth (`ReaderClass::Derive`); a display pass sees the
+  guess. The guess notifies the path node, so an effect or memo that reads that
+  exact path reruns; a sibling path does not.
+
+This mirrors Solid's carrier rule: `readersOf` dirties the leaves of the keys a
+carrier changed and the container for a structural guess
+(`refs/solid/packages/signals/src/store/optimistic.ts`). The difference is
+forced by Rust having no proxy traps: a whole-subtree read is truth-only, so the
+unit of an optimistic read is the keyed path (see docs/03 §4.1).
+
+Remaining limits: two actions on the same key are last-live-guess-wins, and a
+mainline write beneath a live guess can be overwritten when that action's
+success commits. Use the server truth as the commit (the demo does) or
+serialize same-key actions. Detached tasks do not inherit the action scope, and
+nested actions are separate scopes.
 
 ## 9. Rule subset and what each buys
 

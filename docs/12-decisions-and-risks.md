@@ -750,6 +750,14 @@ or a measurement.
   `current_action`. `OptimisticSignal` writes guesses, `WriteSignal` writes are
   buffered until settle, and guesses are stored per action. The optimistic todos
   demo needs no explicit action argument.
+- Per-key store guesses: a guess lives on the store path node the read already
+  tracks (`Field::optimistic`), mirroring Solid's carrier rule that its readers
+  are the leaves of the keys it changed. Keyed lists stage `push`/`remove` as a
+  `ListPatch` on the list node and row writes on `list#hash(key)` paths; `get`
+  composes truth, live patches, and row guesses. Success commits the delta
+  against truth, not the display list. Whole-subtree reads stay truth-only
+  because Rust has no proxy traps; the keyed path is the unit of optimism.
+  Covered by the eight `optimistic::*` store tests and the demo snapshot.
 - Store field split: `Field::split` / `read_only` / `write_only` expose
   `ReadField`/`WriteField` capability views; `Field` stays combined for existing
   code.

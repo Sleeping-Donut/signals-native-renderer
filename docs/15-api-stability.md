@@ -18,6 +18,8 @@ in-tree apps and examples.
     `DynamicValue`
   - `#[derive(Store)]`, `#[derive(Patch)]`, `store!`
   - keyed list handles and `patch_keyed`
+  - `OptimisticField` (`Field::optimistic`) and `OptimisticList`
+    (`Field::optimistic_list`)
 - `renderer-api`
   - pointer/key/wheel/IME event types
   - resolved styles, transforms, overflow, a11y roles, cursor icons
@@ -41,6 +43,8 @@ in-tree apps and examples.
 - Automatic `Loading` internals (effect readiness tokens, subtree collection).
 - Store enum tuple-variant ergonomics, dynamic-store schema helpers.
 - Damage scissoring, incremental layout, and partial presentation.
+- The low-level `Cx::stage_guess` / `guess_value` / `guess_values` /
+  `defer_write` helpers behind store optimism.
 - `view_builder!` fluent syntax; `view!` remains the recommended form.
 
 ## Compatibility notes

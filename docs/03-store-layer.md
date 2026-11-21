@@ -264,6 +264,68 @@ Provide a `KeyedVec<T, K>` wrapper for apps that want stable keys with `Vec`
 storage. It keeps a `HashMap<K, usize>` index and a generation per key so a
 removed key's handle cannot alias a reused index.
 
+### 4.1 Per-key optimism (v0.2)
+
+A store write inside an action is a **guess on the path node the read already
+tracks**, tagged with that action. There is no whole-store backup and no
+separate overlay node. This is the Rust form of Solid's per-key carrier rule:
+a carrier's readers are the readers of the leaves of the keys it changed
+(`readersOf` in `refs/solid/packages/signals/src/store/optimistic.ts`), and a
+path trigger is exactly that leaf node here. Putting the guess on a different
+node is what made an earlier prototype fragile — effects saw the guess, memos
+did not, and notifications depended on how a reader was written.
+
+```rust
+let name = state.user().name().optimistic();
+
+let runtime_for_action = runtime.clone();
+runtime.action(move || {
+    let rt = runtime_for_action.clone();
+    async move {
+        name.update(&rt.cx(), |name| name.push_str("!"));
+        api.save().await?;
+        Ok::<(), String>(())
+    }
+});
+```
+
+- `Field::optimistic()` returns `OptimisticField<T>`. `get` shows the action's
+  guess in a display pass and the committed value in a derivation (signal
+  parity); `set`/`update` stage a guess; `commit` writes truth, buffered while
+  an action runs.
+- The guess notifies the path node, so only readers of that path rerun. Disjoint
+  paths never entangle. Two actions on the same path are last-live-guess-wins;
+  each settle removes only its own entry.
+- Success writes the guessed value to the committed store and then drops the
+  guess; failure drops the guess with no rollback code.
+
+Keyed lists compose three layers per key:
+
+```rust
+let todos = state.todos().optimistic_list(|todo| todo.id);
+
+todos.push(&cx, new_todo);          // structural patch
+todos.remove(&cx, &id);             // structural patch
+let row = todos.at_key(&cx, &id);   // Option<OptimisticField<Todo>>
+row.unwrap().update(&cx, |todo| todo.done = !todo.done);
+todos.get(&cx);                     // truth -> live patches -> row guesses
+```
+
+- `push`/`remove` stage a `ListPatch { added, removed }` on the list's node.
+  `get` applies live patches in action order after the committed rows, then
+  applies live row guesses by key.
+- A successful structural action commits its **delta** against the current
+  committed rows (append or remove by key), not the display list, so two
+  overlapping actions cannot clobber each other's rows.
+- Row handles use the keyed path `list#hash(key)`, so a guess follows its key
+  across a reorder. `at_key` only addresses committed rows; a row that exists
+  only in a structural guess is list-level until it lands.
+
+Boundary: a whole-subtree read (`Store::snapshot`, `state.user().get(cx)`) is
+truth-only. Rust has no proxy traps to re-derive a parent value from child
+patches, so the unit of an optimistic read is the keyed path. Read the fields
+or rows you render, not the parent object.
+
 ## 5. Dynamic stores
 
 For JSON-like or schema-less data, the macro path is unavailable. Provide:

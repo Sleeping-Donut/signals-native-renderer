@@ -3,7 +3,7 @@
 //!
 //! Module layout:
 //! - `model`: todo data and a pretend server with latency and a failure switch
-//! - `store`: optimistic overlay (`saved` plus pending ops -> rows)
+//! - `store`: keyed optimistic store list (per-row guesses and add patches)
 //! - `styles`
 //! - `basecomponents`: `ActionButton`, `IconButton`, `TextLine`, `ErrorLine`
 //! - `uicomponents`: `App`, `Content`, `TodoRowView`, `LoadingView`
@@ -128,9 +128,8 @@ mod model {
 mod store {
     use std::rc::Rc;
 
-    use reactive_core::{
-        create_signal, Cx, OptimisticSignal, ReadSignal, RuntimeHandle, WriteSignal,
-    };
+    use reactive_core::{create_signal, Cx, ReadSignal, RuntimeHandle, WriteSignal};
+    use reactive_stores::{store, OptimisticList, Store};
 
     use crate::model::{Api, Todo};
 
@@ -143,7 +142,7 @@ mod store {
         pub pending: bool,
     }
 
-    fn row(todo: Todo) -> TodoRow {
+    fn todo_row(todo: Todo) -> TodoRow {
         TodoRow {
             id: todo.id,
             text: todo.text,
@@ -152,12 +151,18 @@ mod store {
         }
     }
 
-    /// Optimistic rows. Writes inside an action are guesses; the commit and
-    /// refresh writes are held until that action settles.
+    #[derive(Clone, Debug, PartialEq, reactive_stores::Store)]
+    pub struct TodosState {
+        pub rows: Vec<TodoRow>,
+    }
+
+    /// Optimistic rows backed by a keyed store list. A toggle guesses the
+    /// row's own path; an add is a structural patch on the list. Success
+    /// commits, failure discards, and only the touched key reruns.
     pub struct TodosStore {
         runtime: RuntimeHandle,
         api: Rc<Api>,
-        todos: OptimisticSignal<Vec<TodoRow>>,
+        state: Store<TodosState>,
         ready: ReadSignal<bool>,
         error: ReadSignal<String>,
         set_error: WriteSignal<String>,
@@ -167,24 +172,26 @@ mod store {
 
     impl TodosStore {
         pub fn new(cx: &Cx<'_>, runtime: RuntimeHandle, api: Rc<Api>) -> Rc<Self> {
-            let todos = OptimisticSignal::new(cx, Vec::new());
+            let state = store!(cx, TodosState { rows: Vec::new() });
             let (ready, set_ready) = create_signal(cx, false);
             let (error, set_error) = create_signal(cx, String::new());
             let (fail_next, set_fail_next) = create_signal(cx, false);
 
             let runtime_for_task = runtime.clone();
             let api_for_task = Rc::clone(&api);
+            let state_for_task = state.clone();
             runtime.spawner().spawn_local(Box::pin(async move {
                 let list = api_for_task.list().await;
                 let cx = runtime_for_task.cx();
-                todos.set(&cx, list.into_iter().map(row).collect());
+                let rows: Vec<TodoRow> = list.into_iter().map(todo_row).collect();
+                state_for_task.rows().commit(&cx, rows);
                 set_ready.set(&cx, true);
             }));
 
             Rc::new(Self {
                 runtime,
                 api,
-                todos,
+                state,
                 ready,
                 error,
                 set_error,
@@ -193,8 +200,8 @@ mod store {
             })
         }
 
-        pub fn rows(&self) -> ReadSignal<Vec<TodoRow>> {
-            self.todos.read()
+        pub fn rows(&self) -> OptimisticList<TodoRow, u64> {
+            self.state.rows().optimistic_list(|row| row.id)
         }
 
         pub fn ready(&self) -> ReadSignal<bool> {
@@ -214,9 +221,20 @@ mod store {
             self.api.set_fail_next(fail);
         }
 
-        pub fn toggle(self: &Rc<Self>, _cx: &Cx<'_>, id: u64) {
+        pub fn toggle(self: &Rc<Self>, cx: &Cx<'_>, id: u64) {
+            if !self
+                .rows()
+                .get(cx)
+                .iter()
+                .any(|row| row.id == id && !row.pending)
+            {
+                return;
+            }
+            let Some(row) = self.rows().at_key(cx, &id) else {
+                return;
+            };
             let api = Rc::clone(&self.api);
-            let todos = self.todos;
+            let rows = self.rows();
             let set_error = self.set_error;
             let set_fail_next = self.set_fail_next;
             let runtime_for_action = self.runtime.clone();
@@ -225,17 +243,15 @@ mod store {
                 move || {
                     let rt = runtime_for_action.clone();
                     async move {
-                        todos.update_with(&rt.cx(), |rows| {
-                            if let Some(row) = rows.iter_mut().find(|row| row.id == id) {
-                                row.done = !row.done;
-                                row.pending = true;
-                            }
+                        row.update(&rt.cx(), |row| {
+                            row.done = !row.done;
+                            row.pending = true;
                         });
 
                         api.toggle(id).await?;
 
                         let list = api.list().await;
-                        todos.commit(&rt.cx(), list.into_iter().map(row).collect());
+                        rows.commit(&rt.cx(), list.into_iter().map(todo_row).collect());
                         Ok::<(), String>(())
                     }
                 },
@@ -251,7 +267,7 @@ mod store {
 
         pub fn add(self: &Rc<Self>, _cx: &Cx<'_>, text: String) {
             let api = Rc::clone(&self.api);
-            let todos = self.todos;
+            let rows = self.rows();
             let set_error = self.set_error;
             let set_fail_next = self.set_fail_next;
             let id = self.api.next_id();
@@ -261,14 +277,15 @@ mod store {
                 move || {
                     let rt = runtime_for_action.clone();
                     async move {
-                        todos.update_with(&rt.cx(), |rows| {
-                            rows.push(TodoRow {
+                        rows.push(
+                            &rt.cx(),
+                            TodoRow {
                                 id,
                                 text: text.clone(),
                                 done: false,
                                 pending: true,
-                            });
-                        });
+                            },
+                        );
 
                         api.add(Todo {
                             id,
@@ -278,7 +295,7 @@ mod store {
                         .await?;
 
                         let list = api.list().await;
-                        todos.commit(&rt.cx(), list.into_iter().map(row).collect());
+                        rows.commit(&rt.cx(), list.into_iter().map(todo_row).collect());
                         Ok::<(), String>(())
                     }
                 },
@@ -515,12 +532,11 @@ mod uicomponents {
     pub fn TodoRowView(cx: &Cx<'_>, props: TodoRowProps) -> View {
         let store = props.store;
         let id = props.id.get(cx);
-        // Guesses are display-only, so the row reads the shared signal from a
-        // render binding instead of deriving a memo (which would see committed
-        // data only).
+        // The keyed list composes truth, live patches, and row guesses, so a
+        // binding sees the optimistic value while a derivation sees truth.
         let rows = store.rows();
-        let rows_for_label = rows;
-        let rows_for_text = rows;
+        let rows_for_label = rows.clone();
+        let rows_for_text = rows.clone();
         let store_for_click = Rc::clone(&store);
 
         let toggle = button(

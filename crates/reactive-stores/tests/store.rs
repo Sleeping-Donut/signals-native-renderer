@@ -293,3 +293,411 @@ fn fields_split_into_read_and_write_capabilities() {
     cx.flush().unwrap();
     assert_eq!(name.read_only().get(&cx), "Grace!");
 }
+
+mod optimistic {
+    use std::cell::{Cell, RefCell};
+    use std::future::poll_fn;
+    use std::rc::Rc;
+    use std::task::Poll;
+
+    use reactive_core::{create_memo, render_effect, Cx, Runtime, RuntimeHandle};
+
+    use crate::{app, store, AppStoreFields, Todo, UserStoreFields};
+
+    fn delayed(polls: u32) -> impl std::future::Future<Output = ()> {
+        let seen = Rc::new(Cell::new(0));
+        poll_fn(move |_| {
+            let count = seen.get();
+            seen.set(count + 1);
+            if count < polls {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        })
+    }
+
+    fn settle(runtime: &RuntimeHandle, cx: &Cx<'_>) {
+        for _ in 0..8 {
+            runtime.pump();
+            cx.flush().unwrap();
+        }
+    }
+
+    fn effect_of<T: Clone + 'static>(
+        cx: &Cx<'_>,
+        mut read: impl FnMut(&Cx<'_>) -> T + 'static,
+    ) -> (Rc<RefCell<T>>, Rc<Cell<usize>>, reactive_core::EffectHandle) {
+        let seen = Rc::new(RefCell::new(read(cx)));
+        let runs = Rc::new(Cell::new(0));
+        let seen_for_effect = Rc::clone(&seen);
+        let runs_for_effect = Rc::clone(&runs);
+        let mut read = read;
+        let handle = render_effect(
+            cx,
+            move |cx| read(cx),
+            move |_cx, value: &T| {
+                *seen_for_effect.borrow_mut() = value.clone();
+                runs_for_effect.set(runs_for_effect.get() + 1);
+            },
+        );
+        (seen, runs, handle)
+    }
+
+    #[test]
+    fn a_guess_shows_to_effects_and_reverts_on_failure() {
+        let runtime = Runtime::new().into_handle();
+        let cx = runtime.cx();
+        let store = store!(&cx, app());
+        let name = store.user().name().optimistic();
+        let (seen, _runs, _effect) = effect_of(&cx, {
+            let name = name.clone();
+            move |cx| name.get(cx)
+        });
+        cx.flush().unwrap();
+        assert_eq!(*seen.borrow(), "Ada");
+
+        let runtime_for_action = runtime.clone();
+        let name_for_action = name.clone();
+        let _handle = runtime.action(move || {
+            let rt = runtime_for_action.clone();
+            async move {
+                name_for_action.set(&rt.cx(), String::from("Grace"));
+                delayed(2).await;
+                Err::<(), String>(String::from("rejected"))
+            }
+        });
+
+        runtime.pump();
+        cx.flush().unwrap();
+        assert_eq!(
+            *seen.borrow(),
+            "Grace",
+            "the guess is display state on the field's own path node"
+        );
+
+        settle(&runtime, &cx);
+        assert_eq!(*seen.borrow(), "Ada", "a failed action drops its guess");
+        assert_eq!(store.user().name().get(&cx), "Ada");
+    }
+
+    #[test]
+    fn a_guess_is_display_only_for_derivations() {
+        let runtime = Runtime::new().into_handle();
+        let cx = runtime.cx();
+        let store = store!(&cx, app());
+        let name = store.user().name().optimistic();
+        let (seen, _runs, _effect) = effect_of(&cx, {
+            let name = name.clone();
+            move |cx| name.get(cx)
+        });
+        let name_for_memo = name.clone();
+        let memo = create_memo(&cx, move |cx, _| name_for_memo.get(cx));
+        cx.flush().unwrap();
+        assert_eq!(memo.get(&cx), "Ada");
+
+        let runtime_for_action = runtime.clone();
+        let name_for_action = name.clone();
+        let _handle = runtime.action(move || {
+            let rt = runtime_for_action.clone();
+            async move {
+                name_for_action.set(&rt.cx(), String::from("Grace"));
+                delayed(2).await;
+                Ok::<(), String>(())
+            }
+        });
+
+        runtime.pump();
+        cx.flush().unwrap();
+        assert_eq!(*seen.borrow(), "Grace");
+        assert_eq!(
+            memo.get(&cx),
+            "Ada",
+            "derivations keep the committed value while a guess is live"
+        );
+
+        settle(&runtime, &cx);
+        assert_eq!(*seen.borrow(), "Grace");
+        assert_eq!(
+            memo.get(&cx),
+            "Grace",
+            "success writes the guess to the committed store"
+        );
+    }
+
+    #[test]
+    fn overlapping_actions_keep_their_own_paths() {
+        let runtime = Runtime::new().into_handle();
+        let cx = runtime.cx();
+        let store = store!(&cx, app());
+        let name = store.user().name().optimistic();
+        let age = store.user().age().optimistic();
+        let name_for_read = name.clone();
+        let age_for_read = age.clone();
+        let (seen, _runs, _effect) =
+            effect_of(&cx, move |cx| (name_for_read.get(cx), age_for_read.get(cx)));
+        cx.flush().unwrap();
+        assert_eq!(*seen.borrow(), (String::from("Ada"), 30));
+
+        let runtime_a = runtime.clone();
+        let name_for_a = name.clone();
+        let _a = runtime.action(move || {
+            let rt = runtime_a.clone();
+            async move {
+                name_for_a.set(&rt.cx(), String::from("Grace"));
+                delayed(2).await;
+                Err::<(), String>(String::from("a failed"))
+            }
+        });
+        let runtime_b = runtime.clone();
+        let age_for_b = age.clone();
+        let _b = runtime.action(move || {
+            let rt = runtime_b.clone();
+            async move {
+                age_for_b.set(&rt.cx(), 99);
+                delayed(5).await;
+                Ok::<(), String>(())
+            }
+        });
+
+        runtime.pump();
+        cx.flush().unwrap();
+        assert_eq!(*seen.borrow(), (String::from("Grace"), 99));
+
+        for _ in 0..4 {
+            runtime.pump();
+            cx.flush().unwrap();
+        }
+        assert_eq!(
+            *seen.borrow(),
+            (String::from("Ada"), 99),
+            "the failed action drops only its own path"
+        );
+
+        settle(&runtime, &cx);
+        assert_eq!(*seen.borrow(), (String::from("Ada"), 99));
+        assert_eq!(store.user().name().get(&cx), "Ada");
+        assert_eq!(store.user().age().get(&cx), 99);
+    }
+
+    #[test]
+    fn per_path_guesses_do_not_rerun_sibling_readers() {
+        let runtime = Runtime::new().into_handle();
+        let cx = runtime.cx();
+        let store = store!(&cx, app());
+        let name = store.user().name().optimistic();
+        let age = store.user().age().optimistic();
+        let name_for_effect = name.clone();
+        let (_, name_runs, _name_effect) = effect_of(&cx, move |cx| name_for_effect.get(cx));
+        let age_for_effect = age.clone();
+        let (_, age_runs, _age_effect) = effect_of(&cx, move |cx| age_for_effect.get(cx));
+        cx.flush().unwrap();
+        let age_before = age_runs.get();
+
+        let runtime_for_action = runtime.clone();
+        let name_for_action = name.clone();
+        let _handle = runtime.action(move || {
+            let rt = runtime_for_action.clone();
+            async move {
+                name_for_action.set(&rt.cx(), String::from("Grace"));
+                delayed(2).await;
+                Ok::<(), String>(())
+            }
+        });
+
+        runtime.pump();
+        cx.flush().unwrap();
+        assert!(name_runs.get() > 1, "the guessed path's reader reruns");
+        assert_eq!(
+            age_runs.get(),
+            age_before,
+            "a sibling path's reader does not rerun"
+        );
+
+        settle(&runtime, &cx);
+    }
+
+    #[test]
+    fn list_patches_add_and_remove_rows() {
+        let runtime = Runtime::new().into_handle();
+        let cx = runtime.cx();
+        let store = store!(&cx, app());
+        let todos = store.todos().optimistic_list(|todo| todo.id);
+        let todos_for_effect = todos.clone();
+        let (seen, _runs, _effect) = effect_of(&cx, move |cx| todos_for_effect.get(cx).len());
+        cx.flush().unwrap();
+        assert_eq!(*seen.borrow(), 2);
+
+        let runtime_for_action = runtime.clone();
+        let todos_for_action = todos.clone();
+        let added = Todo {
+            id: 3,
+            title: String::from("three"),
+            done: false,
+        };
+        let _handle = runtime.action(move || {
+            let rt = runtime_for_action.clone();
+            async move {
+                todos_for_action.push(&rt.cx(), added);
+                delayed(2).await;
+                Ok::<(), String>(())
+            }
+        });
+
+        runtime.pump();
+        cx.flush().unwrap();
+        assert_eq!(*seen.borrow(), 3, "the patch shows at once");
+        let ids: Vec<u32> = todos.get(&cx).iter().map(|todo| todo.id).collect();
+        assert_eq!(ids, vec![1, 2, 3]);
+
+        settle(&runtime, &cx);
+        assert_eq!(*seen.borrow(), 3);
+        assert_eq!(
+            todos
+                .get(&cx)
+                .iter()
+                .map(|todo| todo.id)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+
+        let runtime_for_remove = runtime.clone();
+        let todos_for_remove = todos.clone();
+        let _handle = runtime.action(move || {
+            let rt = runtime_for_remove.clone();
+            async move {
+                todos_for_remove.remove(&rt.cx(), &1);
+                delayed(2).await;
+                Ok::<(), String>(())
+            }
+        });
+        runtime.pump();
+        cx.flush().unwrap();
+        assert_eq!(*seen.borrow(), 2);
+        assert_eq!(
+            todos
+                .get(&cx)
+                .iter()
+                .map(|todo| todo.id)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        settle(&runtime, &cx);
+        assert_eq!(
+            todos
+                .get(&cx)
+                .iter()
+                .map(|todo| todo.id)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+    }
+
+    #[test]
+    fn list_patch_failure_leaves_the_committed_rows() {
+        let runtime = Runtime::new().into_handle();
+        let cx = runtime.cx();
+        let store = store!(&cx, app());
+        let todos = store.todos().optimistic_list(|todo| todo.id);
+        let runtime_for_action = runtime.clone();
+        let todos_for_action = todos.clone();
+        let _handle = runtime.action(move || {
+            let rt = runtime_for_action.clone();
+            async move {
+                todos_for_action.push(
+                    &rt.cx(),
+                    Todo {
+                        id: 9,
+                        title: String::from("nope"),
+                        done: false,
+                    },
+                );
+                delayed(2).await;
+                Err::<(), String>(String::from("rejected"))
+            }
+        });
+        runtime.pump();
+        cx.flush().unwrap();
+        assert_eq!(todos.len(&cx), 3);
+        settle(&runtime, &cx);
+        assert_eq!(todos.len(&cx), 2);
+        assert_eq!(store.todos().get(&cx).len(), 2);
+    }
+
+    #[test]
+    fn a_late_row_commit_does_not_resurrect_a_removed_row() {
+        let runtime = Runtime::new().into_handle();
+        let cx = runtime.cx();
+        let store = store!(&cx, app());
+        let todos = store.todos().optimistic_list(|todo| todo.id);
+        let row = todos.at_key(&cx, &1).expect("row");
+
+        let runtime_for_toggle = runtime.clone();
+        let row_for_toggle = row.clone();
+        let _toggle = runtime.action(move || {
+            let rt = runtime_for_toggle.clone();
+            async move {
+                row_for_toggle.update(&rt.cx(), |todo| todo.done = true);
+                delayed(5).await;
+                Ok::<(), String>(())
+            }
+        });
+        let runtime_for_remove = runtime.clone();
+        let todos_for_remove = todos.clone();
+        let _remove = runtime.action(move || {
+            let rt = runtime_for_remove.clone();
+            async move {
+                todos_for_remove.remove(&rt.cx(), &1);
+                delayed(2).await;
+                Ok::<(), String>(())
+            }
+        });
+
+        settle(&runtime, &cx);
+        let ids: Vec<u32> = store.todos().get(&cx).iter().map(|todo| todo.id).collect();
+        assert_eq!(ids, vec![2], "the removed row stays removed");
+    }
+
+    #[test]
+    fn keyed_row_guess_follows_the_key_across_reorders() {
+        let runtime = Runtime::new().into_handle();
+        let cx = runtime.cx();
+        let store = store!(&cx, app());
+        let todos = store.todos().optimistic_list(|todo| todo.id);
+        let row = todos.at_key(&cx, &1).expect("row");
+        let todos_for_effect = todos.clone();
+        let (seen, _runs, _effect) = effect_of(&cx, move |cx| todos_for_effect.get(cx));
+        cx.flush().unwrap();
+
+        let runtime_for_action = runtime.clone();
+        let row_for_action = row.clone();
+        let _handle = runtime.action(move || {
+            let rt = runtime_for_action.clone();
+            async move {
+                row_for_action.update(&rt.cx(), |todo| todo.done = true);
+                delayed(4).await;
+                Ok::<(), String>(())
+            }
+        });
+        runtime.pump();
+        cx.flush().unwrap();
+        assert!(seen.borrow().iter().any(|todo| todo.id == 1 && todo.done));
+
+        // Reorder the committed list while the guess is live: the row guess
+        // is keyed by id, so it still applies to row 1.
+        let mut reordered = store.todos().get(&cx);
+        reordered.reverse();
+        store.todos().set(&cx, reordered);
+        cx.flush().unwrap();
+        let rows = seen.borrow().clone();
+        assert!(rows.iter().any(|todo| todo.id == 1 && todo.done));
+        assert_eq!(rows.first().map(|todo| todo.id), Some(2));
+
+        settle(&runtime, &cx);
+        assert!(store
+            .todos()
+            .get(&cx)
+            .iter()
+            .any(|todo| todo.id == 1 && todo.done));
+    }
+}
