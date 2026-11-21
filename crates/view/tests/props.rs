@@ -1,5 +1,5 @@
 use reactive_core::{create_signal, Runtime};
-use view::{CallbackWith, Prop};
+use view::{CallbackWith, MaybeProp, Prop};
 
 #[test]
 fn props_are_static_or_reactive() {
@@ -66,4 +66,17 @@ fn props_are_static_or_reactive() {
         .into();
     drag.call(&cx, (1.0, 2.0));
     assert_eq!(sum.get(), 3.0);
+
+    let absent = MaybeProp::<u32>::default();
+    assert!(!absent.is_specified());
+    assert_eq!(absent.get(&cx), None);
+
+    let from_value: MaybeProp<u32> = 7_u32.into();
+    assert_eq!(from_value.get(&cx), Some(7));
+
+    let from_signal: MaybeProp<u32> = count.into();
+    assert_eq!(from_signal.get(&cx), Some(4));
+
+    let from_prop: MaybeProp<u32> = Prop::static_value(9_u32).into();
+    assert_eq!(from_prop.get(&cx), Some(9));
 }

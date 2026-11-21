@@ -124,19 +124,23 @@ generated struct. The component tag calls `FooProps::builder()`.
 ```rust
 #[macros::props]
 struct BadgeProps {
-    label: String,       // stored as Prop<String>
+    label: String,       // Prop<String>
     #[prop(optional)]
-    muted: bool,         // stored as Prop<bool>
+    muted: bool,         // MaybeProp<bool>; omitted -> None
 }
 
 <Badge label={String::from("hi")} />
+<Badge label={String::from("hi")} muted={true} />
 ```
 
+`props.muted.get(cx)` returns `Option<bool>`, so the component can tell “the
+caller omitted it” from “the caller passed `false`”.
+
 The macro leaves view and capability types as declared — `View`, `Callback`,
-`CallbackWith<T>`, `WriteSignal<T>`, `ReadSignal<T>`, `Memo<T>`, `Prop<T>`, and
-`Option`/`Vec` of those — and wraps every other field in `Prop<T>`. Builder
-methods accept `impl Into<FieldType>`, so values, signals, memos, and closures
-all convert without `.into()` at the call site.
+`CallbackWith<T>`, `WriteSignal<T>`, `ReadSignal<T>`, `Memo<T>`, `Prop<T>`,
+`MaybeProp<T>`, and `Option`/`Vec` of those — and wraps every other field in
+`Prop<T>`. Builder methods accept `impl Into<FieldType>`, so values, signals,
+memos, and closures all convert without `.into()` at the call site.
 
 ```rust
 #[macros::props]
@@ -161,8 +165,10 @@ struct AliasedProps {
 ```
 
 `#[prop(into)]` is implied for every field and only kept for older props.
-`#[prop(optional)]` uses `Default` for a missing field;
-`#[prop(default = expr)]` uses an expression.
+`#[prop(optional)]` stores the field as `MaybeProp<T>`: the builder may omit it,
+and the component reads `Option<T>` to tell “not supplied” from a value.
+`#[prop(default = expr)]` keeps `Prop<T>` and fills a missing field with the
+expression. The two attributes are mutually exclusive.
 
 #### Prop shapes
 
@@ -171,6 +177,7 @@ Declare props as data or as actions:
 | Declared field | Stored as | Call-site value |
 | --- | --- | --- |
 | `count: u32` | `Prop<u32>` | a value, `ReadSignal`, or `Memo` |
+| `#[prop(optional)] flag: bool` | `MaybeProp<bool>` | a value/signal, or omitted |
 | `on_click: Callback` | `Callback` | a closure |
 | `on_change: CallbackWith<T>` | `CallbackWith<T>` | a closure or a `WriteSignal<T>` |
 | `children: View` | `View` | child view content |

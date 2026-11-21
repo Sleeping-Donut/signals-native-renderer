@@ -773,6 +773,11 @@ pub fn derive_props(input: TokenStream) -> TokenStream {
 ///
 /// The check is syntactic: aliases and renamed imports are invisible to it, so
 /// `#[prop(raw)]` remains the escape hatch for those.
+fn is_maybe_prop_type(ty: &syn::Type) -> bool {
+    matches!(ty, syn::Type::Path(path)
+        if path.path.segments.last().is_some_and(|segment| segment.ident == "MaybeProp"))
+}
+
 fn is_raw_type(ty: &syn::Type) -> bool {
     match ty {
         syn::Type::Path(path) => {
@@ -827,6 +832,10 @@ fn is_raw_type(ty: &syn::Type) -> bool {
 /// Builder methods accept `impl Into<FieldType>`, so values, signals, memos,
 /// and closures all work without `.into()`.
 ///
+/// `#[prop(optional)]` stores the field as `view::MaybeProp<T>` so the
+/// component can tell “caller omitted” from “caller supplied a value”.
+/// `#[prop(default = expr)]` keeps `Prop<T>` and fills a missing field.
+///
 /// `#[prop(raw)]` forces the declared type through for aliases and custom
 /// types that the automatic check cannot see.
 #[proc_macro_attribute]
@@ -877,16 +886,38 @@ pub fn props(_attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
         field.attrs = kept;
-        let ty = if raw {
+        let declared_maybe = is_maybe_prop_type(&original_ty);
+        if (optional || declared_maybe) && default.is_some() {
+            return syn::Error::new_spanned(
+                &ident,
+                "`optional` and `default` are mutually exclusive",
+            )
+            .to_compile_error()
+            .into();
+        }
+        if optional && !declared_maybe && raw {
+            return syn::Error::new_spanned(
+                &ident,
+                "`optional` cannot be combined with a raw prop type",
+            )
+            .to_compile_error()
+            .into();
+        }
+        let ty = if declared_maybe {
+            original_ty
+        } else if optional {
+            let ty: syn::Type = syn::parse_quote!(::view::MaybeProp<#original_ty>);
+            field.ty = ty.clone();
+            ty
+        } else if raw {
             original_ty
         } else {
             let ty: syn::Type = syn::parse_quote!(::view::Prop<#original_ty>);
             field.ty = ty.clone();
             ty
         };
-        let mut attrs = Vec::new();
-        attrs.push(quote! { #[prop(into)] });
-        if optional {
+        let mut attrs = vec![quote! { #[prop(into)] }];
+        if optional || declared_maybe {
             attrs.push(quote! { #[prop(optional)] });
         }
         if let Some(default) = default {

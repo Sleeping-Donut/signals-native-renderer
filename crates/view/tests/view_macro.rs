@@ -452,3 +452,51 @@ fn view_macro_switch_selects_first_match() {
 
     tree.unmount(&cx, root);
 }
+
+#[macros::props]
+struct OptionalFooProps {
+    #[prop(optional)]
+    baz: String,
+}
+
+#[component]
+fn OptionalFoo(_cx: &reactive_core::Cx<'_>, props: OptionalFooProps) -> View {
+    view! { <Text>{props.baz.get(cx).unwrap_or_default()}</Text> }
+}
+
+#[test]
+fn view_macro_optional_props_use_maybeprop() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let renderer = Rc::new(RefCell::new(NullRenderer::new()));
+    let tree = ViewTree::new(
+        Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
+        runtime.clone(),
+    );
+    let (label, set_label) = signal!(&cx, String::from("a"));
+    let root = tree.mount(
+        &cx,
+        view! {
+            <Column>
+                <OptionalFoo />
+                <OptionalFoo baz={String::from("hi")} />
+                <OptionalFoo baz={label} />
+            </Column>
+        },
+    );
+    tree.frame(&cx, 0);
+    let children = tree.children(root);
+    let text_of = |index: usize| {
+        let node = tree.renderer_id(children[index]).unwrap();
+        renderer.borrow().text_of(node).map(str::to_string)
+    };
+    assert_eq!(text_of(0).as_deref(), Some(""));
+    assert_eq!(text_of(1).as_deref(), Some("hi"));
+    assert_eq!(text_of(2).as_deref(), Some("a"));
+
+    set_label.set(&cx, String::from("b"));
+    tree.frame(&cx, 1);
+    assert_eq!(text_of(2).as_deref(), Some("b"));
+
+    tree.unmount(&cx, root);
+}

@@ -4,6 +4,8 @@
 
 - v0.2 work started: Phase 9/10 roadmap in PLAN, the held-frame `is_pending`
   verdict prototype, and the damage-presentation design.
+- `MaybeProp<T>` (the caller may omit the prop). `#[prop(optional)]` now stores
+  the field as `MaybeProp<T>`; `#[prop(default = expr)]` keeps `Prop<T>`.
 
 ## v0.1.1 — 2026-11-21
 

@@ -3789,6 +3789,61 @@ impl<T: Clone + 'static> From<Memo<T>> for Prop<T> {
     }
 }
 
+/// A prop the caller may omit.
+///
+/// `Default` means the builder never received the field; `Specified` holds a
+/// static value, signal, or memo. `get` flattens both into `Option<T>`, so a
+/// component can tell “not supplied” from “supplied as `None`”.
+#[derive(Clone, Default)]
+pub enum MaybeProp<T> {
+    /// The caller omitted the prop.
+    #[default]
+    Default,
+    /// The caller supplied a value.
+    Specified(Prop<T>),
+}
+
+impl<T: Clone + 'static> MaybeProp<T> {
+    /// Read the prop, or `None` when the caller omitted it.
+    #[must_use]
+    pub fn get(&self, cx: &reactive_core::Cx<'_>) -> Option<T> {
+        match self {
+            Self::Default => None,
+            Self::Specified(prop) => Some(prop.get(cx)),
+        }
+    }
+
+    /// Whether the caller supplied the prop.
+    #[must_use]
+    pub fn is_specified(&self) -> bool {
+        matches!(self, Self::Specified(_))
+    }
+}
+
+impl<T: Clone + 'static> From<Prop<T>> for MaybeProp<T> {
+    fn from(value: Prop<T>) -> Self {
+        Self::Specified(value)
+    }
+}
+
+impl<T: Clone + 'static> From<T> for MaybeProp<T> {
+    fn from(value: T) -> Self {
+        Self::Specified(Prop::Static(value))
+    }
+}
+
+impl<T: Clone + 'static> From<ReadSignal<T>> for MaybeProp<T> {
+    fn from(value: ReadSignal<T>) -> Self {
+        Self::Specified(Prop::Signal(value))
+    }
+}
+
+impl<T: Clone + 'static> From<Memo<T>> for MaybeProp<T> {
+    fn from(value: Memo<T>) -> Self {
+        Self::Specified(Prop::Memo(value))
+    }
+}
+
 /// A dynamic text source.
 pub struct TextSource(Box<dyn Fn(&reactive_core::Cx<'_>) -> String>);
 

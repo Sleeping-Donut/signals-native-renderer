@@ -736,6 +736,8 @@ or a measurement.
 - Async code uses owned context capabilities: `&Cx` for sync, read-only
   `CxHandle` for async compute, `ActionCx` for action writes, `TaskCx` for
   detached mainline work. Reads after `await` are tracked.
+- Optional props are `MaybeProp<T>`; `Prop<Option<T>>` stays for nullable
+  values.
 - `Derived<T>` (no macro; `create_derived`) is the uncached read-only derivation
   (Solid function form, Leptos `Signal::derive`). It is sync-only; async and
   `is_pending` need a memo node.
@@ -814,7 +816,6 @@ or a measurement.
 | 7 | Store field read/write split | Apply `ReadField`/`WriteField` like signals? | Prototype before store API freeze |
 | 8 | `view!` syntax strictness | Tree syntax vs builder vs both | Macro prototype |
 | 8 | Reactive attribute detection | Macro type inference vs explicit syntax | `trybuild` prototype |
-| 8 | Optional props | `Prop<Option<T>>` vs `MaybeProp<T>` | Decide with props macro |
 | 8 | `For` key inference | Explicit key vs `Keyed` trait | Prototype macro |
 | 8 | Macro error spans | Proc-macro diagnostics quality | Budget time; `trybuild` |
 | 8 | `view_builder!` | Fluent macro front-end | Stretch only; not scheduled |

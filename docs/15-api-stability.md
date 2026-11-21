@@ -20,7 +20,7 @@ in-tree apps and examples.
   - resolved styles, transforms, overflow, a11y roles, cursor icons
 - `view`
   - `View`, builders, `Prop` (static/signal/memo), `#[props]` builders,
-    `Callback`, `CallbackWith<T>`, `view!`, `StateStyle`
+    `Callback`, `CallbackWith<T>`, `MaybeProp<T>`, `view!`, `StateStyle`
   - `view::control` (`Show`, `For`, `Loading`, `LoadingWhen`, `Repeat`,
     `Switch`, `Match`)
   - `TextInput`, `TextInputState`
