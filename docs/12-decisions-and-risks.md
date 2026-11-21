@@ -793,7 +793,6 @@ or a measurement.
 | 2 | Colorless suspension implementation | Private panic payload vs custom unwinder; `panic = "abort"` | Prototype Path A/B; measure |
 | 2 | Transaction merge criterion | Sharing a reader vs sharing a node | Fuzz independent-widget shapes |
 | 2 | Re-ask detection | Explicit `refresh()` vs hashing tracked inputs | Decide with async rule tests |
-| 2 | `is_pending` in a held frame | Verdict-only display-ahead: allow value-identical Display applies, or build a verdict lane | Prototype with the states demo (13-reference-apps.md) |
 | 2 | `on` full semantics | Needs full boundary/txn/lane model | v0.2; keyed remount in v0.1 |
 | 3 | Stable renderer `NodeId` contract | `u64` opaque; `0` invalid; backend pointer option | Freeze in `renderer-api` |
 | 3 | Event model richness | Generic `Event` vs typed pointer/key/IME | Prototype with real input |
@@ -839,6 +838,11 @@ v0.2 and `view_builder!` is a stretch goal, so neither is a v0.1 blocker.
 ### Deferred (not open for v0.1)
 
 - `on` full re-arm, actions, `latest`, `affects`, optimism, lanes.
+- `is_pending` in a held frame: **resolved** as verdict-only display-ahead. A
+  display pass applies committed values plus the verdict while a flight is out;
+  `display_pass_shows_the_verdict_during_a_hold` in
+  `crates/reactive-core/tests/pending_status.rs` pins the behavior. A value lane
+  is still part of the v0.2 lane work.
 - `DynamicStore` unless a v0.1 app needs it.
 - Store projections / async derived stores.
 - `KeepAlive` if not in v0.1.

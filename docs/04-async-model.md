@@ -1177,7 +1177,9 @@ Returns false when:
 "landed value staged" case is the txn's `staged` flag.
 
 **It must be readable during the hold.** The hold is the only window in which
-`isPending` is useful: after the commit, the new question has an answer. Solid
+`isPending` is useful: after the commit, the new question has an answer.
+`display_pass_shows_the_verdict_during_a_hold` (reactive-core) pins this: the
+display pass applies `(old value, pending = true)` during the flight. Solid
 shows this directly — a pending text updates while the values it describes stay
 committed (`refs/solid/packages/web/test/ispending-combined-atomic-3442.spec.tsx`).
 Our v0.1 rule: a Display pass that computes entirely from committed values may
