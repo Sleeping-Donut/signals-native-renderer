@@ -462,13 +462,15 @@ optimistic todos app is the acceptance target for guesses/actions.
 1. ✅ **Held-frame verdict.** Display passes apply committed values plus the
    pending verdict during a flight. Pinned by
    `reactive-core/tests/pending_status.rs`.
-2. **Transaction merge + re-ask decisions.** Fuzz independent-widget shapes;
-   choose shared-reader vs shared-node merging and whether equal-input
-   recomputes are quiet. Record the ADR in docs/12. Gate: the Phase 2 open items
-   close with tests.
-3. **Lane/guess foundation + `latest`.** Introduce the lane txn over
-   “screen + guesses”; `latest` returns staged values; derived `latest` and
-   `is_pending` reads do not tear. Gate: lane tests for display vs derive reads.
+2. ✅ **Transaction merge + re-ask decisions.** Results ready at one flush
+   commit together; `refresh` is a quiet re-ask and equal answers do not notify
+   (the async equality comparison was fixed to compare the new value). Pinned by
+   `results_ready_in_one_flush_commit_together` and
+   `refresh_is_a_quiet_re_ask`; decisions recorded in docs/12.
+3. ✅ **Lane/guess foundation + `latest`.** Display-only `guess`/`clear_guess`,
+   `latest` (guess > staged > committed in display; committed in derive), and
+   quiet `refresh`. Gate met: `latest_reads_the_staged_answer_during_a_hold`
+   and `guesses_are_display_only_and_clear`.
 4. ✅ **`affects`.** Declared pending marks until commit. Gate met:
    `affects_marks_derivations_pending_until_the_next_flush` covers a signal,
    its derivation, and an `is_pending` reader.

@@ -738,6 +738,10 @@ or a measurement.
   detached mainline work. Reads after `await` are tracked.
 - Optional props are `MaybeProp<T>`; `Prop<Option<T>>` stays for nullable
   values.
+- Transaction merge: results ready at one flush commit together; a reader
+  applies them as one merged update (`results_ready_in_one_flush_commit_together`).
+- Re-ask detection: `refresh` marks a quiet flight; `is_pending` stays false and
+  an equal answer does not notify (`refresh_is_a_quiet_re_ask`).
 - `Derived<T>` (no macro; `create_derived`) is the uncached read-only derivation
   (Solid function form, Leptos `Signal::derive`). It is sync-only; async and
   `is_pending` need a memo node.
@@ -793,8 +797,6 @@ or a measurement.
 | Phase | Question | Why it is still open | Next step |
 |---|---|---|---|
 | 2 | Colorless suspension implementation | Private panic payload vs custom unwinder; `panic = "abort"` | Prototype Path A/B; measure |
-| 2 | Transaction merge criterion | Sharing a reader vs sharing a node | Fuzz independent-widget shapes |
-| 2 | Re-ask detection | Explicit `refresh()` vs hashing tracked inputs | Decide with async rule tests |
 | 2 | `on` full semantics | Needs full boundary/txn/lane model | v0.2; keyed remount in v0.1 |
 | 3 | Stable renderer `NodeId` contract | `u64` opaque; `0` invalid; backend pointer option | Freeze in `renderer-api` |
 | 3 | Event model richness | Generic `Event` vs typed pointer/key/IME | Prototype with real input |

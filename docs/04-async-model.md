@@ -1190,20 +1190,19 @@ result is value-identical; only a verdict read can differ. A pass that hits
 The reader-class plumbing is not frozen; the states-and-cities demo in
 [13-reference-apps.md](13-reference-apps.md) is the check for it.
 
-### 7.2 `latest` (v0.2)
+### 7.2 `latest` (v0.2, implemented)
 
 ```rust
-pub fn latest<T: Clone>(cx: &Cx, memo: Memo<T>) -> Result<T, LatestError>
+pub fn latest<T: Clone + 'static>(cx: &Cx, memo: Memo<T>) -> Result<T, LatestError>
 ```
 
-- If a value is staged (held), return the staged value.
-- Else return the committed value.
-- Else return `Err(Loading)` (no value has ever been produced).
+- Display pass: a guess wins, then a landed-but-uncommitted async answer, then
+  the committed value, then `Err(Loading)`.
+- Derive pass: returns only the committed value, so a memo over `latest` cannot
+  tear against the screen.
 
-`latest` is a display-ahead read: it does not join the txn and does not make the
-frame wait. It belongs with the lane model because a derived value over `latest`
-needs a lane to stay consistent. Without lanes, using it in a memo can tear
-against the screen, so v0.1 does not expose it. It returns with the v0.2 lane work.
+`latest` tracks the memo but never commits or waits. `latest_reads_the_staged_answer_during_a_hold`
+covers the staged read and the derive rule.
 
 **Solid amended this rule on 2026-11-12.** Its previous display-ahead limit —
 "a display-ahead pass shows; it never asks" — was replaced: a pass that asks
@@ -1233,6 +1232,24 @@ affects(&cx, &count);            // count and readers of count*2 are pending
 assert!(is_pending(&cx, |cx| double.get(cx)));
 cx.flush().unwrap();             // verdict clears at the commit
 ```
+
+### 7.4 Guesses and quiet re-asks (v0.2, implemented)
+
+```rust
+pub fn guess<T: Clone + 'static, H: NodeHandle>(cx: &Cx, node: &H, value: T);
+pub fn clear_guess<H: NodeHandle>(cx: &Cx, node: &H);
+pub fn refresh<T>(cx: &Cx, memo: Memo<T>);
+```
+
+A guess is a display-only overlay: `get` in a display pass returns it,
+derivations keep the committed value, and the node reports pending until
+`clear_guess`. `guesses_are_display_only_and_clear` pins the split.
+
+`refresh` re-runs an async memo's question without reporting pending
+(`quiet` flight). If the answer is equal, readers are not notified; a dependency
+change before the quiet flight lands starts a new question. Async results that
+are ready at one flush commit together, so readers see one merged update
+(`results_ready_in_one_flush_commit_together`).
 
 ## 8. Actions (v0.2)
 

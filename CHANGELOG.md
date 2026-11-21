@@ -11,6 +11,9 @@
   texture and blit it. `FrameStats::scissored_area` reports rasterized area.
 - `affects(cx, node)` declares pending without a value write; the node and its
   derivations report pending until the current flush commits.
+- `latest(memo)`, display-only `guess`/`clear_guess`, and quiet `refresh`.
+  Async results ready at one flush commit together, and equal async answers no
+  longer notify readers.
 
 ## v0.1.1 — 2026-11-21
 

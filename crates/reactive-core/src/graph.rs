@@ -194,6 +194,16 @@ impl<T: 'static> ReadSignal<T> {
         cx.rt.note_pending_read(self.id);
         let node = cx.rt.node(self.id).expect("signal was disposed");
         let node = node.borrow();
+        if cx.rt.reader_class.get() == ReaderClass::Display {
+            if let Some(guess) = node
+                .guess
+                .borrow()
+                .as_ref()
+                .and_then(|value| value.downcast_ref::<T>())
+            {
+                return f(guess);
+            }
+        }
         let value = node.value.borrow();
         let value = match value.as_ref().and_then(|value| value.downcast_ref::<T>()) {
             Some(value) => value,
@@ -323,6 +333,16 @@ impl<T: 'static> Memo<T> {
         cx.rt.note_pending_read(self.id);
         let node = cx.rt.node(self.id).expect("memo was disposed");
         let node = node.borrow();
+        if cx.rt.reader_class.get() == ReaderClass::Display {
+            if let Some(guess) = node
+                .guess
+                .borrow()
+                .as_ref()
+                .and_then(|value| value.downcast_ref::<T>())
+            {
+                return f(guess);
+            }
+        }
         let value = node.value.borrow();
         let value = match value.as_ref().and_then(|value| value.downcast_ref::<T>()) {
             Some(value) => value,
@@ -729,6 +749,7 @@ pub struct Runtime {
     dirty_visits: Cell<u64>,
     pending_tokens: RefCell<HashMap<NodeId, NodeId>>,
     affected: RefCell<HashSet<NodeId>>,
+    refresh_nodes: RefCell<HashSet<NodeId>>,
     affects_token: Cell<Option<NodeId>>,
     effect_tokens: RefCell<HashMap<NodeId, NodeId>>,
     pending_probe: Cell<bool>,
@@ -779,6 +800,7 @@ impl Runtime {
             dirty_visits: Cell::new(0),
             pending_tokens: RefCell::new(HashMap::new()),
             affected: RefCell::new(HashSet::new()),
+            refresh_nodes: RefCell::new(HashSet::new()),
             affects_token: Cell::new(None),
             effect_tokens: RefCell::new(HashMap::new()),
             pending_probe: Cell::new(false),
@@ -877,8 +899,11 @@ impl Runtime {
                 return true;
             }
             let node = node.borrow();
+            if node.guess.borrow().is_some() {
+                return true;
+            }
             let has_value = node.value.borrow().is_some();
-            if node.in_flight.get() && has_value {
+            if node.in_flight.get() && has_value && !node.quiet.get() {
                 return true;
             }
             if node.async_result.borrow().is_some() && has_value {
@@ -1121,6 +1146,15 @@ impl Runtime {
         self.stage(token, Box::new(next));
     }
 
+    fn mark_display_changed(&self, id: NodeId) {
+        let revision = self.revision.get() + 1;
+        self.revision.set(revision);
+        if let Some(node) = self.node(id) {
+            node.borrow().last_changed.set(revision);
+        }
+        self.mark_subs(id);
+    }
+
     fn mark_subs(&self, id: NodeId) {
         let Some(node) = self.node(id) else {
             return;
@@ -1348,6 +1382,8 @@ impl Runtime {
             node.borrow_mut().flight.set(flight + 1);
         }
 
+        let quiet = self.refresh_nodes.borrow_mut().remove(&id);
+        node.borrow().quiet.set(quiet);
         self.unlink_all_deps(id);
         let (mut compute, old) = {
             let node = node.borrow();
@@ -1856,17 +1892,19 @@ impl Runtime {
             };
 
             match result {
-                Ok(value) => {
+                Ok(new_value) => {
                     let changed = {
-                        let node = node.borrow();
-                        let value = node.value.borrow();
-                        match value.as_ref() {
+                        let node_ref = node.borrow();
+                        let committed = node_ref.value.borrow();
+                        match committed.as_ref() {
                             None => true,
-                            Some(old) => !node.equals.eq(&**old, &*value),
+                            Some(old) => !node_ref.equals.eq(&**old, &*new_value),
                         }
                     };
+                    let quiet = node.borrow().quiet.get();
                     let node_ref = node.borrow();
-                    node_ref.value.borrow_mut().replace(value);
+                    node_ref.quiet.set(false);
+                    node_ref.value.borrow_mut().replace(new_value);
                     node_ref.async_error.borrow_mut().take();
                     node_ref.computed.set(true);
                     node_ref.state.set(DirtyState::Clean);
@@ -1877,10 +1915,13 @@ impl Runtime {
                     if changed {
                         self.mark_subs(id);
                     }
-                    self.bump_pending(id);
+                    if changed || !quiet {
+                        self.bump_pending(id);
+                    }
                 }
                 Err(error) => {
                     let node_ref = node.borrow();
+                    node_ref.quiet.set(false);
                     node_ref.async_error.borrow_mut().replace(error.to_string());
                     node_ref.value.borrow_mut().take();
                     node_ref.computed.set(false);
@@ -1926,6 +1967,47 @@ impl Runtime {
         }
         self.in_flush.set(false);
         Ok(())
+    }
+
+    fn latest_value<T: Clone + 'static>(&self, id: NodeId) -> Result<T, LatestError> {
+        let Some(node_ref) = self.node(id) else {
+            return Err(LatestError::Loading);
+        };
+        let node = node_ref.borrow();
+        if let Some(guess) = node
+            .guess
+            .borrow()
+            .as_ref()
+            .and_then(|value| value.downcast_ref::<T>())
+        {
+            return Ok(guess.clone());
+        }
+        if let Some(Ok(value)) = node.async_result.borrow().as_ref() {
+            if let Some(value) = value.downcast_ref::<T>() {
+                return Ok(value.clone());
+            }
+        }
+        let committed = node
+            .value
+            .borrow()
+            .as_ref()
+            .and_then(|value| value.downcast_ref::<T>())
+            .cloned();
+        committed.ok_or(LatestError::Loading)
+    }
+
+    fn committed_value<T: Clone + 'static>(&self, id: NodeId) -> Result<T, LatestError> {
+        let Some(node_ref) = self.node(id) else {
+            return Err(LatestError::Loading);
+        };
+        let node = node_ref.borrow();
+        let committed = node
+            .value
+            .borrow()
+            .as_ref()
+            .and_then(|value| value.downcast_ref::<T>())
+            .cloned();
+        committed.ok_or(LatestError::Loading)
     }
 
     fn affects_token(&self) -> NodeId {
@@ -2003,6 +2085,88 @@ fn create_signal_impl<T: 'static>(
 /// not a specific signal type.
 pub fn is_pending<T>(cx: &Cx<'_>, read: impl FnOnce(&Cx<'_>) -> T) -> bool {
     cx.rt.is_pending_probe(read)
+}
+
+/// A display-ahead read that could not produce a value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LatestError {
+    /// The node has never produced a value.
+    Loading,
+}
+
+/// A node handle usable by the lane APIs.
+pub trait NodeHandle {
+    /// The graph node behind this handle.
+    fn node_id(&self) -> NodeId;
+}
+
+impl<T> NodeHandle for ReadSignal<T> {
+    fn node_id(&self) -> NodeId {
+        self.id
+    }
+}
+
+impl<T> NodeHandle for WriteSignal<T> {
+    fn node_id(&self) -> NodeId {
+        self.id
+    }
+}
+
+impl<T> NodeHandle for Memo<T> {
+    fn node_id(&self) -> NodeId {
+        self.id
+    }
+}
+
+/// Read the newest answer a lane can show.
+///
+/// In a display pass this prefers a guess, then a landed-but-uncommitted async
+/// answer, then the committed value. In a derive pass it returns only the
+/// committed value, so derivations cannot tear against the screen.
+pub fn latest<T: Clone + 'static>(cx: &Cx<'_>, memo: Memo<T>) -> Result<T, LatestError> {
+    cx.rt.track(memo.id());
+    cx.rt.ensure_clean(memo.id());
+    if cx.rt.reader_class.get() == ReaderClass::Derive {
+        cx.rt.committed_value(memo.id())
+    } else {
+        cx.rt.latest_value(memo.id())
+    }
+}
+
+/// Ask an async memo to run its question again without reporting pending.
+///
+/// This is the quiet re-ask path: `is_pending` stays false while the flight is
+/// out, and an equal answer does not notify readers.
+pub fn refresh<T>(cx: &Cx<'_>, memo: Memo<T>) {
+    let id = memo.id();
+    cx.rt.refresh_nodes.borrow_mut().insert(id);
+    if let Some(node) = cx.rt.node(id) {
+        node.borrow().state.set(DirtyState::Dirty);
+    }
+    cx.rt.schedule(id);
+}
+
+/// Show `value` in display passes without committing it.
+///
+/// Derivations keep reading the committed value. The guess marks the node
+/// pending and lasts until [`clear_guess`].
+pub fn guess<T: Clone + 'static, H: NodeHandle>(cx: &Cx<'_>, node: &H, value: T) {
+    let id = node.node_id();
+    if let Some(node) = cx.rt.node(id) {
+        node.borrow().guess.borrow_mut().replace(Box::new(value));
+    }
+    cx.rt.mark_display_changed(id);
+    cx.rt.bump_affects();
+}
+
+/// Remove a guess and return display reads to the committed value.
+pub fn clear_guess<H: NodeHandle>(cx: &Cx<'_>, node: &H) {
+    let id = node.node_id();
+    if let Some(node) = cx.rt.node(id) {
+        node.borrow().guess.borrow_mut().take();
+    }
+    cx.rt.mark_display_changed(id);
+    cx.rt.bump_affects();
 }
 
 /// A node that can be declared pending.
@@ -2403,6 +2567,8 @@ struct Node {
     flight: Cell<u64>,
     future_flight: Cell<u64>,
     in_flight: Cell<bool>,
+    quiet: Cell<bool>,
+    guess: RefCell<Option<Box<dyn Any>>>,
     async_result: RefCell<Option<Result<Box<dyn Any>, AsyncError>>>,
     async_error: RefCell<Option<String>>,
     boundary: RefCell<Option<BoundaryFns>>,
@@ -2446,6 +2612,8 @@ impl Node {
             flight: Cell::new(0),
             future_flight: Cell::new(0),
             in_flight: Cell::new(false),
+            quiet: Cell::new(false),
+            guess: RefCell::new(None),
             async_result: RefCell::new(None),
             async_error: RefCell::new(None),
             boundary: RefCell::new(None),
