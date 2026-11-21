@@ -126,16 +126,13 @@ mod model {
 }
 
 mod store {
-    use std::cell::Cell;
     use std::rc::Rc;
 
-    use reactive_core::{
-        create_memo, create_signal, Cx, Memo, ReadSignal, RuntimeHandle, WriteSignal,
-    };
+    use reactive_core::{create_signal, Cx, ReadSignal, RuntimeHandle, WriteSignal};
 
     use crate::model::{Api, Todo};
 
-    /// A row as the user sees it: saved data with pending ops applied.
+    /// A row as the user sees it: committed data plus an in-flight guess.
     #[derive(Clone, Debug, PartialEq)]
     pub struct TodoRow {
         pub id: u64,
@@ -144,115 +141,59 @@ mod store {
         pub pending: bool,
     }
 
-    #[derive(Clone, Debug, PartialEq)]
-    enum Op {
-        Toggle { token: u64, id: u64 },
-        Add { token: u64, todo: Todo },
-    }
-
-    impl Op {
-        fn token(&self) -> u64 {
-            match self {
-                Self::Toggle { token, .. } | Self::Add { token, .. } => *token,
-            }
-        }
-
-        fn target(&self) -> u64 {
-            match self {
-                Self::Toggle { id, .. } => *id,
-                Self::Add { todo, .. } => todo.id,
-            }
-        }
-
-        fn apply(&self, todos: &mut Vec<Todo>) {
-            match self {
-                Self::Toggle { id, .. } => {
-                    if let Some(todo) = todos.iter_mut().find(|todo| todo.id == *id) {
-                        todo.done = !todo.done;
-                    }
-                }
-                Self::Add { todo, .. } => todos.push(todo.clone()),
-            }
+    fn row(todo: Todo) -> TodoRow {
+        TodoRow {
+            id: todo.id,
+            text: todo.text,
+            done: todo.done,
+            pending: false,
         }
     }
 
-    fn project(saved: &[Todo], pending: &[Op]) -> Vec<TodoRow> {
-        let mut todos = saved.to_vec();
-        let mut pending_ids = Vec::new();
-        for op in pending {
-            op.apply(&mut todos);
-            pending_ids.push(op.target());
-        }
-        todos
-            .into_iter()
-            .map(|todo| TodoRow {
-                pending: pending_ids.contains(&todo.id),
-                id: todo.id,
-                text: todo.text,
-                done: todo.done,
-            })
-            .collect()
-    }
-
-    /// Saved rows plus an overlay of ops that are still in flight.
-    ///
-    /// A write pushes an op, so the overlay redraws immediately. When the save
-    /// settles the op is removed; on success it is committed to `saved`, on
-    /// failure it is simply dropped.
+    /// Committed rows plus the action guesses layered over them.
     pub struct TodosStore {
         runtime: RuntimeHandle,
         api: Rc<Api>,
-        set_saved: WriteSignal<Vec<Todo>>,
-        pending: ReadSignal<Vec<Op>>,
-        set_pending: WriteSignal<Vec<Op>>,
+        todos: ReadSignal<Vec<TodoRow>>,
+        set_todos: WriteSignal<Vec<TodoRow>>,
         ready: ReadSignal<bool>,
         error: ReadSignal<String>,
         set_error: WriteSignal<String>,
         fail_next: ReadSignal<bool>,
         set_fail_next: WriteSignal<bool>,
-        rows: Memo<Vec<TodoRow>>,
-        tokens: Cell<u64>,
     }
 
     impl TodosStore {
         pub fn new(cx: &Cx<'_>, runtime: RuntimeHandle, api: Rc<Api>) -> Rc<Self> {
-            let (saved, set_saved) = create_signal(cx, Vec::new());
-            let (pending, set_pending) = create_signal(cx, Vec::new());
+            let (todos, set_todos) = create_signal(cx, Vec::new());
             let (ready, set_ready) = create_signal(cx, false);
             let (error, set_error) = create_signal(cx, String::new());
             let (fail_next, set_fail_next) = create_signal(cx, false);
-            let rows = create_memo(cx, move |cx, _: Option<&Vec<TodoRow>>| {
-                project(&saved.get(cx), &pending.get(cx))
-            });
 
-            let store = Rc::new(Self {
-                runtime: runtime.clone(),
-                api: Rc::clone(&api),
-                set_saved,
-                pending,
-                set_pending,
+            let runtime_for_task = runtime.clone();
+            let api_for_task = Rc::clone(&api);
+            runtime.spawner().spawn_local(Box::pin(async move {
+                let list = api_for_task.list().await;
+                let cx = runtime_for_task.cx();
+                set_todos.set(&cx, list.into_iter().map(row).collect());
+                set_ready.set(&cx, true);
+            }));
+
+            Rc::new(Self {
+                runtime,
+                api,
+                todos,
+                set_todos,
                 ready,
                 error,
                 set_error,
                 fail_next,
                 set_fail_next,
-                rows,
-                tokens: Cell::new(0),
-            });
-
-            let runtime_for_task = runtime.clone();
-            runtime.spawner().spawn_local(Box::pin(async move {
-                let list = api.list().await;
-                let cx = runtime_for_task.cx();
-                set_saved.set(&cx, list);
-                set_ready.set(&cx, true);
-            }));
-
-            store
+            })
         }
 
-        pub fn rows(&self) -> Memo<Vec<TodoRow>> {
-            self.rows
+        pub fn rows(&self) -> ReadSignal<Vec<TodoRow>> {
+            self.todos
         }
 
         pub fn ready(&self) -> ReadSignal<bool> {
@@ -272,81 +213,94 @@ mod store {
             self.api.set_fail_next(fail);
         }
 
-        pub fn toggle(self: &Rc<Self>, cx: &Cx<'_>, id: u64) {
-            let op = Op::Toggle {
-                token: self.next_token(),
-                id,
-            };
-            self.queue(cx, op.clone());
-
-            let runtime = self.runtime.clone();
-            let runtime_for_task = runtime.clone();
+        pub fn toggle(self: &Rc<Self>, _cx: &Cx<'_>, id: u64) {
             let api = Rc::clone(&self.api);
-            let store = Rc::clone(self);
-            runtime.spawner().spawn_local(Box::pin(async move {
-                let result = api.toggle(id).await;
-                store.finish(&runtime_for_task.cx(), &op, result);
-            }));
-        }
+            let todos = self.todos;
+            let set_todos = self.set_todos;
+            let set_error = self.set_error;
+            let set_fail_next = self.set_fail_next;
+            let _ = self.runtime.action(move |act| async move {
+                act.set(set_error, String::new());
+                let optimistic: Vec<TodoRow> = act
+                    .get(todos)
+                    .into_iter()
+                    .map(|row| {
+                        if row.id == id {
+                            TodoRow {
+                                done: !row.done,
+                                pending: true,
+                                ..row
+                            }
+                        } else {
+                            row
+                        }
+                    })
+                    .collect();
+                act.guess(&todos, optimistic.clone());
 
-        pub fn add(self: &Rc<Self>, cx: &Cx<'_>, text: String) {
-            let todo = Todo {
-                id: self.api.next_id(),
-                text,
-                done: false,
-            };
-            let op = Op::Add {
-                token: self.next_token(),
-                todo: todo.clone(),
-            };
-            self.queue(cx, op.clone());
-
-            let runtime = self.runtime.clone();
-            let runtime_for_task = runtime.clone();
-            let api = Rc::clone(&self.api);
-            let store = Rc::clone(self);
-            runtime.spawner().spawn_local(Box::pin(async move {
-                let result = api.add(todo).await;
-                store.finish(&runtime_for_task.cx(), &op, result);
-            }));
-        }
-
-        fn next_token(&self) -> u64 {
-            let token = self.tokens.get() + 1;
-            self.tokens.set(token);
-            token
-        }
-
-        fn queue(&self, cx: &Cx<'_>, op: Op) {
-            self.set_error.set(cx, String::new());
-            let mut next = self.pending.get(cx);
-            next.push(op);
-            self.set_pending.set(cx, next);
-        }
-
-        fn finish(&self, cx: &Cx<'_>, op: &Op, result: Result<(), String>) {
-            let token = op.token();
-            self.set_pending.update_with(cx, |ops| {
-                ops.iter()
-                    .filter(|op| op.token() != token)
-                    .cloned()
-                    .collect()
+                match api.toggle(id).await {
+                    Ok(()) => {
+                        let committed = optimistic
+                            .into_iter()
+                            .map(|row| TodoRow {
+                                pending: false,
+                                ..row
+                            })
+                            .collect();
+                        act.set(set_todos, committed);
+                        Ok::<(), String>(())
+                    }
+                    Err(message) => {
+                        act.set(set_fail_next, false);
+                        act.set(set_error, message.clone());
+                        Err(message)
+                    }
+                }
             });
-            match result {
-                Ok(()) => {
-                    self.set_saved.update_with(cx, |saved| {
-                        let mut saved = saved.clone();
-                        op.apply(&mut saved);
-                        saved
-                    });
-                    self.set_error.set(cx, String::new());
+        }
+
+        pub fn add(self: &Rc<Self>, _cx: &Cx<'_>, text: String) {
+            let api = Rc::clone(&self.api);
+            let todos = self.todos;
+            let set_todos = self.set_todos;
+            let set_error = self.set_error;
+            let set_fail_next = self.set_fail_next;
+            let id = self.api.next_id();
+            let _ = self.runtime.action(move |act| async move {
+                act.set(set_error, String::new());
+                let mut optimistic = act.get(todos);
+                optimistic.push(TodoRow {
+                    id,
+                    text: text.clone(),
+                    done: false,
+                    pending: true,
+                });
+                act.guess(&todos, optimistic.clone());
+
+                let todo = Todo {
+                    id,
+                    text,
+                    done: false,
+                };
+                match api.add(todo).await {
+                    Ok(()) => {
+                        let committed = optimistic
+                            .into_iter()
+                            .map(|row| TodoRow {
+                                pending: false,
+                                ..row
+                            })
+                            .collect();
+                        act.set(set_todos, committed);
+                        Ok::<(), String>(())
+                    }
+                    Err(message) => {
+                        act.set(set_fail_next, false);
+                        act.set(set_error, message.clone());
+                        Err(message)
+                    }
                 }
-                Err(message) => {
-                    // The server consumes the one-shot failure switch.
-                    self.set_fail_next.set(cx, false);
-                    self.set_error.set(cx, message);
-                }
-            }
+            });
         }
     }
 }
@@ -490,7 +444,7 @@ mod basecomponents {
     use macros::{component, view};
     use reactive_core::Cx;
     use renderer_api::CursorIcon;
-    use view::{button, text_fn, Callback, View};
+    use view::{text_fn, Callback, View};
 
     use crate::styles;
 
@@ -513,24 +467,6 @@ mod basecomponents {
                 <Text style={styles::button_label()}>{props.label.get(cx)}</Text>
             </Button>
         }
-    }
-
-    #[macros::props]
-    pub struct IconButtonProps {
-        pub label: String,
-        pub on_click: Callback,
-    }
-
-    #[component]
-    pub fn IconButton(_cx: &Cx<'_>, props: IconButtonProps) -> View {
-        button(
-            vec![text_fn(move |cx| props.label.get(cx)).style(styles::button_label())],
-            move |cx: &Cx<'_>| props.on_click.call(cx),
-        )
-        .style(styles::icon_button())
-        .hover_style(styles::HOVER)
-        .focus_style(styles::FOCUS)
-        .cursor(CursorIcon::Pointer)
     }
 
     #[macros::props]
@@ -558,13 +494,13 @@ mod uicomponents {
     use std::rc::Rc;
 
     use macros::{component, view};
-    use reactive_core::{memo, Cx, RuntimeHandle};
+    use reactive_core::{Cx, RuntimeHandle};
+    use renderer_api::CursorIcon;
     use view::control::{For, LoadingWhen};
-    use view::{Prop, TextInputState, View};
+    use view::{button, text_fn, Prop, TextInputState, View};
 
     use crate::basecomponents::{
-        ActionButton, ActionButtonProps, ErrorLine, ErrorLineProps, IconButton, IconButtonProps,
-        TextLine, TextLineProps,
+        ActionButton, ActionButtonProps, ErrorLine, ErrorLineProps, TextLine, TextLineProps,
     };
     use crate::model::Api;
     use crate::store::{TodoRow, TodosStore};
@@ -590,43 +526,53 @@ mod uicomponents {
     pub fn TodoRowView(cx: &Cx<'_>, props: TodoRowProps) -> View {
         let store = props.store;
         let id = props.id.get(cx);
-        // Keyed lists reuse the mounted row, so the row reads its data by id
-        // instead of capturing a snapshot of it.
-        let store_for_row = Rc::clone(&store);
-        let row = memo!(cx, move |cx, _: Option<&Option<TodoRow>>| {
-            store_for_row
-                .rows()
-                .get(cx)
-                .into_iter()
-                .find(|row| row.id == id)
-        });
-        let row_for_label = row;
-        let row_for_text = row;
+        // Guesses are display-only, so the row reads the shared signal from a
+        // render binding instead of deriving a memo (which would see committed
+        // data only).
+        let rows = store.rows();
+        let rows_for_label = rows;
+        let rows_for_text = rows;
         let store_for_click = Rc::clone(&store);
+
+        let toggle = button(
+            vec![text_fn(move |cx| {
+                let done = rows_for_label
+                    .get(cx)
+                    .iter()
+                    .any(|row| row.id == id && row.done);
+                if done {
+                    String::from("☑")
+                } else {
+                    String::from("☐")
+                }
+            })
+            .style(styles::button_label())],
+            move |cx: &Cx<'_>| store_for_click.toggle(cx, id),
+        )
+        .style(styles::icon_button())
+        .hover_style(styles::HOVER)
+        .focus_style(styles::FOCUS)
+        .cursor(CursorIcon::Pointer);
 
         view! {
             <Row style={styles::todo_row()}>
-                <IconButton
-                    label={Prop::derived(cx, move |cx| {
-                        if row_for_label.get(cx).is_some_and(|row| row.done) {
-                            String::from("☑")
-                        } else {
-                            String::from("☐")
-                        }
-                    })}
-                    on_click={move |cx: &Cx<'_>| store_for_click.toggle(cx, id)}
-                />
-                <TextLine
-                    value={Prop::derived(cx, move |cx| {
-                        row_for_text.get(cx).map_or_else(String::new, |row| {
-                            if row.pending {
-                                format!("{}  (saving…)", row.text)
-                            } else {
-                                row.text
-                            }
-                        })
-                    })}
-                />
+                <Embed expr={toggle} />
+                <Embed expr={
+                    text_fn(move |cx| {
+                        rows_for_text
+                            .get(cx)
+                            .iter()
+                            .find(|row| row.id == id)
+                            .map_or_else(String::new, |row| {
+                                if row.pending {
+                                    format!("{}  (saving…)", row.text)
+                                } else {
+                                    row.text.clone()
+                                }
+                            })
+                    })
+                    .style(styles::base())
+                } />
             </Row>
         }
     }

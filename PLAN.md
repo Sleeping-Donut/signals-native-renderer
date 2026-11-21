@@ -474,10 +474,11 @@ optimistic todos app is the acceptance target for guesses/actions.
 4. ✅ **`affects`.** Declared pending marks until commit. Gate met:
    `affects_marks_derivations_pending_until_the_next_flush` covers a signal,
    its derivation, and an `is_pending` reader.
-5. **Actions + `ActionCx`.** Explicit hold around a future; writes after
-   `await` join the action via the capability; `flush` inside an action is
-   refused. Gate: optimistic todos uses framework actions and its app-level
-   overlay is deleted.
+5. ✅ **Actions + `ActionCx`.** `RuntimeHandle::action` owns the future;
+   `ActionCx` guesses, commits, and reads committed values across `await`, and
+   clears guesses at settle. Gate met: `actions_guess_then_commit_after_await`
+   and `actions_report_errors_and_clear_guesses`; the optimistic todos demo uses
+   actions and the overlay is deleted.
 6. **Full `on` re-arm.** F-4/F-5 boundary behavior beyond keyed remount. Gate:
    boundary tests for armed/disarmed content and held frames.
 7. ✅ **Damage scissoring.** Offscreen targets render with `LoadOp::Load` and

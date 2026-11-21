@@ -203,3 +203,82 @@ fn results_ready_in_one_flush_commit_together() {
 
     effect.dispose(&cx);
 }
+
+#[test]
+fn actions_guess_then_commit_after_await() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let (count, set_count) = create_signal(&cx, 1_u32);
+    let seen: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
+    let seen_for_effect = Rc::clone(&seen);
+    let effect = render_effect(
+        &cx,
+        move |cx| count.get(cx),
+        move |_cx, value: &u32| seen_for_effect.borrow_mut().push(*value),
+    );
+    cx.flush().unwrap();
+    assert_eq!(seen.borrow().as_slice(), &[1]);
+
+    let handle = runtime.action(move |act| async move {
+        act.guess(&count, 5_u32);
+        if delayed(()).await.is_err() {
+            return Err(String::from("async error"));
+        }
+        act.set(set_count, 7_u32);
+        Ok::<(), String>(())
+    });
+
+    runtime.pump();
+    cx.flush().unwrap();
+    assert_eq!(
+        seen.borrow().last().copied(),
+        Some(5),
+        "the guess shows during the await"
+    );
+    assert!(is_pending(&cx, |cx| count.get(cx)));
+
+    for _ in 0..4 {
+        runtime.pump();
+        cx.flush().unwrap();
+    }
+    assert_eq!(count.get(&cx), 7, "the write after await commits");
+    assert_eq!(seen.borrow().last().copied(), Some(7));
+    assert!(!is_pending(&cx, |cx| count.get(cx)));
+    assert_eq!(
+        handle.result().get(&cx),
+        Some(Ok(())),
+        "the action reports completion"
+    );
+
+    effect.dispose(&cx);
+}
+
+#[test]
+fn actions_report_errors_and_clear_guesses() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let (count, _set_count) = create_signal(&cx, 1_u32);
+    let handle = runtime.action(move |act| async move {
+        act.guess(&count, 5_u32);
+        if delayed(()).await.is_err() {
+            return Err(String::from("async error"));
+        }
+        Err::<(), String>(String::from("nope"))
+    });
+
+    runtime.pump();
+    cx.flush().unwrap();
+    assert!(is_pending(&cx, |cx| count.get(cx)));
+
+    for _ in 0..3 {
+        runtime.pump();
+        cx.flush().unwrap();
+    }
+    assert_eq!(
+        count.get(&cx),
+        1,
+        "a failed action reveals no committed write"
+    );
+    assert!(!is_pending(&cx, |cx| count.get(cx)));
+    assert_eq!(handle.result().get(&cx), Some(Err(String::from("nope"))));
+}

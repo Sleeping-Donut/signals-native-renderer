@@ -14,6 +14,8 @@
 - `latest(memo)`, display-only `guess`/`clear_guess`, and quiet `refresh`.
   Async results ready at one flush commit together, and equal async answers no
   longer notify readers.
+- `RuntimeHandle::action` with `ActionCx` (`guess`, `set`, `update_with`, `get`)
+  and `ActionHandle::result`. The optimistic todos demo uses framework actions.
 
 ## v0.1.1 — 2026-11-21
 

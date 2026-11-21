@@ -742,6 +742,9 @@ or a measurement.
   applies them as one merged update (`results_ready_in_one_flush_commit_together`).
 - Re-ask detection: `refresh` marks a quiet flight; `is_pending` stays false and
   an equal answer does not notify (`refresh_is_a_quiet_re_ask`).
+- Optimistic actions: `RuntimeHandle::action` + `ActionCx` (guess, set,
+  update_with, get), with guesses clearing at settle. The optimistic todos demo
+  uses it instead of an app-level overlay.
 - `Derived<T>` (no macro; `create_derived`) is the uncached read-only derivation
   (Solid function form, Leptos `Signal::derive`). It is sync-only; async and
   `is_pending` need a memo node.

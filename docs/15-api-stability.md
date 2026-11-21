@@ -10,7 +10,8 @@ in-tree apps and examples.
   - `signal!`, `memo!`
   - `effect`, `render_effect`, `Runtime`, `RuntimeHandle`, `Cx`
   - `loading_boundary`, `error_boundary`, `is_pending`, `affects`,
-    `latest`, `guess`, `clear_guess`, `refresh`
+    `latest`, `guess`, `clear_guess`, `refresh`, `ActionCx`, `ActionHandle`,
+    `RuntimeHandle::action`
   - `OwnerHandle`, cleanup, disposal
 - `reactive-stores`
   - `Store`, `Field`, `StorePatch`, `Draft`, `DynamicValue`

@@ -1251,34 +1251,35 @@ change before the quiet flight lands starts a new question. Async results that
 are ready at one flush commit together, so readers see one merged update
 (`results_ready_in_one_flush_commit_together`).
 
-## 8. Actions (v0.2)
+## 8. Actions (v0.2, implemented)
 
-An action is an explicit hold around a future:
+An action is an optimistic future with an owned capability handle:
 
 ```rust
-pub fn action<F, T>(cx: &Cx, f: F) -> ActionHandle<T>
-where F: FnOnce(ActionCx) -> LocalBoxFuture<'static, Result<T, Error>>;
+let handle = runtime.action(move |act| async move {
+    act.guess(&todos, optimistic);      // display at once
+    if save().await.is_err() {
+        return Err(String::from("rejected"));
+    }
+    act.set(set_todos, committed);      // stage the truth
+    Ok(())
+});
 ```
 
-- Opening an action opens a txn and sets `action_depth += 1`.
-- `ActionCx` is the owned, write-capable handle from §3.5. It carries the txn
-  id, so a write after an `await` still joins the action; the closure must not
-  capture `&Cx`. Reads after `await` are tracked like any async compute.
-- Writes inside the action (before or after awaits) stage into the txn if the
-  target node is already in it; new nodes join on first write.
-- The txn commits when the future resolves and all flights it started have
-  landed.
-- `flush()` inside an action is refused (dev error); the action's writes are not
-  visible until it settles.
+- `RuntimeHandle::action` spawns the future on the runtime's spawner.
+- `ActionCx` carries the runtime, so writes after `await` still work; there is
+  no ambient async context and no `&Cx` capture.
+- `guess` sets a display-only overlay, `set`/`update_with` stage committed
+  writes, and `get` reads committed values without tracking.
+- At settle the action clears every guess it set and records the outcome in
+  `ActionHandle::result()`. Guesses clear and committed writes land in one
+  flush, so a success never flickers back to the old value.
+- v0.2 uses guesses as the lane; there are no multi-node transaction ids yet,
+  and `flush` is not reachable from `ActionCx`.
 
-Rust has no ambient async context, so a write after an `await` is associated with
-the action only if it goes through the `ActionCx` (which carries the txn id) or
-the node is already stamped. We require `ActionCx` for writes; this is stricter
-than Solid and avoids the "bare await loses the transaction" bug. A plain
-`Signal::set` from a detached task is a mainline write.
-
-This is a deliberate Rust-native improvement: the transaction is a capability,
-not ambient thread state.
+`actions_guess_then_commit_after_await` and
+`actions_report_errors_and_clear_guesses` cover the success and failure paths.
+The optimistic todos app now uses actions; its app-level overlay was deleted.
 
 ## 9. Rule subset and what each buys
 
@@ -1289,11 +1290,11 @@ not ambient thread state.
 | `F-3` reader holds while display | Partial | Display readers register per txn; disposed readers are removed. No "fallback hidden reader" edge cases. |
 | `F-4` armed boundary catches | Yes | First-load fallback; no txn for caught readers. |
 | `F-5` disarmed boundary forwards | Yes | Keeps content; reader joins txn. |
-| `F-6` display-ahead lanes | Subset (v0.1 verdict only) | `is_pending` shows its verdict during a hold; `latest` and value lanes are v0.2. |
+| `F-6` display-ahead lanes | v0.2 subset | `is_pending`, `latest`, and display-only guesses; store-wide lanes remain. |
 | `F-7` nothing reveals ahead | Values only | Staged values reveal at commit; the v0.1 `is_pending` verdict may show during a hold. |
-| `F-9` pending semantics | Subset | New question vs re-ask; basic `isPending`; no `affects`/store-wide marks. |
+| `F-9` pending semantics | v0.2 subset | New question vs quiet `refresh`; `affects` marks; no store-wide marks. |
 | `F-10` flush visibility | Yes | Staged writes. |
-| `F-11` optimistic | No (v0.2) | Deferred with actions/affects. |
+| `F-11` optimistic | Yes (v0.2) | Actions guess, then commit or clear; no full txn rebase yet. |
 | `F-12` errors | Yes | ErrorBoundary; pending is not an error. |
 
 ### 9.1 Documented deviations from Solid 2.0

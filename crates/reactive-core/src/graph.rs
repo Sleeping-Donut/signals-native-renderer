@@ -566,6 +566,35 @@ impl RuntimeHandle {
     }
 }
 
+impl RuntimeHandle {
+    /// Run an optimistic action: guesses show at once, committed writes land in
+    /// one flush when the future settles, and guesses clear at settle.
+    pub fn action<F, Fut, T, E>(&self, f: F) -> ActionHandle<T>
+    where
+        F: FnOnce(ActionCx) -> Fut + 'static,
+        Fut: std::future::Future<Output = Result<T, E>> + 'static,
+        T: Clone + 'static,
+        E: ToString + 'static,
+    {
+        let runtime = self.clone();
+        let (result, set_result) = create_signal_unchecked(&self.cx(), None::<Result<T, String>>);
+        let action = ActionCx {
+            runtime: self.clone(),
+            guesses: Rc::new(RefCell::new(Vec::new())),
+        };
+        let guesses = Rc::clone(&action.guesses);
+        self.spawner().spawn_local(Box::pin(async move {
+            let outcome = f(action).await;
+            let cx = runtime.cx();
+            for id in guesses.borrow().iter().copied() {
+                runtime.clear_guess_id(id);
+            }
+            set_result.set(&cx, Some(outcome.map_err(|error| error.to_string())));
+        }));
+        ActionHandle { result }
+    }
+}
+
 impl Deref for RuntimeHandle {
     type Target = Runtime;
 
@@ -1144,6 +1173,14 @@ impl Runtime {
             .unwrap_or(0)
             .wrapping_add(1);
         self.stage(token, Box::new(next));
+    }
+
+    fn clear_guess_id(&self, id: NodeId) {
+        if let Some(node) = self.node(id) {
+            node.borrow().guess.borrow_mut().take();
+        }
+        self.mark_display_changed(id);
+        self.bump_affects();
     }
 
     fn mark_display_changed(&self, id: NodeId) {
@@ -2161,12 +2198,57 @@ pub fn guess<T: Clone + 'static, H: NodeHandle>(cx: &Cx<'_>, node: &H, value: T)
 
 /// Remove a guess and return display reads to the committed value.
 pub fn clear_guess<H: NodeHandle>(cx: &Cx<'_>, node: &H) {
-    let id = node.node_id();
-    if let Some(node) = cx.rt.node(id) {
-        node.borrow().guess.borrow_mut().take();
+    cx.rt.clear_guess_id(node.node_id());
+}
+
+/// The capability an action uses to guess and commit writes.
+#[derive(Clone)]
+pub struct ActionCx {
+    runtime: RuntimeHandle,
+    guesses: Rc<RefCell<Vec<NodeId>>>,
+}
+
+impl ActionCx {
+    /// Show a display-only guess for the duration of the action.
+    pub fn guess<T: Clone + 'static, H: NodeHandle>(&self, node: &H, value: T) {
+        guess(&self.runtime.cx(), node, value);
+        let id = node.node_id();
+        let mut guesses = self.guesses.borrow_mut();
+        if !guesses.contains(&id) {
+            guesses.push(id);
+        }
     }
-    cx.rt.mark_display_changed(id);
-    cx.rt.bump_affects();
+
+    /// Stage a committed write. It becomes visible at the next flush.
+    pub fn set<T: 'static>(&self, signal: WriteSignal<T>, value: T) {
+        signal.set(&self.runtime.cx(), value);
+    }
+
+    /// Stage a committed update computed from the previous value.
+    pub fn update_with<T: 'static>(&self, signal: WriteSignal<T>, f: impl FnOnce(&T) -> T) {
+        signal.update_with(&self.runtime.cx(), f);
+    }
+
+    /// Read the committed value of a signal without tracking or guesses.
+    #[must_use]
+    pub fn get<T: Clone + 'static>(&self, signal: ReadSignal<T>) -> T {
+        self.runtime
+            .committed_value(signal.id())
+            .expect("signal has a committed value")
+    }
+}
+
+/// The completion signal of an action.
+pub struct ActionHandle<T> {
+    result: ReadSignal<Option<Result<T, String>>>,
+}
+
+impl<T: Clone + 'static> ActionHandle<T> {
+    /// The action's outcome, or `None` while it is still running.
+    #[must_use]
+    pub fn result(&self) -> ReadSignal<Option<Result<T, String>>> {
+        self.result
+    }
 }
 
 /// A node that can be declared pending.
