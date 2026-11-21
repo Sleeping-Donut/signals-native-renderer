@@ -39,6 +39,14 @@ name = "counter"
 required-features = ["window"]
 
 [[example]]
+name = "counter_manual"
+required-features = ["window"]
+
+[[example]]
+name = "todos"
+required-features = ["window"]
+
+[[example]]
 name = "states"
 required-features = ["window"]
 
