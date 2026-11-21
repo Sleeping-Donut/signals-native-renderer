@@ -630,3 +630,19 @@ Compiled shape (simplified):
    separate roots. How do we scope damage to a layer?
 6. **KeepAlive.** Is it needed in v0.1? Tabs and navigation state are common; maybe
    a `KeepAlive` wrapper in v0.1.1.
+
+## Damage presentation (v0.2)
+
+The scene builder already records per-root damage rectangles; the native backend
+still clears and draws the whole window. The v0.2 plan:
+
+1. Keep a persistent offscreen scene texture sized to the window.
+2. Render the scene into it with `LoadOp::Load` and one scissor rect per damage
+   region, so untouched pixels keep their previous contents.
+3. Blit that texture to the surface (or clear and blit only damaged rects).
+4. Fall back to a full clear on the first frame, on resize/scale changes, and
+   whenever the damage set is empty but the frame is forced.
+
+Offscreen readback used by snapshots keeps the full-clear path; the optimization
+targets the window surface. This is independent of the async lane work and can
+land in parallel.

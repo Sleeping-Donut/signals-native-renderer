@@ -444,6 +444,49 @@ node/owner growth; a manual 24-hour monitor is available and recommended before
 release or after scheduler/arena changes; third-party null renderer conformance
 is green.
 
+### Phase 9 — v0.2: async lanes, optimism, and presentation (6–10 weeks)
+
+**Build:** lanes and guesses, `latest`, `affects`, actions (`ActionCx`), full
+`on` re-arm; damage scissoring and partial presentation; store field read/write
+split; renderer `NodeId` contract freeze; the decisions still listed as open in
+[docs/12](docs/12-decisions-and-risks.md) Part F (transaction merge criterion,
+re-ask detection, held-frame verdict).
+
+**Status (2026-11-21): started.** v0.1.1 is tagged. The held-frame `is_pending`
+prototype is the first gate; the optimistic todos app is the acceptance target
+for guesses/actions.
+
+**Exit:**
+
+- a display pass can show the `is_pending` verdict during a hold while values
+  stay committed (prototype test in `reactive-core/tests/pending_status.rs`);
+- transaction merge and re-ask decisions recorded with fuzz coverage;
+- `latest` returns staged values under a lane; derived `latest`/`is_pending`
+  reads do not tear against the screen;
+- actions with `ActionCx` commit when their flights settle; writes after
+  `await` join the action; the optimistic todos demo uses framework actions
+  instead of its app-level overlay;
+- `affects` marks derivations pending until commit; full `on` re-arm has the
+  documented F-4/F-5 behavior;
+- damage scissoring presents only damaged regions on the native backend, with a
+  measured overdraw/GPU-time reduction;
+- renderer `NodeId` is frozen and documented for third-party backends.
+
+### Phase 10 — v0.3: authoring and platform freeze (4–8 weeks)
+
+**Build:** props and macro ergonomics (`MaybeProp`/optional props, `For` key
+inference, `view!` strictness, `trybuild` diagnostics); decide `view_builder!`;
+`KeepAlive`; event-model breadth; text-engine decision; accessibility coverage;
+web target if it fits the version.
+
+**Exit:**
+
+- authoring API audit: no queued breaking changes before v1;
+- `trybuild` covers macro error spans and prop misuse;
+- conformance is green on a second backend/target;
+- text engine and event model decisions recorded in ADRs;
+- accessibility covers the documented roles and keyboard flows.
+
 ### Stretch goals (not scheduled)
 
 - **`view_builder!` — implemented (experimental).** A second proc-macro
@@ -465,6 +508,8 @@ is green.
 | M6 "Interaction" | 6 | Keyboard, mouse, IME, and accessibility on the demo. |
 | M7 "Stores" | 7 | Nested app state with field-granular updates. |
 | M8 "Proof" | 8 | Benchmarks, fuzzers, and a 24-hour soak. |
+| M9 "Lanes" | 9 | Optimistic todos on framework actions; verdict during holds. |
+| M10 "Freeze" | 10 | Authoring/API audit; second target conformance. |
 
 The reference programs for M1–M7, with the expected frames and acceptance
 checks, are in [docs/13-reference-apps.md](docs/13-reference-apps.md). The

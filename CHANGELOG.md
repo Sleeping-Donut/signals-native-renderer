@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- v0.2 work started: Phase 9/10 roadmap in PLAN, the held-frame `is_pending`
+  verdict prototype, and the damage-presentation design.
+
 ## v0.1.1 — 2026-11-21
 
 Second pre-release. Authoring ergonomics, logical control flow, an optimistic
