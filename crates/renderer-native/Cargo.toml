@@ -43,6 +43,10 @@ name = "states"
 required-features = ["window"]
 
 [[example]]
+name = "states_manual"
+required-features = ["window"]
+
+[[example]]
 name = "store_counter"
 required-features = ["window"]
 

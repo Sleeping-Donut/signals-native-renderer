@@ -245,6 +245,12 @@ passed as a `children: View` prop; named slots are ordinary
 props of type `Option<View>` or `Prop<View>`. Named slots have no special macro
 syntax yet. `view::select` provides a keyed selectable-list component.
 
+Two copies of the states demo exercise this surface. `examples/states.rs` uses
+`view!`, `signal!`, `memo!`, `#[macros::props]`, and `#[component]`;
+`examples/states_manual.rs` builds the same UI with `create_signal`,
+`create_memo`, plain props structs, and `view::column` / `view::row` /
+`text_fn`. Reading them side by side shows what the macros expand to.
+
 ### 2.1 Syntax
 
 ```rust
