@@ -670,3 +670,145 @@ pub fn derive_props(input: TokenStream) -> TokenStream {
     }
     .into()
 }
+
+/// Types whose outermost name already means "view or capability", not a value.
+///
+/// The check is syntactic: aliases and renamed imports are invisible to it, so
+/// `#[prop(raw)]` remains the escape hatch for those.
+fn is_raw_type(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Path(path) => {
+            let Some(segment) = path.path.segments.last() else {
+                return false;
+            };
+            let name = segment.ident.to_string();
+            if matches!(
+                name.as_str(),
+                "View"
+                    | "Callback"
+                    | "CallbackWith"
+                    | "WriteSignal"
+                    | "ReadSignal"
+                    | "Memo"
+                    | "Prop"
+            ) {
+                return true;
+            }
+            if matches!(name.as_str(), "Option" | "Vec") {
+                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                    return args.args.iter().any(|argument| match argument {
+                        syn::GenericArgument::Type(inner) => is_raw_type(inner),
+                        _ => false,
+                    });
+                }
+            }
+            false
+        }
+        syn::Type::Group(group) => is_raw_type(&group.elem),
+        syn::Type::Paren(paren) => is_raw_type(&paren.elem),
+        _ => false,
+    }
+}
+
+/// Props struct with reactive fields.
+///
+/// Plain field types are wrapped in `view::Prop<T>`. Types that already name a
+/// view or a capability — `View`, `Callback`, `CallbackWith<T>`,
+/// `WriteSignal<T>`, `ReadSignal<T>`, `Memo<T>`, `Prop<T>`, and `Option`/`Vec`
+/// of those — stay as declared:
+///
+/// ```ignore
+/// #[props]
+/// pub struct ContentProps {
+///     pub states: Vec<String>,          // Prop<Vec<String>>
+///     pub on_select: CallbackWith<String>, // CallbackWith<String>
+///     pub children: View,               // View
+/// }
+/// ```
+///
+/// Builder methods accept `impl Into<FieldType>`, so values, signals, memos,
+/// and closures all work without `.into()`.
+///
+/// `#[prop(raw)]` forces the declared type through for aliases and custom
+/// types that the automatic check cannot see.
+#[proc_macro_attribute]
+pub fn props(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mut item_struct = parse_macro_input!(item as syn::ItemStruct);
+    let name = item_struct.ident.clone();
+    let vis = item_struct.vis.clone();
+    let syn::Fields::Named(fields) = &mut item_struct.fields else {
+        return syn::Error::new_spanned(&item_struct, "#[props] requires named fields")
+            .to_compile_error()
+            .into();
+    };
+
+    let mut builder_fields = Vec::new();
+    for field in &mut fields.named {
+        let ident = field.ident.clone().expect("named field");
+        let field_vis = field.vis.clone();
+        let original_ty = field.ty.clone();
+        // A field whose type already names a view or a capability stays as
+        // declared. Everything else is a value and becomes `Prop<T>`.
+        let mut raw = is_raw_type(&original_ty);
+        let mut optional = false;
+        let mut default: Option<Expr> = None;
+        let mut kept = Vec::new();
+        for attr in std::mem::take(&mut field.attrs) {
+            if !attr.path().is_ident("prop") {
+                kept.push(attr);
+                continue;
+            }
+            if let Err(error) = attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("raw") {
+                    raw = true;
+                    Ok(())
+                } else if meta.path.is_ident("into") {
+                    // Implied for every field; kept for older props.
+                    Ok(())
+                } else if meta.path.is_ident("optional") {
+                    optional = true;
+                    Ok(())
+                } else if meta.path.is_ident("default") {
+                    default = Some(meta.value()?.parse()?);
+                    Ok(())
+                } else {
+                    Err(meta.error("unsupported prop attribute"))
+                }
+            }) {
+                return error.to_compile_error().into();
+            }
+        }
+        field.attrs = kept;
+        let ty = if raw {
+            original_ty
+        } else {
+            let ty: syn::Type = syn::parse_quote!(::view::Prop<#original_ty>);
+            field.ty = ty.clone();
+            ty
+        };
+        let mut attrs = Vec::new();
+        attrs.push(quote! { #[prop(into)] });
+        if optional {
+            attrs.push(quote! { #[prop(optional)] });
+        }
+        if let Some(default) = default {
+            attrs.push(quote! { #[prop(default = #default)] });
+        }
+        builder_fields.push(quote! {
+            #(#attrs)*
+            #field_vis #ident: #ty
+        });
+    }
+
+    let builder_input = quote! {
+        #vis struct #name {
+            #(#builder_fields),*
+        }
+    };
+    let builder: TokenStream2 = derive_props(builder_input.into()).into();
+    quote! {
+        #item_struct
+        #builder
+    }
+    .into()
+}
