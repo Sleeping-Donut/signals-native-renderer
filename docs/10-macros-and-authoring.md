@@ -138,8 +138,11 @@ caller omitted it” from “the caller passed `false`”.
 
 The macro leaves view and capability types as declared — `View`, `Callback`,
 `CallbackWith<T>`, `WriteSignal<T>`, `ReadSignal<T>`, `Memo<T>`, `Prop<T>`,
-`MaybeProp<T>`, and `Option`/`Vec` of those — and wraps every other field in
-`Prop<T>`. Builder methods accept `impl Into<FieldType>`, so values, signals,
+`MaybeProp<T>`, `Rc<T>`/`Arc<T>`, store handles (`Store`, `Field`,
+`ReadField`, `WriteField`, `OptimisticStore`, `OptimisticList`,
+`DynamicStore`), and `Option`/`Vec` of those — and wraps every other field in
+`Prop<T>`. A shared store or action struct is usually passed as `Rc<T>`, so it
+does not need `#[prop(raw)]`. Builder methods accept `impl Into<FieldType>`, so values, signals,
 memos, and closures all convert without `.into()` at the call site.
 
 ```rust

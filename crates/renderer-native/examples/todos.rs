@@ -200,7 +200,7 @@ mod store {
             let Some(row) = todos.at_key(&cx, &id) else {
                 return;
             };
-            let api = Rc::clone(&self.api);
+            let api = self.api.clone();
             let store = self.todos.clone();
             let set_error = self.set_error;
             let runtime_for_action = self.runtime.clone();
@@ -228,7 +228,7 @@ mod store {
         }
 
         pub fn add(self: &Rc<Self>, text: String) {
-            let api = Rc::clone(&self.api);
+            let api = self.api.clone();
             let todos = self.todos.list(|row| row.id);
             let store = self.todos.clone();
             let set_error = self.set_error;
@@ -278,9 +278,9 @@ mod store {
         runtime: RuntimeHandle,
         api: Rc<Api>,
     ) -> (Rc<Todos>, Rc<TodoActions>) {
-        let api_for_load = Rc::clone(&api);
+        let api_for_load = api.clone();
         let todos = OptimisticStore::new(cx, Vec::new(), move || {
-            let api = Rc::clone(&api_for_load);
+            let api = api_for_load.clone();
             async move {
                 let list = api.list().await;
                 Ok::<Vec<TodoRow>, reactive_core::AsyncError>(
@@ -414,10 +414,6 @@ mod styles {
         button(Length::Auto)
     }
 
-    pub fn icon_button() -> ResolvedStyle {
-        button(Length::Px(36.0))
-    }
-
     pub fn button_label() -> ResolvedStyle {
         let mut style = base();
         style.text.font_size = 16.0;
@@ -517,57 +513,35 @@ mod uicomponents {
     #[macros::props]
     pub struct TodoRowViewProps {
         pub id: u64,
-        #[prop(raw)]
         pub read: Rc<Todos>,
-        #[prop(raw)]
         pub actions: Rc<TodoActions>,
     }
 
     #[component]
     pub fn TodoRowView(cx: &Cx<'_>, props: TodoRowViewProps) -> View {
         let id = props.id.get(cx);
-        let read_for_label = Rc::clone(&props.read);
-        let read_for_text = Rc::clone(&props.read);
-        let actions_for_click = Rc::clone(&props.actions);
-
-        let toggle = button(
+        button(
             vec![text_fn(move |cx| {
-                if read_for_label.row(cx, id).is_some_and(|row| row.done) {
-                    String::from("☑")
-                } else {
-                    String::from("☐")
-                }
+                props.read.row(cx, id).map_or_else(String::new, |row| {
+                    let mark = if row.done { "☑" } else { "☐" };
+                    if row.pending {
+                        format!("{mark}  {}  (saving…)", row.text)
+                    } else {
+                        format!("{mark}  {}", row.text)
+                    }
+                })
             })
-            .style(styles::button_label())],
-            move |_cx: &Cx<'_>| actions_for_click.toggle(id),
+            .style(styles::base())],
+            move |_cx: &Cx<'_>| props.actions.toggle(id),
         )
-        .style(styles::icon_button())
+        .style(styles::todo_row())
         .hover_style(styles::HOVER)
         .focus_style(styles::FOCUS)
-        .cursor(CursorIcon::Pointer);
-
-        view! {
-            <Row style={styles::todo_row()}>
-                <Embed expr={toggle} />
-                <Embed expr={
-                    text_fn(move |cx| {
-                        read_for_text.row(cx, id).map_or_else(String::new, |row| {
-                            if row.pending {
-                                format!("{}  (saving…)", row.text)
-                            } else {
-                                row.text
-                            }
-                        })
-                    })
-                    .style(styles::base())
-                } />
-            </Row>
-        }
+        .cursor(CursorIcon::Pointer)
     }
 
     #[macros::props]
     pub struct TodoFormProps {
-        #[prop(raw)]
         pub actions: Rc<TodoActions>,
     }
 
@@ -597,7 +571,6 @@ mod uicomponents {
 
     #[macros::props]
     pub struct FailButtonProps {
-        #[prop(raw)]
         pub actions: Rc<TodoActions>,
     }
 
@@ -613,7 +586,6 @@ mod uicomponents {
 
     #[macros::props]
     pub struct ErrorTextProps {
-        #[prop(raw)]
         pub read: Rc<Todos>,
     }
 
@@ -626,34 +598,32 @@ mod uicomponents {
 
     #[macros::props]
     pub struct ContentProps {
-        #[prop(raw)]
         pub read: Rc<Todos>,
-        #[prop(raw)]
         pub actions: Rc<TodoActions>,
     }
 
     #[component]
     pub fn Content(cx: &Cx<'_>, props: ContentProps) -> View {
-        let read_for_rows = Rc::clone(&props.read);
-        let read_for_row = Rc::clone(&props.read);
-        let actions_for_row = Rc::clone(&props.actions);
+        let read_for_rows = props.read.clone();
+        let read_for_row = props.read.clone();
+        let actions_for_row = props.actions.clone();
 
         view! {
             <Column style={styles::root()}>
-                <TodoForm actions={Rc::clone(&props.actions)} />
+                <TodoForm actions={props.actions.clone()} />
                 <For
                     each={move |cx| read_for_rows.rows(cx)}
                     key={|row: &TodoRow| row.id}
                     children={move |cx, row: &TodoRow| view! {
                         <TodoRowView
                             id={row.id}
-                            read={Rc::clone(&read_for_row)}
-                            actions={Rc::clone(&actions_for_row)}
+                            read={read_for_row.clone()}
+                            actions={actions_for_row.clone()}
                         />
                     }}
                 />
-                <FailButton actions={Rc::clone(&props.actions)} />
-                <ErrorText read={Rc::clone(&props.read)} />
+                <FailButton actions={props.actions.clone()} />
+                <ErrorText read={props.read.clone()} />
             </Column>
         }
     }
@@ -666,7 +636,7 @@ mod uicomponents {
 
         view! {
             <Loading fallback={LoadingView}>
-                <Content read={Rc::clone(&read)} actions={Rc::clone(&actions)} />
+                <Content read={read.clone()} actions={actions.clone()} />
             </Loading>
         }
     }
@@ -687,7 +657,7 @@ mod app {
             let runtime = reactive_core::Runtime::new().into_handle();
             let renderer = Rc::new(RefCell::new(NullRenderer::new()));
             let tree = ViewTree::new_with_shaper(
-                Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
+                Box::new(SharedNullRenderer::new(renderer.clone())),
                 runtime.clone(),
                 Box::new(text::CosmicShaper::new()),
             );

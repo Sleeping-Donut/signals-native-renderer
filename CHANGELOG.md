@@ -24,6 +24,10 @@
   plus `list#hash(key)` row guesses. Reads compose truth, live patches, and row
   guesses; success commits the delta against truth, so overlapping actions do
   not clear or clobber each other.
+- Props treat `Rc<T>`/`Arc<T>` and store handles (`Store`, `Field`,
+  `ReadField`, `WriteField`, `OptimisticStore`, `OptimisticList`,
+  `DynamicStore`) as raw: passing a shared store or action struct no longer
+  needs `#[prop(raw)]`.
 - `OptimisticStore` derives a store from an async source
   (`OptimisticStore::new(cx, seed, || api.list())`). `refresh(cx, |cx| ...)`
   re-asks the async nodes a probe read touches, matching `is_pending`'s shape.

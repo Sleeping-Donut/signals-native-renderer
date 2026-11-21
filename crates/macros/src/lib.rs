@@ -794,6 +794,15 @@ fn is_raw_type(ty: &syn::Type) -> bool {
                     | "ReadSignal"
                     | "Memo"
                     | "Prop"
+                    | "Rc"
+                    | "Arc"
+                    | "Store"
+                    | "Field"
+                    | "ReadField"
+                    | "WriteField"
+                    | "OptimisticStore"
+                    | "OptimisticList"
+                    | "DynamicStore"
             ) {
                 return true;
             }
@@ -817,8 +826,8 @@ fn is_raw_type(ty: &syn::Type) -> bool {
 ///
 /// Plain field types are wrapped in `view::Prop<T>`. Types that already name a
 /// view or a capability — `View`, `Callback`, `CallbackWith<T>`,
-/// `WriteSignal<T>`, `ReadSignal<T>`, `Memo<T>`, `Prop<T>`, and `Option`/`Vec`
-/// of those — stay as declared:
+/// `WriteSignal<T>`, `ReadSignal<T>`, `Memo<T>`, `Prop<T>`, `Rc<T>`,
+/// `Arc<T>`, store handles, and `Option`/`Vec` of those — stay as declared:
 ///
 /// ```ignore
 /// #[props]
