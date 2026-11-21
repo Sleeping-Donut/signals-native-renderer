@@ -9,7 +9,7 @@ in-tree apps and examples.
   - `create_signal`, `create_derived_signal`, `create_memo`, `create_async_memo`
   - `signal!`, `memo!`
   - `effect`, `render_effect`, `Runtime`, `RuntimeHandle`, `Cx`
-  - `loading_boundary`, `error_boundary`, `is_pending`
+  - `loading_boundary`, `error_boundary`, `is_pending`, `affects`
   - `OwnerHandle`, cleanup, disposal
 - `reactive-stores`
   - `Store`, `Field`, `StorePatch`, `Draft`, `DynamicValue`

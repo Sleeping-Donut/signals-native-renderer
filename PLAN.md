@@ -469,8 +469,9 @@ optimistic todos app is the acceptance target for guesses/actions.
 3. **Lane/guess foundation + `latest`.** Introduce the lane txn over
    “screen + guesses”; `latest` returns staged values; derived `latest` and
    `is_pending` reads do not tear. Gate: lane tests for display vs derive reads.
-4. **`affects`.** Declared pending marks until commit. Gate: derived/store
-   readers observe pending without a value write.
+4. ✅ **`affects`.** Declared pending marks until commit. Gate met:
+   `affects_marks_derivations_pending_until_the_next_flush` covers a signal,
+   its derivation, and an `is_pending` reader.
 5. **Actions + `ActionCx`.** Explicit hold around a future; writes after
    `await` join the action via the capability; `flush` inside an action is
    refused. Gate: optimistic todos uses framework actions and its app-level

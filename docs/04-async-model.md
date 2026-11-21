@@ -1217,15 +1217,22 @@ join the txn and read staged values, while display readers see only committed
 values — so no v0.1 rule changes. The amendment does raise the cost of lanes and
 is another reason they stay deferred to v0.2.
 
-### 7.3 `affects` (v0.2)
+### 7.3 `affects` (v0.2, implemented)
 
 ```rust
-pub fn affects<T>(cx: &Cx, node: &T);
+pub fn affects<T: Affects>(cx: &Cx, node: &T);
 ```
 
-Declares "this data is changing" without a value write. It marks the node and
-its derivations pending until the next commit. It is the declared-pending half of
-the optimistic/verdict model, so it moves with that model to v0.2.
+Declares “this data is changing” without a value write. It marks the node and
+its derivations pending until the current flush commits; `is_pending` readers
+re-run when the mark is raised and when it clears. `Affects` is implemented for
+`ReadSignal`, `WriteSignal`, and `Memo`.
+
+```rust
+affects(&cx, &count);            // count and readers of count*2 are pending
+assert!(is_pending(&cx, |cx| double.get(cx)));
+cx.flush().unwrap();             // verdict clears at the commit
+```
 
 ## 8. Actions (v0.2)
 

@@ -9,6 +9,8 @@
 - Damage scissoring: offscreen targets accumulate with `LoadOp::Load` and
   per-damage scissor rects; window surfaces render into a persistent scene
   texture and blit it. `FrameStats::scissored_area` reports rasterized area.
+- `affects(cx, node)` declares pending without a value write; the node and its
+  derivations report pending until the current flush commits.
 
 ## v0.1.1 — 2026-11-21
 

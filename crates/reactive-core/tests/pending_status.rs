@@ -7,8 +7,8 @@ use std::rc::Rc;
 use std::task::Poll;
 
 use reactive_core::{
-    create_async_memo, create_memo, create_signal, is_pending, loading_boundary, render_effect,
-    AsyncError, Runtime,
+    affects, create_async_memo, create_memo, create_signal, is_pending, loading_boundary,
+    render_effect, AsyncError, Runtime,
 };
 
 type Fut<T> = Pin<Box<dyn std::future::Future<Output = Result<T, AsyncError>>>>;
@@ -112,6 +112,44 @@ fn display_pass_shows_the_verdict_during_a_hold() {
         seen.borrow().last().copied(),
         Some((1, false)),
         "the committed value follows once the flight lands"
+    );
+
+    effect.dispose(&cx);
+}
+
+#[test]
+fn affects_marks_derivations_pending_until_the_next_flush() {
+    let runtime = Runtime::new();
+    let cx = runtime.cx();
+    let (count, _set_count) = create_signal(&cx, 1_u32);
+    let double = create_memo(&cx, move |cx, _| count.get(cx) * 2);
+    let seen: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
+    let seen_for_effect = Rc::clone(&seen);
+    let effect = render_effect(
+        &cx,
+        move |cx| is_pending(cx, move |cx| double.get(cx)),
+        move |_cx, pending: &bool| seen_for_effect.borrow_mut().push(*pending),
+    );
+    cx.flush().unwrap();
+    assert_eq!(seen.borrow().as_slice(), &[false]);
+
+    affects(&cx, &count);
+    assert!(
+        is_pending(&cx, |cx| double.get(cx)),
+        "the declared node is pending immediately"
+    );
+    cx.flush().unwrap();
+    assert_eq!(
+        seen.borrow().as_slice(),
+        &[false, true],
+        "readers apply the declared pending verdict"
+    );
+
+    cx.flush().unwrap();
+    assert_eq!(
+        seen.borrow().as_slice(),
+        &[false, true, false],
+        "the verdict clears at the next commit"
     );
 
     effect.dispose(&cx);

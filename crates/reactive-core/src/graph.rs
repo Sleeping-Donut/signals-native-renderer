@@ -15,7 +15,7 @@
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
@@ -728,6 +728,8 @@ pub struct Runtime {
     clock: VirtualClock,
     dirty_visits: Cell<u64>,
     pending_tokens: RefCell<HashMap<NodeId, NodeId>>,
+    affected: RefCell<HashSet<NodeId>>,
+    affects_token: Cell<Option<NodeId>>,
     effect_tokens: RefCell<HashMap<NodeId, NodeId>>,
     pending_probe: Cell<bool>,
     pending_probe_found: Cell<bool>,
@@ -776,6 +778,8 @@ impl Runtime {
             clock: VirtualClock::new(),
             dirty_visits: Cell::new(0),
             pending_tokens: RefCell::new(HashMap::new()),
+            affected: RefCell::new(HashSet::new()),
+            affects_token: Cell::new(None),
             effect_tokens: RefCell::new(HashMap::new()),
             pending_probe: Cell::new(false),
             pending_probe_found: Cell::new(false),
@@ -869,6 +873,9 @@ impl Runtime {
             let Some(node) = self.node(id) else {
                 continue;
             };
+            if self.affected.borrow().contains(&id) {
+                return true;
+            }
             let node = node.borrow();
             let has_value = node.value.borrow().is_some();
             if node.in_flight.get() && has_value {
@@ -1033,6 +1040,7 @@ impl Runtime {
     }
 
     fn is_pending_probe<T>(&self, read: impl FnOnce(&Cx<'_>) -> T) -> bool {
+        self.track(self.affects_token());
         let previous_probe = self.pending_probe.replace(true);
         let previous_found = self.pending_probe_found.replace(false);
         let previous_class = self.reader_class.replace(ReaderClass::Display);
@@ -1912,8 +1920,38 @@ impl Runtime {
             self.run_heap();
             self.run_applies();
         }
+        let affected = std::mem::take(&mut *self.affected.borrow_mut());
+        if !affected.is_empty() {
+            self.bump_affects();
+        }
         self.in_flush.set(false);
         Ok(())
+    }
+
+    fn affects_token(&self) -> NodeId {
+        if let Some(id) = self.affects_token.get() {
+            return id;
+        }
+        let (read, _) = create_signal(&self.cx(), 0_u64);
+        self.affects_token.set(Some(read.id()));
+        read.id()
+    }
+
+    fn bump_affects(&self) {
+        let id = self.affects_token();
+        let Some(node) = self.node(id) else {
+            return;
+        };
+        let next = node
+            .borrow()
+            .value
+            .borrow()
+            .as_ref()
+            .and_then(|value| value.downcast_ref::<u64>())
+            .copied()
+            .unwrap_or(0)
+            .wrapping_add(1);
+        self.stage(id, Box::new(next));
     }
 }
 
@@ -1965,6 +2003,41 @@ fn create_signal_impl<T: 'static>(
 /// not a specific signal type.
 pub fn is_pending<T>(cx: &Cx<'_>, read: impl FnOnce(&Cx<'_>) -> T) -> bool {
     cx.rt.is_pending_probe(read)
+}
+
+/// A node that can be declared pending.
+pub trait Affects {
+    /// The graph node behind this handle.
+    fn node_id(&self) -> NodeId;
+}
+
+impl<T> Affects for ReadSignal<T> {
+    fn node_id(&self) -> NodeId {
+        self.id
+    }
+}
+
+impl<T> Affects for WriteSignal<T> {
+    fn node_id(&self) -> NodeId {
+        self.id
+    }
+}
+
+impl<T> Affects for Memo<T> {
+    fn node_id(&self) -> NodeId {
+        self.id
+    }
+}
+
+/// Declare that `node` is changing without writing a value.
+///
+/// The node and any derivation read from it report pending until the current
+/// flush commits. Use it for data that is about to be replaced by a result
+/// that is not a value write.
+pub fn affects<T: Affects>(cx: &Cx<'_>, node: &T) {
+    let id = node.node_id();
+    cx.rt.affected.borrow_mut().insert(id);
+    cx.rt.bump_affects();
 }
 
 /// Create a writable derived signal.
