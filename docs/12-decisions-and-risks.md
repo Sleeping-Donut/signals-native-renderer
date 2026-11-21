@@ -755,9 +755,11 @@ or a measurement.
   are the leaves of the keys it changed. Keyed lists stage `push`/`remove` as a
   `ListPatch` on the list node and row writes on `list#hash(key)` paths; `get`
   composes truth, live patches, and row guesses. Success commits the delta
-  against truth, not the display list. Whole-subtree reads stay truth-only
-  because Rust has no proxy traps; the keyed path is the unit of optimism.
-  Covered by the eight `optimistic::*` store tests and the demo snapshot.
+  against truth, not the display list. `OptimisticStore` derives the committed
+  value from an async source, with `refresh` for a re-ask and `is_loading` for
+  a loading boundary. Whole-subtree reads stay truth-only because Rust has no
+  proxy traps; the keyed path is the unit of optimism. Covered by the ten
+  `optimistic::*` store tests and the demo snapshot.
 - Store field split: `Field::split` / `read_only` / `write_only` expose
   `ReadField`/`WriteField` capability views; `Field` stays combined for existing
   code.

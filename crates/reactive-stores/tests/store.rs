@@ -300,7 +300,7 @@ mod optimistic {
     use std::rc::Rc;
     use std::task::Poll;
 
-    use reactive_core::{create_memo, render_effect, Cx, Runtime, RuntimeHandle};
+    use reactive_core::{create_memo, loading_boundary, render_effect, Cx, Runtime, RuntimeHandle};
 
     use crate::{app, store, AppStoreFields, Todo, UserStoreFields};
 
@@ -342,6 +342,88 @@ mod optimistic {
             },
         );
         (seen, runs, handle)
+    }
+
+    #[test]
+    fn a_derived_store_loads_from_its_source() {
+        let runtime = Runtime::new().into_handle();
+        let cx = runtime.cx();
+        let store = reactive_stores::OptimisticStore::new(&cx, Vec::<u32>::new(), || async {
+            delayed(2).await;
+            Ok::<Vec<u32>, reactive_core::AsyncError>(vec![1, 2, 3])
+        });
+        let store_for_boundary = store.clone();
+        let boundary =
+            loading_boundary(&cx, None, move |cx| store_for_boundary.get(cx).len(), |_| 0);
+        assert_eq!(boundary.get(&cx), 0, "the first read is loading");
+        assert!(store.is_loading(&cx));
+
+        settle(&runtime, &cx);
+        assert_eq!(boundary.get(&cx), 3, "the source answer loads the store");
+        assert!(!store.is_loading(&cx));
+    }
+
+    #[test]
+    fn a_derived_list_commits_optimistically_and_refreshes() {
+        let runtime = Runtime::new().into_handle();
+        let cx = runtime.cx();
+        let calls = Rc::new(Cell::new(0_u32));
+        let calls_for_load = Rc::clone(&calls);
+        let store = reactive_stores::OptimisticStore::new(&cx, Vec::<u32>::new(), move || {
+            let calls = Rc::clone(&calls_for_load);
+            async move {
+                let call = calls.get();
+                calls.set(call + 1);
+                delayed(1).await;
+                Ok::<Vec<u32>, reactive_core::AsyncError>(if call == 0 {
+                    vec![1, 2]
+                } else {
+                    vec![1, 2, 3]
+                })
+            }
+        });
+        let list = store.list(|row| *row);
+        settle(&runtime, &cx);
+        assert_eq!(list.get(&cx), vec![1, 2]);
+
+        let store_for_action = store.clone();
+        let list_for_action = list.clone();
+        let runtime_for_action = runtime.clone();
+        let _handle = runtime.action(move || {
+            let rt = runtime_for_action.clone();
+            async move {
+                list_for_action.push(&rt.cx(), 3);
+                delayed(1).await;
+                store_for_action.refresh(&rt.cx());
+                Ok::<(), String>(())
+            }
+        });
+        runtime.pump();
+        cx.flush().unwrap();
+        assert_eq!(list.get(&cx), vec![1, 2, 3], "the patch shows at once");
+
+        settle(&runtime, &cx);
+        assert_eq!(
+            list.get(&cx),
+            vec![1, 2, 3],
+            "the success commit and the refresh agree on the truth"
+        );
+
+        let list_for_failure = list.clone();
+        let runtime_for_failure = runtime.clone();
+        let _handle = runtime.action(move || {
+            let rt = runtime_for_failure.clone();
+            async move {
+                list_for_failure.push(&rt.cx(), 4);
+                delayed(1).await;
+                Err::<(), String>(String::from("rejected"))
+            }
+        });
+        runtime.pump();
+        cx.flush().unwrap();
+        assert_eq!(list.get(&cx), vec![1, 2, 3, 4]);
+        settle(&runtime, &cx);
+        assert_eq!(list.get(&cx), vec![1, 2, 3], "failure leaves the truth");
     }
 
     #[test]

@@ -13,7 +13,8 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use reactive_core::{
-    create_signal, Cx, NodeHandle, NodeId, OwnerHandle, ReadSignal, RuntimeHandle, WriteSignal,
+    create_async_memo, create_signal, latest, refresh, render_effect, AsyncError, Cx, Memo,
+    NodeHandle, NodeId, OwnerHandle, ReadSignal, RuntimeHandle, WriteSignal,
 };
 
 pub use reactive_stores_macro::{Patch, Store};
@@ -164,6 +165,26 @@ impl<T: Clone + 'static> Store<T> {
         }
     }
 
+    /// The root field handle.
+    ///
+    /// Useful for a store that is one value (a list, a record) rather than a
+    /// struct with named fields.
+    #[must_use]
+    pub fn root(&self) -> Field<T> {
+        self.project("", |value| value.clone(), |value, next| *value = next)
+    }
+
+    /// Read the root value.
+    #[must_use]
+    pub fn get(&self, cx: &Cx<'_>) -> T {
+        self.root().get(cx)
+    }
+
+    /// Write the root value.
+    pub fn set(&self, cx: &Cx<'_>, value: T) {
+        self.root().set(cx, value);
+    }
+
     /// Read the whole value and track the root path.
     #[must_use]
     pub fn snapshot(&self, cx: &Cx<'_>) -> T {
@@ -204,6 +225,120 @@ impl<T: Clone + 'static> Store<T> {
             writes: self.inner.writes(),
             triggers: self.inner.trigger_count(),
             handles: Rc::strong_count(&self.inner),
+        }
+    }
+}
+
+/// A store derived from an async source.
+///
+/// The source is the truth: its first answer loads the store, and
+/// [`OptimisticStore::refresh`] re-asks it. Writes to the store are ordinary
+/// per-path guesses, so a success commits optimistically while the refresh
+/// catches up with the server. Reads join the source, so the first load is a
+/// loading state rather than an empty seed.
+pub struct OptimisticStore<T: 'static> {
+    store: Store<T>,
+    source: Memo<T>,
+    initialized: Rc<std::cell::Cell<bool>>,
+}
+
+impl<T> Clone for OptimisticStore<T> {
+    fn clone(&self) -> Self {
+        Self {
+            store: self.store.clone(),
+            source: self.source,
+            initialized: Rc::clone(&self.initialized),
+        }
+    }
+}
+
+impl<T: Clone + PartialEq + 'static> OptimisticStore<T> {
+    /// Create a store whose truth comes from `load`.
+    ///
+    /// `seed` is the placeholder used before the first answer. The first read
+    /// of the store joins the source, so a loading boundary sees a loading
+    /// state instead of the seed.
+    pub fn new<F, Fut>(cx: &Cx<'_>, seed: T, mut load: F) -> Self
+    where
+        F: FnMut() -> Fut + 'static,
+        Fut: std::future::Future<Output = Result<T, AsyncError>> + 'static,
+    {
+        let source = create_async_memo(cx, move |_cx: &Cx<'_>, _previous: Option<&T>| {
+            Box::pin(load())
+        });
+        let store = Store::new(cx, seed);
+        let initialized = Rc::new(std::cell::Cell::new(false));
+        let store_for_effect = store.clone();
+        let initialized_for_effect = Rc::clone(&initialized);
+        let _effect = render_effect(
+            cx,
+            move |cx| latest(cx, source).ok(),
+            move |cx, value: &Option<T>| {
+                if let Some(value) = value {
+                    store_for_effect.set(cx, value.clone());
+                    initialized_for_effect.set(true);
+                }
+            },
+        );
+        Self {
+            store,
+            source,
+            initialized,
+        }
+    }
+
+    /// The display value: the store once the source has landed, otherwise the
+    /// source's current answer.
+    ///
+    /// For a list, use [`OptimisticStore::list`] so per-key patches and row
+    /// guesses compose; this is the root value alone.
+    #[must_use]
+    pub fn get(&self, cx: &Cx<'_>) -> T {
+        let value = self.source.get(cx);
+        if self.initialized.get() {
+            self.store.get(cx)
+        } else {
+            value
+        }
+    }
+
+    /// Ask the source again. The store keeps its optimistic value until the
+    /// new answer lands.
+    pub fn refresh(&self, cx: &Cx<'_>) {
+        refresh(cx, self.source);
+    }
+
+    /// The root field handle.
+    #[must_use]
+    pub fn root(&self) -> Field<T> {
+        self.store.root()
+    }
+
+    /// Whether the first answer has landed.
+    ///
+    /// Tracks the source and the store without suspending, so a loading
+    /// boundary can gate content on it.
+    #[must_use]
+    pub fn is_loading(&self, cx: &Cx<'_>) -> bool {
+        let _ = latest(cx, self.source);
+        let _ = self.store.root().get(cx);
+        !self.initialized.get()
+    }
+}
+
+impl<T: Clone + PartialEq + 'static> OptimisticStore<Vec<T>> {
+    /// A keyed list view over this derived store.
+    #[must_use]
+    pub fn list<K, F>(&self, key: F) -> OptimisticList<T, K>
+    where
+        K: Clone + Eq + Hash + 'static,
+        F: Fn(&T) -> K + 'static,
+    {
+        OptimisticList {
+            list: self.store.root(),
+            key: Rc::new(key),
+            source: Some(self.source),
+            initialized: Some(Rc::clone(&self.initialized)),
         }
     }
 }
@@ -264,6 +399,8 @@ impl<T: Clone + 'static> OptimisticField<T> {
 pub struct OptimisticList<T, K> {
     list: Field<Vec<T>>,
     key: Rc<dyn Fn(&T) -> K>,
+    source: Option<Memo<Vec<T>>>,
+    initialized: Option<Rc<Cell<bool>>>,
 }
 
 impl<T, K> Clone for OptimisticList<T, K> {
@@ -271,6 +408,8 @@ impl<T, K> Clone for OptimisticList<T, K> {
         Self {
             list: self.list.clone(),
             key: Rc::clone(&self.key),
+            source: self.source,
+            initialized: self.initialized.as_ref().map(Rc::clone),
         }
     }
 }
@@ -287,7 +426,16 @@ impl<T: Clone + 'static, K: Clone + Eq + Hash + 'static> OptimisticList<T, K> {
     /// row guesses, per key. A derivation sees truth only.
     #[must_use]
     pub fn get(&self, cx: &Cx<'_>) -> Vec<T> {
-        let mut rows = self.list.get(cx);
+        let mut rows = if let Some(source) = self.source {
+            let value = source.get(cx);
+            if self.initialized.as_ref().is_some_and(|ready| ready.get()) {
+                self.list.get(cx)
+            } else {
+                value
+            }
+        } else {
+            self.list.get(cx)
+        };
         if !cx.is_display() {
             return rows;
         }
@@ -768,6 +916,8 @@ impl<T: Clone + 'static> Field<Vec<T>> {
         OptimisticList {
             list: self.clone(),
             key: Rc::new(key),
+            source: None,
+            initialized: None,
         }
     }
 

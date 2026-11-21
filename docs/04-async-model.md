@@ -1331,6 +1331,24 @@ runtime.action(move || {
   guess. The guess notifies the path node, so an effect or memo that reads that
   exact path reruns; a sibling path does not.
 
+A store can be derived from an async source, so the source is the truth rather
+than a task copying data in:
+
+```rust
+let todos = OptimisticStore::new(cx, Vec::new(), move || {
+    let api = Rc::clone(&api);
+    async move { Ok(api.list().await) }
+});
+let rows = todos.list(|row| row.id);
+
+// In the action, after the save:
+todos.refresh(&cx);
+```
+
+`is_loading(cx)` is the readiness read for the loading boundary: it tracks the
+source and the store without suspending. The optimistic todos demo uses this
+shape; `error` stays a signal, and the fail-next switch is plain API state.
+
 This mirrors Solid's carrier rule: `readersOf` dirties the leaves of the keys a
 carrier changed and the container for a structural guess
 (`refs/solid/packages/signals/src/store/optimistic.ts`). The difference is

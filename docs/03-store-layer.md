@@ -321,6 +321,28 @@ todos.get(&cx);                     // truth -> live patches -> row guesses
   across a reorder. `at_key` only addresses committed rows; a row that exists
   only in a structural guess is list-level until it lands.
 
+A store can also be **derived from an async source**, the Rust form of
+`createOptimisticStore(() => api.list(), [])`:
+
+```rust
+let todos = OptimisticStore::new(cx, Vec::new(), move || {
+    let api = Rc::clone(&api);
+    async move { Ok(api.list().await) }
+});
+let rows = todos.list(|row| row.id);
+
+todos.refresh(&cx);       // re-ask the source after a save
+todos.is_loading(&cx)     // tracks the source and the store, never suspends
+```
+
+- The source's first answer loads the store; `get` joins the source, so a
+  first read is a loading state and a loading boundary can cover only that
+  load. After it lands, the store is the display value.
+- A successful action commits its per-key guess optimistically; `refresh`
+  re-asks the source and replaces the optimistic value with server truth.
+- `is_loading` is the readiness read for a loading boundary. It uses
+  `latest`, so it tracks without raising a suspension.
+
 Boundary: a whole-subtree read (`Store::snapshot`, `state.user().get(cx)`) is
 truth-only. Rust has no proxy traps to re-derive a parent value from child
 patches, so the unit of an optimistic read is the keyed path. Read the fields

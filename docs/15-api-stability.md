@@ -18,8 +18,9 @@ in-tree apps and examples.
     `DynamicValue`
   - `#[derive(Store)]`, `#[derive(Patch)]`, `store!`
   - keyed list handles and `patch_keyed`
-  - `OptimisticField` (`Field::optimistic`) and `OptimisticList`
-    (`Field::optimistic_list`)
+  - `OptimisticField` (`Field::optimistic`), `OptimisticList`
+    (`Field::optimistic_list`), and `OptimisticStore` (async source, `refresh`,
+    `is_loading`)
 - `renderer-api`
   - pointer/key/wheel/IME event types
   - resolved styles, transforms, overflow, a11y roles, cursor icons
