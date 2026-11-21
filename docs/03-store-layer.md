@@ -343,6 +343,31 @@ refresh(&cx, |cx| { let _ = todos.get(cx); }); // re-ask the source
   covers the initial load. A `refresh` re-ask keeps the content visible and
   corrects it when the answer lands.
 
+### 4.2 Read/action split
+
+The framework gives per-field capabilities: `Field::split`, `read_only`, and
+`write_only` return `ReadField`/`WriteField`. At the store level, the app
+composes a read view and an actions-only writer, mirroring Solid's
+`createTodos`:
+
+```rust
+let (todos, actions) = create_todos(cx, runtime, api);
+
+todos.rows(cx);          // read view: rows, row(cx, id), error(cx)
+actions.toggle(id);      // write side: actions, not a general `set_todos`
+actions.add(text);
+```
+
+`create_todos` returns `(Rc<Todos>, Rc<TodoActions>)`. `Todos` holds the
+derived store and exposes only reads. `TodoActions` privately owns the write
+handles and exposes only the named actions, so a component that receives the
+read side cannot write and a component that receives actions cannot call
+`set`/`update`/`push` directly. The writer may still use `Field` handles
+internally; they never appear in its public surface.
+
+This is app-level because only the app knows its actions. Use `Field::split`
+when a single field handle must be shared with a lower-level capability boundary.
+
 Boundary: a whole-subtree read (`Store::snapshot`, `state.user().get(cx)`) is
 truth-only. Rust has no proxy traps to re-derive a parent value from child
 patches, so the unit of an optimistic read is the keyed path. Read the fields

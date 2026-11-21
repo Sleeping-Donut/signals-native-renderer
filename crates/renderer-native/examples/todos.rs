@@ -3,7 +3,7 @@
 //!
 //! Module layout:
 //! - `model`: todo data and a pretend server with latency and a failure switch
-//! - `store`: optimistic store derived from `api.list()` (per-row guesses and add patches)
+//! - `store`: read view + actions-only writer over a store derived from `api.list()`
 //! - `styles`
 //! - `basecomponents`: `ActionButton`, `IconButton`, `TextLine`, `ErrorLine`
 //! - `uicomponents`: `App`, `Content`, `TodoRowView`, `LoadingView`
@@ -129,7 +129,7 @@ mod store {
     use std::rc::Rc;
 
     use reactive_core::{create_signal, refresh, Cx, ReadSignal, RuntimeHandle, WriteSignal};
-    use reactive_stores::{OptimisticList, OptimisticStore};
+    use reactive_stores::OptimisticStore;
 
     use crate::model::{Api, Todo};
 
@@ -151,66 +151,57 @@ mod store {
         }
     }
 
-    /// Optimistic rows derived from the API. The store's truth is `api.list()`;
-    /// writes are per-key guesses and list patches, and `refresh` re-asks the
-    /// source after a save.
-    pub struct TodosStore {
+    /// The read side. It exposes the composed rows and the error text, never a
+    /// field handle or a setter.
+    pub struct Todos {
+        todos: OptimisticStore<Vec<TodoRow>>,
+        error: ReadSignal<String>,
+    }
+
+    impl Todos {
+        /// The composed display rows: truth, live patches, and row guesses.
+        #[must_use]
+        pub fn rows(&self, cx: &Cx<'_>) -> Vec<TodoRow> {
+            self.todos.list(|row| row.id).get(cx)
+        }
+
+        /// One composed row by id.
+        #[must_use]
+        pub fn row(&self, cx: &Cx<'_>, id: u64) -> Option<TodoRow> {
+            self.rows(cx).into_iter().find(|row| row.id == id)
+        }
+
+        /// The last action error, empty when the last action succeeded.
+        #[must_use]
+        pub fn error(&self, cx: &Cx<'_>) -> String {
+            self.error.get(cx)
+        }
+    }
+
+    /// The write side. It exposes actions, not `set_todos`.
+    pub struct TodoActions {
         runtime: RuntimeHandle,
         api: Rc<Api>,
         todos: OptimisticStore<Vec<TodoRow>>,
-        error: ReadSignal<String>,
         set_error: WriteSignal<String>,
     }
 
-    impl TodosStore {
-        pub fn new(cx: &Cx<'_>, runtime: RuntimeHandle, api: Rc<Api>) -> Rc<Self> {
-            let api_for_load = Rc::clone(&api);
-            let todos = OptimisticStore::new(cx, Vec::new(), move || {
-                let api = Rc::clone(&api_for_load);
-                async move {
-                    let list = api.list().await;
-                    Ok::<Vec<TodoRow>, reactive_core::AsyncError>(
-                        list.into_iter().map(todo_row).collect(),
-                    )
-                }
-            });
-            let (error, set_error) = create_signal(cx, String::new());
-
-            Rc::new(Self {
-                runtime,
-                api,
-                todos,
-                error,
-                set_error,
-            })
-        }
-
-        pub fn rows(&self) -> OptimisticList<TodoRow, u64> {
-            self.todos.list(|row| row.id)
-        }
-
-        pub fn error(&self) -> ReadSignal<String> {
-            self.error
-        }
-
-        pub fn set_fail_next(self: &Rc<Self>, _cx: &Cx<'_>, fail: bool) {
-            self.api.set_fail_next(fail);
-        }
-
-        pub fn toggle(self: &Rc<Self>, cx: &Cx<'_>, id: u64) {
-            if !self
-                .rows()
-                .get(cx)
+    impl TodoActions {
+        pub fn toggle(self: &Rc<Self>, id: u64) {
+            let cx = self.runtime.cx();
+            let todos = self.todos.list(|row| row.id);
+            if !todos
+                .get(&cx)
                 .iter()
                 .any(|row| row.id == id && !row.pending)
             {
                 return;
             }
-            let Some(row) = self.rows().at_key(cx, &id) else {
+            let Some(row) = todos.at_key(&cx, &id) else {
                 return;
             };
             let api = Rc::clone(&self.api);
-            let todos = self.todos.clone();
+            let store = self.todos.clone();
             let set_error = self.set_error;
             let runtime_for_action = self.runtime.clone();
 
@@ -222,25 +213,24 @@ mod store {
                             row.done = !row.done;
                             row.pending = true;
                         });
-
                         api.toggle(id).await?;
                         refresh(&rt.cx(), |cx| {
-                            let _ = todos.get(cx);
+                            let _ = store.get(cx);
                         });
                         Ok::<(), String>(())
                     }
                 },
                 move |cx, result| match result {
                     Ok(()) => set_error.set(cx, String::new()),
-                    Err(message) => set_error.set(cx, message.clone()),
+                    Err(error) => set_error.set(cx, error.clone()),
                 },
             );
         }
 
-        pub fn add(self: &Rc<Self>, _cx: &Cx<'_>, text: String) {
+        pub fn add(self: &Rc<Self>, text: String) {
             let api = Rc::clone(&self.api);
-            let rows = self.rows();
-            let todos = self.todos.clone();
+            let todos = self.todos.list(|row| row.id);
+            let store = self.todos.clone();
             let set_error = self.set_error;
             let id = self.api.next_id();
             let runtime_for_action = self.runtime.clone();
@@ -249,7 +239,7 @@ mod store {
                 move || {
                     let rt = runtime_for_action.clone();
                     async move {
-                        rows.push(
+                        todos.push(
                             &rt.cx(),
                             TodoRow {
                                 id,
@@ -258,26 +248,59 @@ mod store {
                                 pending: true,
                             },
                         );
-
                         api.add(Todo {
                             id,
                             text,
                             done: false,
                         })
                         .await?;
-
                         refresh(&rt.cx(), |cx| {
-                            let _ = todos.get(cx);
+                            let _ = store.get(cx);
                         });
                         Ok::<(), String>(())
                     }
                 },
                 move |cx, result| match result {
                     Ok(()) => set_error.set(cx, String::new()),
-                    Err(message) => set_error.set(cx, message.clone()),
+                    Err(error) => set_error.set(cx, error.clone()),
                 },
             );
         }
+
+        pub fn fail_next(&self) {
+            self.api.set_fail_next(true);
+        }
+    }
+
+    /// Create the read side and the action-only write side.
+    pub fn create_todos(
+        cx: &Cx<'_>,
+        runtime: RuntimeHandle,
+        api: Rc<Api>,
+    ) -> (Rc<Todos>, Rc<TodoActions>) {
+        let api_for_load = Rc::clone(&api);
+        let todos = OptimisticStore::new(cx, Vec::new(), move || {
+            let api = Rc::clone(&api_for_load);
+            async move {
+                let list = api.list().await;
+                Ok::<Vec<TodoRow>, reactive_core::AsyncError>(
+                    list.into_iter().map(todo_row).collect(),
+                )
+            }
+        });
+        let (error, set_error) = create_signal(cx, String::new());
+        (
+            Rc::new(Todos {
+                todos: todos.clone(),
+                error,
+            }),
+            Rc::new(TodoActions {
+                runtime,
+                api,
+                todos,
+                set_error,
+            }),
+        )
     }
 }
 
@@ -479,7 +502,7 @@ mod uicomponents {
         ActionButton, ActionButtonProps, ErrorLine, ErrorLineProps, TextLine, TextLineProps,
     };
     use crate::model::Api;
-    use crate::store::{TodoRow, TodosStore};
+    use crate::store::{create_todos, TodoActions, TodoRow, Todos};
     use crate::styles;
 
     #[component]
@@ -495,34 +518,28 @@ mod uicomponents {
     pub struct TodoRowViewProps {
         pub id: u64,
         #[prop(raw)]
-        pub store: Rc<TodosStore>,
+        pub read: Rc<Todos>,
+        #[prop(raw)]
+        pub actions: Rc<TodoActions>,
     }
 
     #[component]
     pub fn TodoRowView(cx: &Cx<'_>, props: TodoRowViewProps) -> View {
-        let store = props.store;
         let id = props.id.get(cx);
-        // The keyed list composes truth, live patches, and row guesses, so a
-        // binding sees the optimistic value while a derivation sees truth.
-        let rows = store.rows();
-        let rows_for_label = rows.clone();
-        let rows_for_text = rows.clone();
-        let store_for_click = Rc::clone(&store);
+        let read_for_label = Rc::clone(&props.read);
+        let read_for_text = Rc::clone(&props.read);
+        let actions_for_click = Rc::clone(&props.actions);
 
         let toggle = button(
             vec![text_fn(move |cx| {
-                let done = rows_for_label
-                    .get(cx)
-                    .iter()
-                    .any(|row| row.id == id && row.done);
-                if done {
+                if read_for_label.row(cx, id).is_some_and(|row| row.done) {
                     String::from("☑")
                 } else {
                     String::from("☐")
                 }
             })
             .style(styles::button_label())],
-            move |cx: &Cx<'_>| store_for_click.toggle(cx, id),
+            move |_cx: &Cx<'_>| actions_for_click.toggle(id),
         )
         .style(styles::icon_button())
         .hover_style(styles::HOVER)
@@ -534,17 +551,13 @@ mod uicomponents {
                 <Embed expr={toggle} />
                 <Embed expr={
                     text_fn(move |cx| {
-                        rows_for_text
-                            .get(cx)
-                            .iter()
-                            .find(|row| row.id == id)
-                            .map_or_else(String::new, |row| {
-                                if row.pending {
-                                    format!("{}  (saving…)", row.text)
-                                } else {
-                                    row.text.clone()
-                                }
-                            })
+                        read_for_text.row(cx, id).map_or_else(String::new, |row| {
+                            if row.pending {
+                                format!("{}  (saving…)", row.text)
+                            } else {
+                                row.text
+                            }
+                        })
                     })
                     .style(styles::base())
                 } />
@@ -553,60 +566,94 @@ mod uicomponents {
     }
 
     #[macros::props]
+    pub struct TodoFormProps {
+        #[prop(raw)]
+        pub actions: Rc<TodoActions>,
+    }
+
+    #[component]
+    pub fn TodoForm(cx: &Cx<'_>, props: TodoFormProps) -> View {
+        let input = TextInputState::new(cx, "");
+        let input_for_add = input.clone();
+
+        view! {
+            <Row style={styles::form()}>
+                <TextLine value={String::from("New todo")} />
+                <Embed expr={input.view(styles::input())} />
+                <ActionButton
+                    label={String::from("Add")}
+                    on_click={move |cx: &Cx<'_>| {
+                        let text = input_for_add.text().trim().to_string();
+                        if text.is_empty() {
+                            return;
+                        }
+                        input_for_add.clear(cx);
+                        props.actions.add(text);
+                    }}
+                />
+            </Row>
+        }
+    }
+
+    #[macros::props]
+    pub struct FailButtonProps {
+        #[prop(raw)]
+        pub actions: Rc<TodoActions>,
+    }
+
+    #[component]
+    pub fn FailButton(cx: &Cx<'_>, props: FailButtonProps) -> View {
+        view! {
+            <ActionButton
+                label={String::from("Fail the next save")}
+                on_click={move |_cx: &Cx<'_>| props.actions.fail_next()}
+            />
+        }
+    }
+
+    #[macros::props]
+    pub struct ErrorTextProps {
+        #[prop(raw)]
+        pub read: Rc<Todos>,
+    }
+
+    #[component]
+    pub fn ErrorText(cx: &Cx<'_>, props: ErrorTextProps) -> View {
+        view! {
+            <ErrorLine value={Prop::derived(cx, move |cx| props.read.error(cx))} />
+        }
+    }
+
+    #[macros::props]
     pub struct ContentProps {
         #[prop(raw)]
-        pub store: Rc<TodosStore>,
+        pub read: Rc<Todos>,
+        #[prop(raw)]
+        pub actions: Rc<TodoActions>,
     }
 
     #[component]
     pub fn Content(cx: &Cx<'_>, props: ContentProps) -> View {
-        let store = props.store;
-        let input = TextInputState::new(cx, "");
-
-        let store_for_add = Rc::clone(&store);
-        let input_for_add = input.clone();
-        let store_for_fail = Rc::clone(&store);
-        let store_for_rows = Rc::clone(&store);
-        let store_for_children = Rc::clone(&store);
-        let store_for_error = Rc::clone(&store);
+        let read_for_rows = Rc::clone(&props.read);
+        let read_for_row = Rc::clone(&props.read);
+        let actions_for_row = Rc::clone(&props.actions);
 
         view! {
             <Column style={styles::root()}>
-                <Row style={styles::form()}>
-                    <TextLine value={String::from("New todo")} />
-                    <Embed expr={input.view(styles::input())} />
-                    <ActionButton
-                        label={String::from("Add")}
-                        on_click={move |cx: &Cx<'_>| {
-                            let text = input_for_add.text().trim().to_string();
-                            if text.is_empty() {
-                                return;
-                            }
-                            input_for_add.clear(cx);
-                            store_for_add.add(cx, text);
-                        }}
-                    />
-                </Row>
+                <TodoForm actions={Rc::clone(&props.actions)} />
                 <For
-                    each={move |cx: &Cx<'_>| store_for_rows.rows().get(cx)}
+                    each={move |cx| read_for_rows.rows(cx)}
                     key={|row: &TodoRow| row.id}
-                    children={move |cx: &Cx<'_>, row: &TodoRow| {
-                        let id = row.id;
-                        let store = Rc::clone(&store_for_children);
-                        view! {
-                            <TodoRowView id={id} store={store} />
-                        }
+                    children={move |cx, row: &TodoRow| view! {
+                        <TodoRowView
+                            id={row.id}
+                            read={Rc::clone(&read_for_row)}
+                            actions={Rc::clone(&actions_for_row)}
+                        />
                     }}
                 />
-                <ActionButton
-                    label={String::from("Fail the next save")}
-                    on_click={move |cx: &Cx<'_>| {
-                        store_for_fail.set_fail_next(cx, true);
-                    }}
-                />
-                <ErrorLine
-                    value={Prop::derived(cx, move |cx| store_for_error.error().get(cx))}
-                />
+                <FailButton actions={Rc::clone(&props.actions)} />
+                <ErrorText read={Rc::clone(&props.read)} />
             </Column>
         }
     }
@@ -615,11 +662,11 @@ mod uicomponents {
     pub fn App(cx: &Cx<'_>) -> View {
         let runtime = cx.use_context::<RuntimeHandle>().expect("runtime context");
         let api = Rc::new(Api::new());
-        let store = TodosStore::new(cx, runtime, api);
+        let (read, actions) = create_todos(cx, runtime, api);
 
         view! {
             <Loading fallback={LoadingView}>
-                <Content store={Rc::clone(&store)} />
+                <Content read={Rc::clone(&read)} actions={Rc::clone(&actions)} />
             </Loading>
         }
     }
