@@ -36,8 +36,56 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
 }
 "#;
 
+#[cfg(feature = "window")]
+const BLIT_SHADER: &str = r#"
+struct VsOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@group(0) @binding(0) var scene_texture: texture_2d<f32>;
+@group(0) @binding(1) var scene_sampler: sampler;
+
+@vertex
+fn vs_main(@builtin(vertex_index) index: u32) -> VsOut {
+    var positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    var uvs = array<vec2<f32>, 3>(
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(2.0, 1.0),
+        vec2<f32>(0.0, -1.0),
+    );
+    var output: VsOut;
+    output.position = vec4<f32>(positions[index], 0.0, 1.0);
+    output.uv = uvs[index];
+    return output;
+}
+
+@fragment
+fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
+    return textureSample(scene_texture, scene_sampler, input.uv);
+}
+"#;
+
 const VERTEX_BYTES: u64 = 32;
 const INITIAL_VERTEX_BYTES: u64 = 4096;
+
+#[cfg(feature = "window")]
+struct BlitState {
+    layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    pipeline: wgpu::RenderPipeline,
+}
+
+#[cfg(feature = "window")]
+struct SceneTarget {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+}
 
 enum Target {
     Offscreen {
@@ -66,6 +114,11 @@ pub struct WgpuBackend {
     atlas: GlyphAtlas,
     atlas_texture: wgpu::Texture,
     atlas_bind_group: wgpu::BindGroup,
+    has_frame: bool,
+    #[cfg(feature = "window")]
+    scene_target: Option<SceneTarget>,
+    #[cfg(feature = "window")]
+    blit: Option<BlitState>,
 }
 
 impl WgpuBackend {
@@ -97,6 +150,11 @@ impl WgpuBackend {
             atlas,
             atlas_texture,
             atlas_bind_group,
+            has_frame: false,
+            #[cfg(feature = "window")]
+            scene_target: None,
+            #[cfg(feature = "window")]
+            blit: None,
         })
     }
 
@@ -148,6 +206,15 @@ impl WgpuBackend {
         let atlas = GlyphAtlas::new();
         let (atlas_texture, atlas_bind_group) =
             create_atlas(&device, &queue, &bind_group_layout, &atlas);
+        let blit = create_blit(&device, format);
+        let scene_target = create_scene_target(
+            &device,
+            &blit.layout,
+            &blit.sampler,
+            width.max(1),
+            height.max(1),
+            format,
+        );
         Ok(Self {
             device,
             queue,
@@ -165,6 +232,9 @@ impl WgpuBackend {
             atlas,
             atlas_texture,
             atlas_bind_group,
+            has_frame: false,
+            scene_target: Some(scene_target),
+            blit: Some(blit),
         })
     }
 
@@ -318,6 +388,42 @@ impl WgpuBackend {
         self.vertex_capacity = capacity;
     }
 
+    #[cfg(feature = "window")]
+    fn ensure_scene_target(&mut self) {
+        let width = self.metrics.physical_width.max(1);
+        let height = self.metrics.physical_height.max(1);
+        let stale = self.scene_target.as_ref().is_none_or(|target| {
+            target.texture.width() != width || target.texture.height() != height
+        });
+        if !stale {
+            return;
+        }
+        let (Some(blit), Target::Surface { .. }) = (&self.blit, &self.target) else {
+            return;
+        };
+        self.scene_target = Some(create_scene_target(
+            &self.device,
+            &blit.layout,
+            &blit.sampler,
+            width,
+            height,
+            self.format,
+        ));
+        self.has_frame = false;
+    }
+
+    #[cfg(not(feature = "window"))]
+    fn ensure_scene_target(&mut self) {}
+
+    #[cfg(feature = "window")]
+    fn reset_scene_target(&mut self) {
+        self.scene_target = None;
+        self.ensure_scene_target();
+    }
+
+    #[cfg(not(feature = "window"))]
+    fn reset_scene_target(&mut self) {}
+
     fn render_target(&mut self) -> Result<wgpu::TextureView, BackendError> {
         match &mut self.target {
             Target::Offscreen { texture, .. } => {
@@ -372,6 +478,8 @@ impl PaintBackend for WgpuBackend {
                 surface.configure(&self.device, config);
             }
         }
+        self.has_frame = false;
+        self.reset_scene_target();
     }
 
     fn render(&mut self, scene: &Scene, damage: &[Rect]) -> Result<FrameStats, BackendError> {
@@ -398,25 +506,57 @@ impl PaintBackend for WgpuBackend {
                 .write_buffer(&self.vertex_buffer, 0, vertices.as_slice());
         }
 
-        let view = self.render_target()?;
+        let scissors: Vec<(u32, u32, u32, u32)> = if self.has_frame {
+            damage
+                .iter()
+                .filter_map(|rect| scissor_for(*rect, self.metrics))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        self.ensure_scene_target();
+        let surface_view = self.render_target()?;
+        stats.scissored_area = if scissors.is_empty() {
+            u64::from(self.metrics.physical_width.max(1))
+                * u64::from(self.metrics.physical_height.max(1))
+        } else {
+            scissors
+                .iter()
+                .map(|(_, _, width, height)| u64::from(*width) * u64::from(*height))
+                .sum()
+        };
+        #[cfg(feature = "window")]
+        let view = self
+            .scene_target
+            .as_ref()
+            .map(|target| &target.view)
+            .unwrap_or(&surface_view);
+        #[cfg(not(feature = "window"))]
+        let view = &surface_view;
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("scene encoder"),
             });
         {
+            let load = if scissors.is_empty() {
+                wgpu::LoadOp::Clear(wgpu::Color {
+                    r: 0.06,
+                    g: 0.06,
+                    b: 0.07,
+                    a: 1.0,
+                })
+            } else {
+                wgpu::LoadOp::Load
+            };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.06,
-                            g: 0.06,
-                            b: 0.07,
-                            a: 1.0,
-                        }),
+                        load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -428,10 +568,39 @@ impl PaintBackend for WgpuBackend {
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &self.atlas_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                pass.draw(0..(vertices.len() as u32 / VERTEX_BYTES as u32), 0..1);
+                let vertices = vertices.len() as u32 / VERTEX_BYTES as u32;
+                if scissors.is_empty() {
+                    pass.draw(0..vertices, 0..1);
+                } else {
+                    for (x, y, width, height) in scissors {
+                        pass.set_scissor_rect(x, y, width, height);
+                        pass.draw(0..vertices, 0..1);
+                    }
+                }
             }
         }
+        #[cfg(feature = "window")]
+        if let (Some(target), Some(blit)) = (&self.scene_target, &self.blit) {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("blit pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &surface_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&blit.pipeline);
+            pass.set_bind_group(0, &target.bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
         self.queue.submit(Some(encoder.finish()));
+        self.has_frame = true;
         Ok(stats)
     }
 
@@ -604,6 +773,122 @@ fn create_atlas(
     (texture, bind_group)
 }
 
+#[cfg(feature = "window")]
+fn create_blit(device: &wgpu::Device, format: wgpu::TextureFormat) -> BlitState {
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("blit layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("blit sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::FilterMode::Nearest,
+        ..Default::default()
+    });
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("blit shader"),
+        source: wgpu::ShaderSource::Wgsl(BLIT_SHADER.into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("blit pipeline layout"),
+        bind_group_layouts: &[&layout],
+        push_constant_ranges: &[],
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("blit pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: "vs_main",
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: "fs_main",
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+    });
+    BlitState {
+        layout,
+        sampler,
+        pipeline,
+    }
+}
+
+#[cfg(feature = "window")]
+fn create_scene_target(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+) -> SceneTarget {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("scene target"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("scene bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    });
+    SceneTarget {
+        texture,
+        view,
+        bind_group,
+    }
+}
+
 fn create_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
@@ -660,6 +945,20 @@ fn create_pipeline(
         multisample: wgpu::MultisampleState::default(),
         multiview: None,
     })
+}
+
+fn scissor_for(rect: Rect, metrics: BackendMetrics) -> Option<(u32, u32, u32, u32)> {
+    let scale = metrics.scale;
+    let max_x = metrics.physical_width.max(1) as f32;
+    let max_y = metrics.physical_height.max(1) as f32;
+    let x0 = (rect.x * scale).floor().clamp(0.0, max_x);
+    let y0 = (rect.y * scale).floor().clamp(0.0, max_y);
+    let x1 = ((rect.x + rect.width) * scale).ceil().clamp(0.0, max_x);
+    let y1 = ((rect.y + rect.height) * scale).ceil().clamp(0.0, max_y);
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    Some((x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32))
 }
 
 fn collect_vertices(

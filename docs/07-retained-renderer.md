@@ -633,16 +633,18 @@ Compiled shape (simplified):
 
 ## Damage presentation (v0.2)
 
-The scene builder already records per-root damage rectangles; the native backend
-still clears and draws the whole window. The v0.2 plan:
+The scene builder records per-root damage rectangles and the backends now use
+them:
 
-1. Keep a persistent offscreen scene texture sized to the window.
-2. Render the scene into it with `LoadOp::Load` and one scissor rect per damage
-   region, so untouched pixels keep their previous contents.
-3. Blit that texture to the surface (or clear and blit only damaged rects).
-4. Fall back to a full clear on the first frame, on resize/scale changes, and
-   whenever the damage set is empty but the frame is forced.
+1. Offscreen targets keep their texture between frames and render with
+   `LoadOp::Load`, one scissor rect per damage region. A full clear runs on the
+   first frame, after resize, or when the damage set is empty.
+2. Window surfaces render into a persistent offscreen scene texture with the
+   same load/scissor rules, then blit that texture to the surface with one
+   full-screen triangle. This avoids relying on swapchain image preservation.
+3. `FrameStats::scissored_area` reports the rasterized scene area: the summed
+   scissor area on a damaged frame, or the full surface area on a full frame.
 
-Offscreen readback used by snapshots keeps the full-clear path; the optimization
-targets the window surface. This is independent of the async lane work and can
-land in parallel.
+`wgpu_incremental_damage_matches_a_full_render` proves a scissored frame is
+byte-identical to rendering the same scene from scratch, and the demo snapshots
+are unchanged after a hundred incremental frames.

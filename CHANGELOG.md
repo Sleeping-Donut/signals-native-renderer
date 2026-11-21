@@ -6,6 +6,9 @@
   verdict prototype, and the damage-presentation design.
 - `MaybeProp<T>` (the caller may omit the prop). `#[prop(optional)]` now stores
   the field as `MaybeProp<T>`; `#[prop(default = expr)]` keeps `Prop<T>`.
+- Damage scissoring: offscreen targets accumulate with `LoadOp::Load` and
+  per-damage scissor rects; window surfaces render into a persistent scene
+  texture and blit it. `FrameStats::scissored_area` reports rasterized area.
 
 ## v0.1.1 — 2026-11-21
 

@@ -477,9 +477,11 @@ optimistic todos app is the acceptance target for guesses/actions.
    overlay is deleted.
 6. **Full `on` re-arm.** F-4/F-5 boundary behavior beyond keyed remount. Gate:
    boundary tests for armed/disarmed content and held frames.
-7. **Damage scissoring** (parallel from step 2). Persistent offscreen target,
-   scissored `LoadOp::Load`, blit to the surface, full-clear fallbacks. Gate:
-   window backend consumes damage; snapshots still match; overdraw measured.
+7. ✅ **Damage scissoring.** Offscreen targets render with `LoadOp::Load` and
+   per-damage scissor rects; window surfaces use a persistent scene texture and
+   a blit. Gate met: `wgpu_incremental_damage_matches_a_full_render` and
+   byte-identical demo snapshots; `FrameStats::scissored_area` records the
+   rasterized scene area. GPU timing needs a timestamp harness (follow-up).
 8. **Renderer `NodeId` freeze + store field read/write split** (parallel, before
    the v0.3 API freeze).
 

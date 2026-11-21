@@ -398,3 +398,69 @@ fn headless_backend_records_no_extra_work_for_clean_frames() {
     assert!(after.replayed >= 1);
     assert!(before.primitives == after.primitives);
 }
+
+#[test]
+#[cfg_attr(miri, ignore = "wgpu uses platform graphics drivers")]
+fn wgpu_incremental_damage_matches_a_full_render() {
+    let mut backend = match WgpuBackend::new_headless(64, 64, 1.0) {
+        Ok(backend) => backend,
+        Err(BackendError::NoAdapter) => {
+            eprintln!("skipping wgpu damage test: no adapter");
+            return;
+        }
+        Err(error) => panic!("wgpu init failed: {error}"),
+    };
+    let blue = Color::new(0.0, 0.0, 1.0, 1.0);
+    let red = Color::new(1.0, 0.0, 0.0, 1.0);
+    let green = Color::new(0.0, 1.0, 0.0, 1.0);
+    let fill = |node, rect, color| Primitive::Fill {
+        node,
+        rect,
+        color,
+        radius: Default::default(),
+        clip: None,
+    };
+
+    let mut first = Scene::new();
+    first.push(fill(1, Rect::new(0.0, 0.0, 64.0, 64.0), blue));
+    first.push(fill(2, Rect::new(8.0, 8.0, 16.0, 16.0), red));
+    let first_stats = backend
+        .render(&first, &[Rect::new(0.0, 0.0, 64.0, 64.0)])
+        .expect("first render");
+    backend.present().expect("first present");
+    assert_eq!(first_stats.scissored_area, 64 * 64, "first frame is full");
+
+    let mut second = Scene::new();
+    second.push(fill(1, Rect::new(0.0, 0.0, 64.0, 64.0), blue));
+    second.push(fill(2, Rect::new(32.0, 32.0, 16.0, 16.0), green));
+    let second_stats = backend
+        .render(
+            &second,
+            &[
+                Rect::new(8.0, 8.0, 16.0, 16.0),
+                Rect::new(32.0, 32.0, 16.0, 16.0),
+            ],
+        )
+        .expect("incremental render");
+    backend.present().expect("incremental present");
+    assert_eq!(
+        second_stats.scissored_area,
+        16 * 16 * 2,
+        "only damage pixels are rasterized"
+    );
+    let (_, _, incremental) = backend.read_image().expect("incremental readback");
+
+    let mut fresh = match WgpuBackend::new_headless(64, 64, 1.0) {
+        Ok(backend) => backend,
+        Err(BackendError::NoAdapter) => return,
+        Err(error) => panic!("wgpu init failed: {error}"),
+    };
+    fresh.render(&second, &[]).expect("full render");
+    fresh.present().expect("full present");
+    let (_, _, full) = fresh.read_image().expect("full readback");
+
+    assert_eq!(
+        incremental, full,
+        "a scissored frame must match the same scene rendered from scratch"
+    );
+}

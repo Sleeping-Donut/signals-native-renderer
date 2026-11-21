@@ -24,6 +24,11 @@ Steady numbers skip the first ten frames.
 - Allocations: the retained-tree profile test asserts no per-frame structural
   rebuild after mount.
 - Scene damage is recorded per dirty range.
+- Damage scissoring: offscreen targets render with `LoadOp::Load` and one
+  scissor per damage rect; window surfaces render into a persistent scene
+  texture and blit it. A scissored frame is byte-identical to a full render
+  (`wgpu_incremental_damage_matches_a_full_render`), and the demo snapshots are
+  unchanged across a hundred incremental frames.
 
 ## Stores and reactivity
 
@@ -106,6 +111,8 @@ perf budgets: mount+layout 130.348 ms, single-row update 0.067 ms
   is available for a human to leave running. The rapid fuzz run is the automated
   bounded-growth evidence.
 - Fixed-size layout boundaries isolate local updates; general incremental
-  layout and damage scissoring remain future optimizations.
+  layout remains a future optimization.
+- Damage scissoring reports rasterized scene area in `FrameStats`; GPU-time
+  deltas still need a timestamp-query harness.
 - Enum/dynamic stores, automatic `Loading` detection, and the component/props
   macro are implemented for v0.1.

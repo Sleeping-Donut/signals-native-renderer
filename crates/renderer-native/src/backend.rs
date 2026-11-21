@@ -105,6 +105,9 @@ pub struct FrameStats {
     pub placeholder_glyphs: usize,
     /// Damage rectangles supplied by the scene builder.
     pub damage_rects: usize,
+    /// Scene pixels the rasterizer is allowed to touch: the summed scissor
+    /// area on a damaged frame, or the full surface area on a full frame.
+    pub scissored_area: u64,
     /// Whether a surface present happened.
     pub presented: bool,
 }
