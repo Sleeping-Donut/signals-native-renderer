@@ -1,6 +1,6 @@
 use renderer_api::{
     AttrName, AttrValue, Color, Display, ElementTag, Event, EventKind, FrameInfo, Renderer,
-    RendererError, ResolvedStyle,
+    RendererError, ResolvedStyle, INVALID_NODE_ID,
 };
 use renderer_null::{NullRenderer, Op};
 
@@ -142,4 +142,24 @@ fn operation_log_is_deterministic() {
         matches!(ops[3], Op::SetText { id, text: ref content } if id == text && content == "1")
     );
     assert!(renderer.ops().is_empty());
+}
+
+#[test]
+fn node_ids_are_nonzero_unique_and_stable() {
+    let mut renderer = NullRenderer::new();
+    let element = renderer.create_element(ElementTag::new("Column")).unwrap();
+    let text = renderer.create_text("text").unwrap();
+    let fragment = renderer.create_fragment().unwrap();
+
+    for id in [element, text, fragment] {
+        assert_ne!(id, INVALID_NODE_ID, "0 is reserved");
+    }
+    assert_ne!(element, text);
+    assert_ne!(element, fragment);
+    assert_ne!(text, fragment);
+    assert_eq!(element, element, "an id is stable across calls");
+    assert!(matches!(
+        renderer.set_text(INVALID_NODE_ID, "x"),
+        Err(RendererError::InvalidNode(0))
+    ));
 }

@@ -146,7 +146,9 @@ via a trait, so they compose at any depth. The macro also generates:
 
 - `Store::new(value)`, `Store::from_parts(...)` for tests;
 - a `path()` implementation for each field;
-- `read()`, `write()`, `with()` convenience methods on `Field<T>`;
+- `get`/`with`/`set`/`update` on `Field<T>`;
+- `read_only()`, `write_only()`, and `split()` returning `ReadField<T>` /
+  `WriteField<T>`, capability views that expose only reads or only writes;
 - an `update(|&mut T| ...)` that marks the path on drop.
 
 For enums:

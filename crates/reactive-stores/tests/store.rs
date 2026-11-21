@@ -275,3 +275,21 @@ fn dynamic_store_supports_maps_lists_and_path_isolation() {
     );
     assert_eq!(store.field("tags").index(0).get(&cx), DynamicValue::Null);
 }
+
+#[test]
+fn fields_split_into_read_and_write_capabilities() {
+    let runtime = Runtime::new();
+    let cx = runtime.cx();
+    let store = store!(&cx, app());
+    let name = store.user().name();
+    let (read, write) = name.split();
+    assert_eq!(read.get(&cx), "Ada");
+
+    write.set(&cx, String::from("Grace"));
+    cx.flush().unwrap();
+    assert_eq!(read.get(&cx), "Grace");
+
+    name.write_only().update(&cx, |name| name.push('!'));
+    cx.flush().unwrap();
+    assert_eq!(name.read_only().get(&cx), "Grace!");
+}

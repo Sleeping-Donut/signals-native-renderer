@@ -452,10 +452,10 @@ split; renderer `NodeId` contract freeze; the decisions still listed as open in
 [docs/12](docs/12-decisions-and-risks.md) Part F (transaction merge criterion,
 re-ask detection, held-frame verdict).
 
-**Status (2026-11-21): started.** v0.1.1 is tagged. The held-frame `is_pending`
-gate is closed: a display pass applies committed values with the pending verdict
-while a flight is out (`display_pass_shows_the_verdict_during_a_hold`). The
-optimistic todos app is the acceptance target for guesses/actions.
+**Status (2026-11-21): complete.** All eight work-order gates are closed:
+held-frame verdict, merge/re-ask, lanes and `latest`, `affects`, actions with
+`ActionCx`, `on` re-arm, damage scissoring, and the `NodeId`/store-field
+freeze. The optimistic todos app runs on framework actions.
 
 **Work order:**
 
@@ -488,8 +488,10 @@ optimistic todos app is the acceptance target for guesses/actions.
    a blit. Gate met: `wgpu_incremental_damage_matches_a_full_render` and
    byte-identical demo snapshots; `FrameStats::scissored_area` records the
    rasterized scene area. GPU timing needs a timestamp harness (follow-up).
-8. **Renderer `NodeId` freeze + store field read/write split** (parallel, before
-   the v0.3 API freeze).
+8. ✅ **Renderer `NodeId` freeze + store field split.** `NodeId` is documented
+   as opaque non-zero, `INVALID_NODE_ID` is reserved, and renderer-null has a
+   conformance test. `Field::split`/`read_only`/`write_only` return
+   `ReadField`/`WriteField` capability views.
 
 **Exit:**
 

@@ -37,8 +37,11 @@ between `solid-js/universal` and `solid-js/web`.
 
 1. **Object-safe.** The runtime must be able to hold `Box<dyn Renderer>` for
    third-party backends.
-2. **Stable node handles.** `NodeId` is a `u64` chosen by the renderer and valid
-   until the node is removed or the renderer is dropped.
+2. **Stable node handles (frozen for v0.2).** `NodeId` is an opaque `u64`
+   chosen by the renderer. `0` is reserved (`INVALID_NODE_ID`) and never valid;
+   ids are non-zero, unique among live nodes, and stable until removal or
+   renderer drop. The framework never interprets the numeric value, so a backend
+   may pack a pointer into it on 64-bit targets.
 3. **No layout or paint primitives in the base trait.** A DOM renderer has its
    own layout; a native renderer has ours. The base contract is structure +
    properties + events.

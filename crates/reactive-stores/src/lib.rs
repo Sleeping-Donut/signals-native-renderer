@@ -224,6 +224,87 @@ impl<T> Clone for Field<T> {
     }
 }
 
+/// A read-only view of a store field.
+pub struct ReadField<T> {
+    field: Field<T>,
+}
+
+impl<T> Clone for ReadField<T> {
+    fn clone(&self) -> Self {
+        Self {
+            field: self.field.clone(),
+        }
+    }
+}
+
+/// A write-only view of a store field.
+pub struct WriteField<T> {
+    field: Field<T>,
+}
+
+impl<T> Clone for WriteField<T> {
+    fn clone(&self) -> Self {
+        Self {
+            field: self.field.clone(),
+        }
+    }
+}
+
+impl<T: Clone + 'static> Field<T> {
+    /// A handle that can only read this field.
+    #[must_use]
+    pub fn read_only(&self) -> ReadField<T> {
+        ReadField {
+            field: self.clone(),
+        }
+    }
+
+    /// A handle that can only write this field.
+    #[must_use]
+    pub fn write_only(&self) -> WriteField<T> {
+        WriteField {
+            field: self.clone(),
+        }
+    }
+
+    /// Split the field into read and write capabilities.
+    #[must_use]
+    pub fn split(&self) -> (ReadField<T>, WriteField<T>) {
+        (self.read_only(), self.write_only())
+    }
+}
+
+impl<T: Clone + 'static> ReadField<T> {
+    /// Read the value at this path.
+    #[must_use]
+    pub fn get(&self, cx: &Cx<'_>) -> T {
+        self.field.get(cx)
+    }
+
+    /// Read the value, requiring an active tracked computation.
+    #[must_use]
+    pub fn get_strict(&self, cx: &Cx<'_>) -> T {
+        self.field.get_strict(cx)
+    }
+
+    /// Read the value at this path without cloning.
+    pub fn with<R>(&self, cx: &Cx<'_>, f: impl FnOnce(&T) -> R) -> R {
+        self.field.with(cx, f)
+    }
+}
+
+impl<T: Clone + 'static> WriteField<T> {
+    /// Replace the value at this path.
+    pub fn set(&self, cx: &Cx<'_>, value: T) {
+        self.field.set(cx, value);
+    }
+
+    /// Update through a clone-modify-swap.
+    pub fn update(&self, cx: &Cx<'_>, f: impl FnOnce(&mut T)) {
+        self.field.update(cx, f);
+    }
+}
+
 impl<T: Clone + 'static> Field<T> {
     /// Read the value at this path.
     #[must_use]

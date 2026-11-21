@@ -18,6 +18,10 @@
   and `ActionHandle::result`. The optimistic todos demo uses framework actions.
 - `LoadingBoundary::on(cx, closure)` re-arms a loaded boundary when a tracked
   dependency changes, showing the fallback for the new question.
+- Renderer `NodeId` contract frozen: opaque non-zero ids, `INVALID_NODE_ID`
+  reserved, conformance covered by renderer-null.
+- `Field::split` / `read_only` / `write_only` expose `ReadField`/`WriteField`
+  capability views for store APIs that need a read-only or write-only handle.
 
 ## v0.1.1 — 2026-11-21
 

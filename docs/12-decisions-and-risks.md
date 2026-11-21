@@ -745,6 +745,9 @@ or a measurement.
 - Optimistic actions: `RuntimeHandle::action` + `ActionCx` (guess, set,
   update_with, get), with guesses clearing at settle. The optimistic todos demo
   uses it instead of an app-level overlay.
+- Store field split: `Field::split` / `read_only` / `write_only` expose
+  `ReadField`/`WriteField` capability views; `Field` stays combined for existing
+  code.
 - `Derived<T>` (no macro; `create_derived`) is the uncached read-only derivation
   (Solid function form, Leptos `Signal::derive`). It is sync-only; async and
   `is_pending` need a memo node.
@@ -818,7 +821,6 @@ or a measurement.
 | 6 | A11y tree build cost | Full vs incremental when active | Measure with AccessKit |
 | 6 | Cursor/tooltip layers | Separate vs shared overlay layer | Hit-test prototype |
 | 7 | Store persistent vector vs copy-on-write | O(n) writes vs dependency/API | 10k-row benchmark |
-| 7 | Store field read/write split | Apply `ReadField`/`WriteField` like signals? | Prototype before store API freeze |
 | 8 | `view!` syntax strictness | Tree syntax vs builder vs both | Macro prototype |
 | 8 | Reactive attribute detection | Macro type inference vs explicit syntax | `trybuild` prototype |
 | 8 | `For` key inference | Explicit key vs `Keyed` trait | Prototype macro |

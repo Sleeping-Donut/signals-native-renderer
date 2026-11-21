@@ -14,7 +14,8 @@ in-tree apps and examples.
     `RuntimeHandle::action`
   - `OwnerHandle`, cleanup, disposal
 - `reactive-stores`
-  - `Store`, `Field`, `StorePatch`, `Draft`, `DynamicValue`
+  - `Store`, `Field`, `ReadField`, `WriteField`, `StorePatch`, `Draft`,
+    `DynamicValue`
   - `#[derive(Store)]`, `#[derive(Patch)]`, `store!`
   - keyed list handles and `patch_keyed`
 - `renderer-api`

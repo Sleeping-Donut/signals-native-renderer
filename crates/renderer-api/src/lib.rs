@@ -10,7 +10,15 @@
 use std::fmt;
 
 /// Stable renderer node identity.
+///
+/// The value is opaque and chosen by the backend. `0` is reserved and never
+/// valid; backends assign non-zero ids that stay stable until the node is
+/// removed. The framework never interprets the number. On 64-bit targets a
+/// backend may pack a pointer into it.
 pub type NodeId = u64;
+
+/// The reserved invalid node id.
+pub const INVALID_NODE_ID: NodeId = 0;
 
 /// Stable listener identity.
 pub type ListenerId = u64;
