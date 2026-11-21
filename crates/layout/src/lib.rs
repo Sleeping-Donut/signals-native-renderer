@@ -88,6 +88,7 @@ struct NodeEntry {
     taffy_id: TaffyId,
     style: ResolvedStyle,
     text: Option<TextContent>,
+    parent: Option<LayoutId>,
     children: Vec<LayoutId>,
 }
 
@@ -99,6 +100,7 @@ pub struct LayoutEngine {
     geometry: HashMap<LayoutId, Rect>,
     changed: HashSet<LayoutId>,
     dirty_nodes: HashSet<LayoutId>,
+    text_dirty: HashSet<LayoutId>,
     measure: Box<dyn TextMeasure>,
     viewport: Option<Size<f32>>,
     scale: f32,
@@ -124,6 +126,7 @@ impl LayoutEngine {
             geometry: HashMap::new(),
             changed: HashSet::new(),
             dirty_nodes: HashSet::new(),
+            text_dirty: HashSet::new(),
             measure,
             viewport: None,
             scale,
@@ -173,6 +176,7 @@ impl LayoutEngine {
                 taffy_id,
                 style,
                 text,
+                parent: None,
                 children: Vec::new(),
             },
         );
@@ -195,7 +199,26 @@ impl LayoutEngine {
         self.taffy
             .set_children(taffy_id, &taffy_children)
             .expect("set taffy children");
+        let old = self
+            .nodes
+            .get_mut(&id)
+            .expect("layout node")
+            .children
+            .clone();
+        for child in &old {
+            if !children.contains(child) {
+                if let Some(entry) = self.nodes.get_mut(child) {
+                    entry.parent = None;
+                }
+            }
+        }
+        for child in children {
+            if let Some(entry) = self.nodes.get_mut(child) {
+                entry.parent = Some(id);
+            }
+        }
         self.nodes.get_mut(&id).expect("layout node").children = children.to_vec();
+        self.text_dirty.remove(&id);
         self.mark_dirty(id);
     }
 
@@ -229,6 +252,7 @@ impl LayoutEngine {
         }
         self.nodes.get_mut(&id).expect("layout node").style = style;
         if layout_changed {
+            self.text_dirty.remove(&id);
             self.mark_dirty(id);
         }
     }
@@ -247,6 +271,7 @@ impl LayoutEngine {
         }
         self.taffy.mark_dirty(taffy_id).expect("dirty text node");
         self.nodes.get_mut(&id).expect("layout node").text = text;
+        self.text_dirty.insert(id);
         self.mark_dirty(id);
     }
 
@@ -311,6 +336,7 @@ impl LayoutEngine {
     /// Mark every mounted node dirty.
     pub fn invalidate_all(&mut self) {
         self.dirty_nodes.extend(self.nodes.keys().copied());
+        self.text_dirty.clear();
     }
 
     /// Run layout when needed.
@@ -328,6 +354,24 @@ impl LayoutEngine {
         self.viewport = Some(viewport);
         self.layout_runs += 1;
         self.changed.clear();
+
+        // A change fully inside a fixed-size container cannot move anything
+        // outside that container, so recompute just the container subtree.
+        if !viewport_changed {
+            if let Some(boundaries) = self.boundary_jobs() {
+                let mut nodes = 0;
+                for boundary in boundaries {
+                    self.compute_boundary(boundary, &mut nodes);
+                }
+                self.dirty_nodes.clear();
+                self.text_dirty.clear();
+                return LayoutStats {
+                    ran: true,
+                    roots: 0,
+                    nodes,
+                };
+            }
+        }
 
         let roots = self.roots.clone();
         let mut nodes = 0;
@@ -369,25 +413,118 @@ impl LayoutEngine {
             {
                 continue;
             }
-            copy_geometry(
-                &self.taffy,
-                &self.nodes,
-                root,
-                0.0,
-                0.0,
+            let mut copy = GeometryCopy {
+                taffy: &self.taffy,
+                nodes: &self.nodes,
                 scale,
-                &mut self.geometry,
-                &mut self.changed,
-                &mut nodes,
-            );
+                geometry: &mut self.geometry,
+                changed: &mut self.changed,
+                count: 0,
+            };
+            copy.copy(root, 0.0, 0.0);
+            nodes += copy.count;
         }
 
         self.dirty_nodes.clear();
+        self.text_dirty.clear();
         LayoutStats {
             ran: true,
             roots: roots.len(),
             nodes,
         }
+    }
+
+    /// Group dirty nodes by the fixed-size container that isolates them.
+    ///
+    /// Returns `None` when any dirty node has no such ancestor, in which case
+    /// the caller falls back to a full root pass.
+    fn boundary_jobs(&self) -> Option<HashSet<LayoutId>> {
+        let mut jobs = HashSet::new();
+        for dirty in self.dirty_nodes.iter().copied() {
+            let isolated = self.text_dirty.contains(&dirty)
+                && self
+                    .nodes
+                    .get(&dirty)
+                    .is_some_and(|entry| is_layout_boundary(&entry.style))
+                && self.ancestors_clean(dirty);
+            jobs.insert(if isolated {
+                dirty
+            } else {
+                self.nearest_boundary(dirty)?
+            });
+        }
+        Some(jobs)
+    }
+
+    fn ancestors_clean(&self, id: LayoutId) -> bool {
+        let mut current = self.nodes.get(&id).and_then(|entry| entry.parent);
+        while let Some(node) = current {
+            if self.dirty_nodes.contains(&node) {
+                return false;
+            }
+            current = self.nodes.get(&node).and_then(|entry| entry.parent);
+        }
+        true
+    }
+
+    /// The nearest ancestor whose size is definite in both axes.
+    ///
+    /// Dirty ancestors disqualify the chain: their own size or position may
+    /// still change, so only a full pass is safe.
+    fn nearest_boundary(&self, id: LayoutId) -> Option<LayoutId> {
+        let mut current = self.nodes.get(&id)?.parent;
+        while let Some(node) = current {
+            if self.dirty_nodes.contains(&node) {
+                return None;
+            }
+            let entry = self.nodes.get(&node)?;
+            if is_layout_boundary(&entry.style) {
+                return Some(node);
+            }
+            current = entry.parent;
+        }
+        None
+    }
+
+    fn compute_boundary(&mut self, boundary: LayoutId, nodes: &mut usize) {
+        let Some(entry) = self.nodes.get(&boundary) else {
+            return;
+        };
+        let (Length::Px(width), Length::Px(height)) =
+            (entry.style.size.width, entry.style.size.height)
+        else {
+            return;
+        };
+        let taffy_id = entry.taffy_id;
+        let origin = self
+            .geometry
+            .get(&boundary)
+            .map_or((0.0, 0.0), |rect| (rect.x, rect.y));
+        let scale = self.scale;
+        let available = TaffySize {
+            width: AvailableSpace::Definite(width),
+            height: AvailableSpace::Definite(height),
+        };
+        let measure = &mut self.measure;
+        if self
+            .taffy
+            .compute_layout_with_measure(taffy_id, available, |input, _, context, style| {
+                measure_leaf(input, context, style, Some(&mut **measure))
+            })
+            .is_err()
+        {
+            return;
+        }
+        let mut copy = GeometryCopy {
+            taffy: &self.taffy,
+            nodes: &self.nodes,
+            scale,
+            geometry: &mut self.geometry,
+            changed: &mut self.changed,
+            count: 0,
+        };
+        copy.copy(boundary, origin.0, origin.1);
+        *nodes += copy.count;
     }
 
     fn mark_dirty(&mut self, id: LayoutId) {
@@ -441,33 +578,41 @@ fn known_or_zero(size: TaffySize<Option<f32>>) -> TaffySize<f32> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn copy_geometry(
-    taffy: &TaffyTree<NodeContext>,
-    nodes: &HashMap<LayoutId, NodeEntry>,
-    id: LayoutId,
-    origin_x: f32,
-    origin_y: f32,
+/// Fixed-size containers isolate their contents from the rest of the tree.
+fn is_layout_boundary(style: &ResolvedStyle) -> bool {
+    matches!(style.size.width, Length::Px(_))
+        && matches!(style.size.height, Length::Px(_))
+        && style.flex.shrink == 0.0
+}
+
+struct GeometryCopy<'a> {
+    taffy: &'a TaffyTree<NodeContext>,
+    nodes: &'a HashMap<LayoutId, NodeEntry>,
     scale: f32,
-    geometry: &mut HashMap<LayoutId, Rect>,
-    changed: &mut HashSet<LayoutId>,
-    count: &mut usize,
-) {
-    let Some(entry) = nodes.get(&id) else {
-        return;
-    };
-    let Ok(layout) = taffy.layout(entry.taffy_id) else {
-        return;
-    };
-    let x = origin_x + layout.location.x;
-    let y = origin_y + layout.location.y;
-    let rect = snap_rect(x, y, layout.size.width, layout.size.height, scale);
-    *count += 1;
-    if geometry.get(&id) != Some(&rect) {
-        changed.insert(id);
-    }
-    geometry.insert(id, rect);
-    for child in entry.children.iter().copied() {
-        copy_geometry(taffy, nodes, child, x, y, scale, geometry, changed, count);
+    geometry: &'a mut HashMap<LayoutId, Rect>,
+    changed: &'a mut HashSet<LayoutId>,
+    count: usize,
+}
+
+impl GeometryCopy<'_> {
+    fn copy(&mut self, id: LayoutId, origin_x: f32, origin_y: f32) {
+        let Some(entry) = self.nodes.get(&id) else {
+            return;
+        };
+        let Ok(layout) = self.taffy.layout(entry.taffy_id) else {
+            return;
+        };
+        let x = origin_x + layout.location.x;
+        let y = origin_y + layout.location.y;
+        let rect = snap_rect(x, y, layout.size.width, layout.size.height, self.scale);
+        self.count += 1;
+        if self.geometry.get(&id) != Some(&rect) {
+            self.changed.insert(id);
+        }
+        self.geometry.insert(id, rect);
+        for child in entry.children.iter().copied() {
+            self.copy(child, x, y);
+        }
     }
 }
 

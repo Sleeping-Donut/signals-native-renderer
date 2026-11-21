@@ -201,3 +201,111 @@ fn show_slot_replaces_the_branch() {
     drop(tree);
     drop(renderer);
 }
+
+fn fixed_size(width: f32, height: f32) -> renderer_api::ResolvedStyle {
+    renderer_api::ResolvedStyle {
+        size: renderer_api::Size {
+            width: renderer_api::Length::Px(width),
+            height: renderer_api::Length::Px(height),
+        },
+        ..renderer_api::ResolvedStyle::default()
+    }
+}
+
+#[test]
+fn layout_boundary_isolates_a_fixed_text_node() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let renderer = Rc::new(RefCell::new(NullRenderer::new()));
+    let tree = ViewTree::new(
+        Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
+        runtime.clone(),
+    );
+    let (label, set_label) = create_signal(&cx, String::from("first"));
+    let root = tree.mount(
+        &cx,
+        column(vec![
+            text_fn(move |cx| label.get(cx)).style(fixed_size(200.0, 20.0)),
+            text("sibling").style(fixed_size(200.0, 20.0)),
+        ]),
+    );
+    tree.set_viewport(200.0, 100.0);
+    tree.frame(&cx, 0);
+    let node = tree.children(root)[0];
+    let sibling = tree.children(root)[1];
+    let sibling_rect = tree.layout_rect(sibling);
+
+    set_label.set(&cx, String::from("second"));
+    tree.frame(&cx, 1);
+
+    let stats = tree.last_layout();
+    assert!(stats.ran);
+    assert_eq!(stats.nodes, 1, "only the fixed text node is laid out");
+    assert_eq!(tree.layout_rect(sibling), sibling_rect);
+    let text_node = tree.renderer_id(node).unwrap();
+    assert_eq!(renderer.borrow().text_of(text_node), Some("second"));
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn layout_boundary_isolates_a_fixed_container() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let renderer = Rc::new(RefCell::new(NullRenderer::new()));
+    let tree = ViewTree::new(
+        Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
+        runtime.clone(),
+    );
+    let (label, set_label) = create_signal(&cx, String::from("a"));
+    let root = tree.mount(
+        &cx,
+        column(vec![
+            view::row(vec![text_fn(move |cx| label.get(cx)), text("tail")])
+                .style(fixed_size(200.0, 20.0)),
+            text("sibling").style(fixed_size(200.0, 20.0)),
+        ]),
+    );
+    tree.set_viewport(200.0, 100.0);
+    tree.frame(&cx, 0);
+    let sibling = tree.children(root)[1];
+    let sibling_rect = tree.layout_rect(sibling);
+
+    set_label.set(&cx, String::from("longer"));
+    tree.frame(&cx, 1);
+
+    let stats = tree.last_layout();
+    assert!(stats.ran);
+    assert!(
+        stats.nodes <= 3,
+        "only the boundary subtree is laid out, got {}",
+        stats.nodes
+    );
+    assert_eq!(tree.layout_rect(sibling), sibling_rect);
+
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn auto_sized_text_still_runs_a_full_layout() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let renderer = Rc::new(RefCell::new(NullRenderer::new()));
+    let tree = ViewTree::new(
+        Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
+        runtime.clone(),
+    );
+    let (label, set_label) = create_signal(&cx, String::from("a"));
+    let root = tree.mount(&cx, column(vec![text_fn(move |cx| label.get(cx))]));
+    tree.set_viewport(200.0, 100.0);
+    tree.frame(&cx, 0);
+
+    set_label.set(&cx, String::from("a much longer label"));
+    tree.frame(&cx, 1);
+
+    let stats = tree.last_layout();
+    assert!(stats.ran);
+    assert_eq!(stats.roots, 1, "no boundary was available");
+
+    tree.unmount(&cx, root);
+}

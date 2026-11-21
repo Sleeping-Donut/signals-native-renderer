@@ -18,6 +18,9 @@
   and control flow takes no `style` attribute.
 - `TextInputState`, a shared editable buffer whose view repaints from the
   handler and can be cleared programmatically.
+- Layout boundaries: a text or subtree change inside a fixed-size node
+  recomputes only that node's subtree instead of every layout root. The
+  single-row update budget now measures 0.07 ms (target < 1 ms).
 - Optimistic todos reference app (`examples/todos.rs`).
 - Logical fragments and control-flow views mount no layout node, so their
   children participate in the surrounding element's layout.

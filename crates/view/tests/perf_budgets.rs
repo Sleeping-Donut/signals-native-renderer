@@ -63,6 +63,7 @@ fn perf_budgets() {
     }
     tree.frame(&cx, 1);
     let update_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let update_layout = tree.last_layout();
 
     let row = tree.children(root)[5_000];
     let mut style = row_style();
@@ -78,7 +79,8 @@ fn perf_budgets() {
     let reorder_ms = start.elapsed().as_secs_f64() * 1000.0;
 
     eprintln!(
-        "perf budgets: mount+layout {mount_ms:.3} ms, single-row update {update_ms:.3} ms, paint-only {paint_ms:.3} ms, 10k reorder {reorder_ms:.3} ms"
+        "perf budgets: mount+layout {mount_ms:.3} ms, single-row update {update_ms:.3} ms (layout nodes {} roots {}), paint-only {paint_ms:.3} ms, 10k reorder {reorder_ms:.3} ms",
+        update_layout.nodes, update_layout.roots
     );
 
     tree.unmount(&cx, root);

@@ -134,7 +134,7 @@ bindings). A section-by-section mapping from the outline is in
 | D4 | **Writes stage; the flush promotes.** Staged writes are invisible to readers until the frame checkpoint. | `F-10` is load-bearing for async holds and for `latest`/`isPending`. Retrofitting it later would touch every read path. | Eager writes with a "dirty" notification. |
 | D5 | **Async is Phase 2, not Phase 6.** | Flight state, staged values, and reader classes determine the node shape and scheduler. Building the renderer first would force a core rewrite. | Outline order (renderer before async). |
 | D6 | **Retained element tree with per-node bindings**, plus a `ViewSlot` for structural replacement. | Matches the fine-grained graph: one signal write updates one text run, not a whole component subtree. Retains a GPUI-like subtree replacement as the escape hatch, without making it a second renderer model. | GPUI's fully ephemeral element tree (coarse); a virtual DOM (diff tax). |
-| D7 | **Taffy full layout on layout-dirty frames; incremental layout is a later optimization.** | Correctness first; paint-only frames can skip layout entirely, which is the common case. | Promising incremental flex/grid layout in v0.1. |
+| D7 | **Taffy full layout on layout-dirty frames; fixed-size nodes act as layout boundaries.** | Correctness first; paint-only frames skip layout entirely, and a change inside a definite-size node skips the root pass. General incremental layout is still later work. | Promising incremental flex/grid layout in v0.1. |
 | D8 | **wgpu** for the first-party paint backend. | Cross-platform, testable offscreen, one shader path. | Metal/D3D/Blade per platform in v0.1. |
 | D9 | **Derive-macro stores** (Leptos-style), not a proxy emulation. | Compile-time paths are fast and Rust-idiomatic; dynamic stores are an explicit opt-in. | A `Deref`-based fake proxy with runtime interception. |
 | D10 | Rename **`renderer-gpui` → `renderer-native`**; rename **`universal` → `renderer-api`**. | The renderer does not use GPUI, and "universal" is a Solid-ism. Layer names stay recognisable in prose. | Keeping misleading crate names. |
@@ -429,9 +429,10 @@ probe), a component/props macro, incremental layout experiments, damage regions,
 text cache eviction, arena compaction only if measurements demand it, fuzzers,
 benchmarks, devtools.
 
-**Status (2026-11-20): complete.** Enum and dynamic stores, `Draft` guards,
-store diagnostics, the store-backed app, automatic view-aware `Loading`, and the
-component/props macro are implemented. The published report is
+**Status (2026-11-21): complete.** Enum and dynamic stores, `Draft` guards,
+store diagnostics, the store-backed app, automatic view-aware `Loading`, the
+component/props macro, and fixed-size layout boundaries are implemented. The
+published report is
 [`docs/14-performance-report.md`](docs/14-performance-report.md). Soak coverage
 is split: an automated rapid fuzz/churn run for agents
 ([`soak.rs`](crates/reactive-core/tests/soak.rs)) and an optional manual

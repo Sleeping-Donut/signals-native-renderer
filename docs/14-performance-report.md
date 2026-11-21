@@ -76,14 +76,21 @@ Measured with `scripts/perf-budgets.sh` on the M3 Pro (release build,
 
 | Measurement | Result | Budget | Status |
 |---|---|---|---|
-| Mount + first 10k layout | 122.672 ms | < 150 ms | met |
-| Single-row update frame | 3.901 ms | < 1 ms | **not met** |
-| Paint-only frame | 0.032 ms | < 2 ms | met |
-| 10k reorder | 75.571 ms | — | recorded |
+| Mount + first 10k layout | 130.0 ms | < 150 ms | met |
+| Single-row update frame | 0.07 ms | < 1 ms | met |
+| Paint-only frame | 0.037 ms | < 2 ms | met |
+| 10k reorder | 92.0 ms | — | recorded |
 
-The single-row update includes a layout pass for the changed text. Closing that
-gap needs incremental layout or layout boundaries; it is tracked as a Phase 8
-follow-up optimization rather than a correctness issue.
+A change that stays inside a **fixed-size node** recomputes only that subtree:
+the updated row copied one layout node and ran zero full-root passes. The bound
+requires definite width and height with no flex shrink, which is the common row
+shape. Auto-sized ancestors still force a full pass, so content that changes its
+container's size keeps the old behavior.
+
+```text
+perf budgets: mount+layout 130.348 ms, single-row update 0.067 ms
+(layout nodes 1 roots 0), paint-only 0.038 ms, 10k reorder 92.413 ms
+```
 
 ## Conformance and CI
 
@@ -98,6 +105,7 @@ follow-up optimization rather than a correctness issue.
 - The manual 24-hour monitor has not been run to completion in this session; it
   is available for a human to leave running. The rapid fuzz run is the automated
   bounded-growth evidence.
-- Incremental layout and damage scissoring remain future optimizations.
+- Fixed-size layout boundaries isolate local updates; general incremental
+  layout and damage scissoring remain future optimizations.
 - Enum/dynamic stores, automatic `Loading` detection, and the component/props
   macro are implemented for v0.1.
