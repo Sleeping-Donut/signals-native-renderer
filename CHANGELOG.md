@@ -22,6 +22,8 @@
   reserved, conformance covered by renderer-null.
 - `Field::split` / `read_only` / `write_only` expose `ReadField`/`WriteField`
   capability views for store APIs that need a read-only or write-only handle.
+- Seeded fuzz for transaction merge and quiet re-asks
+  (`merge_fuzz_random_arrival_orders`, `reask_fuzz_is_quiet`).
 
 ## v0.1.1 — 2026-11-21
 

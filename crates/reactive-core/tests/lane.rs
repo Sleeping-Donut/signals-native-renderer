@@ -347,3 +347,170 @@ fn without_on_a_disarmed_boundary_keeps_content() {
     }
     assert_eq!(boundary.get(&cx), 10);
 }
+
+fn delayed_after<T: Clone + 'static>(value: T, polls: u32) -> Fut<T> {
+    let count = Rc::new(Cell::new(0));
+    Box::pin(poll_fn(move |_| {
+        let polls_done = count.get();
+        count.set(polls_done + 1);
+        if polls_done < polls {
+            Poll::Pending
+        } else {
+            Poll::Ready(Ok(value.clone()))
+        }
+    }))
+}
+
+fn next_random(state: &mut u64, bound: u64) -> u64 {
+    *state = state
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    (*state >> 33) % bound.max(1)
+}
+
+#[test]
+fn merge_fuzz_random_arrival_orders() {
+    let mut checks = 0_u64;
+    for seed in 0..32_u64 {
+        let mut state = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let left_polls = next_random(&mut state, 4) as u32;
+        let right_polls = next_random(&mut state, 4) as u32;
+        let runtime = Runtime::new();
+        let cx = runtime.cx();
+        let (page, set_page) = create_signal(&cx, 0_u32);
+        let left = create_async_memo(&cx, move |cx, _: Option<&u32>| {
+            delayed_after(page.get(cx) * 10, left_polls)
+        });
+        let right = create_async_memo(&cx, move |cx, _: Option<&u32>| {
+            delayed_after(page.get(cx) * 100, right_polls)
+        });
+        let boundary = loading_boundary(
+            &cx,
+            None,
+            move |cx| (left.get(cx), right.get(cx)),
+            |_| (0_u32, 0_u32),
+        );
+        let _ = boundary.get(&cx);
+        for _ in 0..8 {
+            runtime.pump();
+            cx.flush().unwrap();
+        }
+
+        let seen: Rc<RefCell<Vec<(u32, u32)>>> = Rc::new(RefCell::new(Vec::new()));
+        let seen_for_effect = Rc::clone(&seen);
+        let effect = render_effect(
+            &cx,
+            move |cx| (left.get(cx), right.get(cx)),
+            move |_cx, pair: &(u32, u32)| seen_for_effect.borrow_mut().push(*pair),
+        );
+        cx.flush().unwrap();
+        seen.borrow_mut().clear();
+
+        let mut page_value = 0_u32;
+        for _ in 0..40 {
+            if next_random(&mut state, 5) == 0 {
+                page_value += 1;
+                set_page.set(&cx, page_value);
+            }
+            let pumps = next_random(&mut state, 4);
+            for _ in 0..pumps {
+                runtime.pump();
+            }
+
+            let before = (left.get(&cx), right.get(&cx));
+            let mark = seen.borrow().len();
+            cx.flush().unwrap();
+            let after = (left.get(&cx), right.get(&cx));
+            let applied: Vec<(u32, u32)> = seen.borrow()[mark..].to_vec();
+
+            assert!(
+                after.0 >= before.0 && after.1 >= before.1,
+                "seed {seed}: values regressed from {before:?} to {after:?}"
+            );
+            if before != after {
+                checks += 1;
+                assert_eq!(
+                    applied.last().copied(),
+                    Some(after),
+                    "seed {seed}: the settled apply must match committed values, got {applied:?}"
+                );
+                if before.0 != after.0 && before.1 != after.1 {
+                    assert_eq!(
+                        applied.len(),
+                        1,
+                        "seed {seed}: two ready results must merge into one apply, got {applied:?}"
+                    );
+                }
+            }
+        }
+        effect.dispose(&cx);
+    }
+    eprintln!("merge fuzz: 32 seeds x 40 flushes, {checks} value-changing flushes, 0 violations");
+}
+
+#[test]
+fn reask_fuzz_is_quiet() {
+    let mut checks = 0_u64;
+    for seed in 0..32_u64 {
+        let mut state = seed.wrapping_mul(0x2545_f491_4f6c_dd1d);
+        let polls = next_random(&mut state, 4) as u32;
+        let runtime = Runtime::new();
+        let cx = runtime.cx();
+        let (page, set_page) = create_signal(&cx, 0_u32);
+        let data = create_async_memo(&cx, move |cx, _: Option<&u32>| {
+            delayed_after(page.get(cx) * 10, polls)
+        });
+        let boundary = loading_boundary(&cx, None, move |cx| data.get(cx), |_| 0_u32);
+        let _ = boundary.get(&cx);
+        for _ in 0..8 {
+            runtime.pump();
+            cx.flush().unwrap();
+        }
+
+        let seen: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
+        let seen_for_effect = Rc::clone(&seen);
+        let effect = render_effect(
+            &cx,
+            move |cx| data.get(cx),
+            move |_cx, value: &u32| seen_for_effect.borrow_mut().push(*value),
+        );
+        cx.flush().unwrap();
+
+        let mut page_value = 0_u32;
+        for _ in 0..30 {
+            if next_random(&mut state, 2) == 0 {
+                refresh(&cx, data);
+                assert!(
+                    !is_pending(&cx, |cx| data.get(cx)),
+                    "seed {seed}: a re-ask must be quiet"
+                );
+                let mark = seen.borrow().len();
+                for _ in 0..(polls + 2) {
+                    runtime.pump();
+                }
+                cx.flush().unwrap();
+                assert_eq!(
+                    seen.borrow().len(),
+                    mark,
+                    "seed {seed}: an equal re-ask must not notify readers"
+                );
+                checks += 1;
+            } else {
+                page_value += 1;
+                set_page.set(&cx, page_value);
+                cx.flush().unwrap();
+                assert!(
+                    is_pending(&cx, |cx| data.get(cx)),
+                    "seed {seed}: a dependency change is a new question"
+                );
+                for _ in 0..(polls + 2) {
+                    runtime.pump();
+                }
+                cx.flush().unwrap();
+                checks += 1;
+            }
+        }
+        effect.dispose(&cx);
+    }
+    eprintln!("re-ask fuzz: 32 seeds x 30 steps, {checks} checks, 0 violations");
+}

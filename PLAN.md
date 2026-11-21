@@ -455,7 +455,9 @@ re-ask detection, held-frame verdict).
 **Status (2026-11-21): complete.** All eight work-order gates are closed:
 held-frame verdict, merge/re-ask, lanes and `latest`, `affects`, actions with
 `ActionCx`, `on` re-arm, damage scissoring, and the `NodeId`/store-field
-freeze. The optimistic todos app runs on framework actions.
+freeze. The optimistic todos app runs on framework actions. Seeded fuzz covers
+random flight arrival orders and re-asks: 32 seeds x 40 flushes (297
+value-changing flushes) and 32 seeds x 30 re-ask steps, zero violations.
 
 **Work order:**
 
@@ -465,8 +467,10 @@ freeze. The optimistic todos app runs on framework actions.
 2. ✅ **Transaction merge + re-ask decisions.** Results ready at one flush
    commit together; `refresh` is a quiet re-ask and equal answers do not notify
    (the async equality comparison was fixed to compare the new value). Pinned by
-   `results_ready_in_one_flush_commit_together` and
-   `refresh_is_a_quiet_re_ask`; decisions recorded in docs/12.
+   `results_ready_in_one_flush_commit_together`, `refresh_is_a_quiet_re_ask`,
+   and the seeded fuzz tests `merge_fuzz_random_arrival_orders` (32 seeds x 40
+   flushes, 297 value-changing flushes) and `reask_fuzz_is_quiet` (32 seeds x 30
+   steps). Decisions recorded in docs/12.
 3. ✅ **Lane/guess foundation + `latest`.** Display-only `guess`/`clear_guess`,
    `latest` (guess > staged > committed in display; committed in derive), and
    quiet `refresh`. Gate met: `latest_reads_the_staged_answer_during_a_hold`

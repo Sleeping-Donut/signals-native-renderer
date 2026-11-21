@@ -739,9 +739,13 @@ or a measurement.
 - Optional props are `MaybeProp<T>`; `Prop<Option<T>>` stays for nullable
   values.
 - Transaction merge: results ready at one flush commit together; a reader
-  applies them as one merged update (`results_ready_in_one_flush_commit_together`).
+  applies them as one merged update. Covered by
+  `results_ready_in_one_flush_commit_together` and seeded fuzz
+  `merge_fuzz_random_arrival_orders` (32 seeds x 40 flushes, 297 value-changing
+  flushes, zero violations).
 - Re-ask detection: `refresh` marks a quiet flight; `is_pending` stays false and
-  an equal answer does not notify (`refresh_is_a_quiet_re_ask`).
+  an equal answer does not notify. Covered by `refresh_is_a_quiet_re_ask` and
+  seeded fuzz `reask_fuzz_is_quiet` (32 seeds x 30 steps, zero violations).
 - Optimistic actions: `RuntimeHandle::action` + `ActionCx` (guess, set,
   update_with, get), with guesses clearing at settle. The optimistic todos demo
   uses it instead of an app-level overlay.
