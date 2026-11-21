@@ -13,6 +13,15 @@
 - `Callback` (no payload) and `CallbackWith<T>` (one payload) prop types.
   `CallbackWith<T>` accepts `Fn(&Cx, T)` and converts from `WriteSignal<T>`;
   `CallbackWith::set(write)` spells that conversion out at the call site.
+- `view::control` with logical `Show`, `For`, `Loading`, `LoadingWhen`,
+  `Repeat`, `Switch`, and `Match` components. `view!` emits the imported names,
+  and control flow takes no `style` attribute.
+- `TextInputState`, a shared editable buffer whose view repaints from the
+  handler and can be cleared programmatically.
+- Optimistic todos reference app (`examples/todos.rs`).
+- Logical fragments and control-flow views mount no layout node, so their
+  children participate in the surrounding element's layout.
+- `FlexWrap` on `FlexStyle`, so a container can wrap rows onto multiple lines.
 - Component children and the `view::select` selectable-list component.
 - Automatic view-aware `Loading` no longer needs a `ready` probe.
 

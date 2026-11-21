@@ -81,9 +81,13 @@ impl StateStyle {
 }
 
 /// A mounted view node.
+pub mod control;
+
 struct ViewNode {
     renderer_id: RendererNodeId,
     layout_id: LayoutId,
+    /// Logical nodes group children without taking part in layout or paint.
+    transparent: bool,
     style: ResolvedStyle,
     text: Option<String>,
     parent: Option<ViewNodeId>,
@@ -338,6 +342,69 @@ impl TextInput {
 impl Default for TextInput {
     fn default() -> Self {
         Self::new("")
+    }
+}
+
+/// A shared text-input buffer plus the view that displays it.
+///
+/// While editing, the buffer inside the handler is the source of truth: the
+/// paint pass reads it directly. `clear` bumps a revision so programmatic edits
+/// also repaint.
+#[derive(Clone)]
+pub struct TextInputState {
+    handler: TextInputHandle,
+    revision: ReadSignal<u32>,
+    set_revision: reactive_core::WriteSignal<u32>,
+}
+
+impl TextInputState {
+    /// Create an input with initial text.
+    #[must_use]
+    pub fn new(cx: &reactive_core::Cx<'_>, text: &str) -> Self {
+        let (revision, set_revision) = reactive_core::create_signal(cx, 0_u32);
+        Self {
+            handler: Rc::new(RefCell::new(Box::new(TextInput::new(text)))),
+            revision,
+            set_revision,
+        }
+    }
+
+    /// The current buffer.
+    #[must_use]
+    pub fn text(&self) -> String {
+        self.handler.borrow().text().to_string()
+    }
+
+    /// Clear the buffer and repaint the input.
+    pub fn clear(&self, cx: &reactive_core::Cx<'_>) {
+        {
+            let mut input = self.handler.borrow_mut();
+            let len = input.text().len();
+            input.set_selection(0..len);
+            input.delete_backward();
+        }
+        self.set_revision.update_with(cx, |revision| revision + 1);
+    }
+
+    /// The input view.
+    #[must_use]
+    pub fn view(&self, style: ResolvedStyle) -> View {
+        let handler = Rc::clone(&self.handler);
+        let revision = self.revision;
+        view(move |cx, tree| {
+            let id = tree.create_text("");
+            tree.set_style(id, style);
+            tree.register_text_input(id, handler);
+            tree.set_cursor(id, Some(CursorIcon::Text));
+            let tree_for_effect = tree.clone();
+            let binding = render_effect(
+                cx,
+                move |cx| revision.get(cx),
+                move |_cx, _| tree_for_effect.set_view_text(id, String::new()),
+            );
+            tree.add_binding(id, binding);
+            id
+        })
     }
 }
 
@@ -978,13 +1045,20 @@ impl ViewTree {
     /// Snapped geometry for a view node, in logical pixels.
     #[must_use]
     pub fn layout_rect(&self, id: ViewNodeId) -> Option<Rect> {
-        let layout_id = self
-            .inner
-            .nodes
-            .borrow()
-            .get(id)
-            .map(|node| node.layout_id)?;
-        self.inner.layout.borrow().geometry(layout_id)
+        let ids = {
+            let nodes = self.inner.nodes.borrow();
+            let node = nodes.get(id)?;
+            if !node.transparent {
+                return self.inner.layout.borrow().geometry(node.layout_id);
+            }
+            let mut ids = Vec::new();
+            collect_layout_ids(&nodes, id, &mut ids);
+            ids
+        };
+        let layout = self.inner.layout.borrow();
+        ids.into_iter()
+            .filter_map(|id| layout.geometry(id))
+            .reduce(union_rect)
     }
 
     /// The world transform for a node, composed from its ancestors.
@@ -1458,11 +1532,14 @@ impl ViewTree {
     }
 
     fn handle_text_input_key(&self, event: &KeyEvent) -> bool {
-        let Some(input) = self.focused_text_input() else {
+        let Some(node) = self.focused() else {
+            return false;
+        };
+        let Some(input) = self.text_input(node) else {
             return false;
         };
         let mut input = input.borrow_mut();
-        match &event.key {
+        let handled = match &event.key {
             Key::Named(NamedKey::Backspace) => {
                 input.delete_backward();
                 true
@@ -1507,7 +1584,11 @@ impl ViewTree {
                 true
             }
             _ => false,
+        };
+        if handled {
+            self.mark_paint_dirty(node);
         }
+        handled
     }
 
     /// The currently hovered interactive node.
@@ -2484,10 +2565,8 @@ impl ViewTree {
     /// Mount a view as a window root and return its node.
     pub fn mount(&self, cx: &reactive_core::Cx<'_>, view: View) -> ViewNodeId {
         let id = view.mount(cx, self);
-        if let Some(layout_id) = self.inner.nodes.borrow().get(id).map(|node| node.layout_id) {
-            self.inner.layout.borrow_mut().add_root(layout_id);
-        }
         self.inner.roots.borrow_mut().push(id);
+        self.resync_layout_roots();
         self.mark_paint_dirty(id);
         id
     }
@@ -2647,7 +2726,11 @@ impl ViewTree {
             .borrow_mut()
             .create_fragment()
             .expect("create fragment");
-        self.alloc_node(renderer_id, default_style("Fragment"), None)
+        let id = self.alloc_node(renderer_id, default_style("Fragment"), None);
+        if let Some(node) = self.inner.nodes.borrow_mut().get_mut(id) {
+            node.transparent = true;
+        }
+        id
     }
 
     fn alloc_node(
@@ -2664,6 +2747,7 @@ impl ViewTree {
             .insert(ViewNode {
                 renderer_id,
                 layout_id,
+                transparent: false,
                 style,
                 text: text_value,
                 parent: None,
@@ -2772,22 +2856,51 @@ impl ViewTree {
 
     fn flush_layout_children(&self) {
         let pending = std::mem::take(&mut *self.inner.pending_layout_children.borrow_mut());
+        let mut resync_roots = false;
         for parent in pending {
+            if self.nearest_layout_node(parent).is_none() {
+                resync_roots = true;
+            }
             self.sync_layout_children(parent);
         }
+        if resync_roots {
+            self.resync_layout_roots();
+        }
+    }
+
+    /// The closest ancestor that owns a layout node, skipping logical nodes.
+    fn nearest_layout_node(&self, id: ViewNodeId) -> Option<ViewNodeId> {
+        let nodes = self.inner.nodes.borrow();
+        nearest_layout_node(&nodes, id)
+    }
+
+    /// Rebuild the layout roots, hoisting children of logical roots.
+    fn resync_layout_roots(&self) {
+        let roots = self.inner.roots.borrow().clone();
+        let layout_roots = {
+            let nodes = self.inner.nodes.borrow();
+            let mut ids = Vec::new();
+            for root in roots {
+                collect_layout_ids(&nodes, root, &mut ids);
+            }
+            ids
+        };
+        self.inner.layout.borrow_mut().set_roots(&layout_roots);
     }
 
     fn sync_layout_children(&self, parent: ViewNodeId) {
         let (layout_id, children) = {
             let nodes = self.inner.nodes.borrow();
-            let Some(node) = nodes.get(parent) else {
+            let Some(target) = nearest_layout_node(&nodes, parent) else {
                 return;
             };
-            let children = node
-                .children
-                .iter()
-                .filter_map(|child| nodes.get(*child).map(|child| child.layout_id))
-                .collect::<Vec<_>>();
+            let Some(node) = nodes.get(target) else {
+                return;
+            };
+            let mut children = Vec::new();
+            for child in &node.children {
+                collect_layout_ids(&nodes, *child, &mut children);
+            }
             (node.layout_id, children)
         };
         self.inner
@@ -2944,7 +3057,12 @@ impl ViewTree {
     }
 
     fn remove_view(&self, cx: &reactive_core::Cx<'_>, id: ViewNodeId) {
-        self.inner.roots.borrow_mut().retain(|root| *root != id);
+        let was_root = {
+            let mut roots = self.inner.roots.borrow_mut();
+            let was_root = roots.contains(&id);
+            roots.retain(|root| *root != id);
+            was_root
+        };
         if self
             .inner
             .focused
@@ -3039,6 +3157,53 @@ impl ViewTree {
                 owner.dispose(cx);
             }
         }
+        if was_root {
+            self.resync_layout_roots();
+        }
+    }
+}
+
+fn nearest_layout_node(
+    nodes: &reactive_core::Arena<ViewNode>,
+    mut id: ViewNodeId,
+) -> Option<ViewNodeId> {
+    loop {
+        let node = nodes.get(id)?;
+        if !node.transparent {
+            return Some(id);
+        }
+        id = node.parent?;
+    }
+}
+
+/// Collect the layout nodes under `id`, hoisting through logical nodes.
+fn collect_layout_ids(
+    nodes: &reactive_core::Arena<ViewNode>,
+    id: ViewNodeId,
+    out: &mut Vec<LayoutId>,
+) {
+    let Some(node) = nodes.get(id) else {
+        return;
+    };
+    if node.transparent {
+        for child in &node.children {
+            collect_layout_ids(nodes, *child, out);
+        }
+    } else {
+        out.push(node.layout_id);
+    }
+}
+
+fn union_rect(a: Rect, b: Rect) -> Rect {
+    let x = a.x.min(b.x);
+    let y = a.y.min(b.y);
+    let right = a.right().max(b.right());
+    let bottom = a.bottom().max(b.bottom());
+    Rect {
+        x,
+        y,
+        width: right - x,
+        height: bottom - y,
     }
 }
 
@@ -3900,7 +4065,9 @@ where
     C: Fn(&reactive_core::Cx<'_>, T) + Clone + 'static,
     D: Fn(&reactive_core::Cx<'_>) -> bool + Clone + 'static,
 {
-    keyed_list(items, key, move |_cx, item| {
+    // The keyed list is logical, so the select owns the layout box its rows
+    // participate in.
+    column(vec![keyed_list(items, key, move |_cx, item| {
         let item = item.clone();
         let item_for_text = item.clone();
         let item_for_click = item.clone();
@@ -3926,7 +4093,7 @@ where
         )
         .style(row)
         .disabled_when(move |cx| disabled(cx))
-    })
+    })])
 }
 
 /// A keyed list. Existing keys keep their mounted view and owner when reordered.
@@ -3939,7 +4106,7 @@ where
     R: for<'a> Fn(&reactive_core::Cx<'a>, &T) -> View + 'static,
 {
     view(move |cx, tree| {
-        let id = tree.create_element("List");
+        let id = tree.create_fragment();
         let state: Rc<RefCell<HashMap<K, RowEntry>>> = Rc::new(RefCell::new(HashMap::new()));
         let tree_for_effect = tree.clone();
         let state_for_effect = Rc::clone(&state);
@@ -3955,6 +4122,52 @@ where
                     &key,
                     &row,
                     items,
+                );
+            },
+        );
+        tree.add_binding(id, binding);
+        id
+    })
+}
+
+/// Repeat one view `count` times.
+///
+/// The count is read inside a render effect, so a reactive count appends or
+/// removes rows from the end while keeping the existing rows mounted. `row`
+/// receives the zero-based index.
+///
+/// ```ignore
+/// view::repeat(
+///     move |cx| count.get(cx),
+///     move |cx, index| view::text_fn(move |_cx| format!("row {index}")),
+/// )
+/// ```
+pub fn repeat<C, R>(count: C, row: R) -> View
+where
+    C: Fn(&reactive_core::Cx<'_>) -> usize + 'static,
+    R: Fn(&reactive_core::Cx<'_>, usize) -> View + 'static,
+{
+    view(move |cx, tree| {
+        let id = tree.create_fragment();
+        let state: Rc<RefCell<HashMap<usize, RowEntry>>> = Rc::new(RefCell::new(HashMap::new()));
+        let tree_for_effect = tree.clone();
+        let state_for_effect = Rc::clone(&state);
+        let row = Rc::new(row);
+        let binding = render_effect(
+            cx,
+            move |cx| count(cx),
+            move |cx, total| {
+                let items: Vec<usize> = (0..*total).collect();
+                let key = |index: &usize| *index;
+                let build = |cx: &reactive_core::Cx<'_>, index: &usize| (*row)(cx, *index);
+                reconcile(
+                    cx,
+                    &tree_for_effect,
+                    id,
+                    &state_for_effect,
+                    &key,
+                    &build,
+                    &items,
                 );
             },
         );

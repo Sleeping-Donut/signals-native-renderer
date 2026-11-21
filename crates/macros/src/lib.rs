@@ -16,7 +16,9 @@
 //!
 //! Attributes map to builder methods (`style`, `hover_style`, `focus_style`,
 //! `cursor`, `tooltip`, `disabled_when`, `tab_index`, `focusable`, `disabled`).
-//! `Button` requires `on_click`. `For` expands to `view::keyed_list`.
+//! `Button` requires `on_click`. Control-flow tags call the imported
+//! `Show`, `For`, `Loading`, `Repeat`, `Switch`, and `Match` components from
+//! `view::control`; import the names used.
 
 use proc_macro::TokenStream;
 use proc_macro2::{TokenStream as TokenStream2, TokenTree};
@@ -185,13 +187,46 @@ const NODE_ATTRS: &[&str] = &[
     "disabled",
 ];
 
+fn as_closure(expr: &Expr) -> TokenStream2 {
+    match expr {
+        Expr::Closure(_) => quote! { #expr },
+        _ => quote! {
+            move |cx: &::reactive_core::Cx<'_>| {
+                let _ = cx;
+                #expr
+            }
+        },
+    }
+}
+
+fn ensure_attrs(node: &Node, allowed: &[&str]) -> Result<()> {
+    for attr in &node.attrs {
+        let name = attr.key.to_string();
+        if !allowed.contains(&name.as_str()) {
+            return Err(syn::Error::new_spanned(
+                &attr.key,
+                format!("`{name}` is not supported here; control-flow views take no style"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn control_body(children: &[Child]) -> Result<TokenStream2> {
+    let tokens: Vec<TokenStream2> = children.iter().map(child_tokens).collect::<Result<_>>()?;
+    Ok(if tokens.len() == 1 {
+        tokens.into_iter().next().expect("one child")
+    } else {
+        quote! { ::view::fragment(vec![#(#tokens),*]) }
+    })
+}
+
+fn all_children(node: &Node) -> Result<Vec<TokenStream2>> {
+    node.children.iter().map(child_tokens).collect()
+}
+
 fn node_tokens(node: &Node) -> Result<TokenStream2> {
     let tag = node.tag.to_string();
-    let children: Vec<TokenStream2> = node
-        .children
-        .iter()
-        .map(child_tokens)
-        .collect::<Result<_>>()?;
 
     match tag.as_str() {
         "Column" | "Row" => {
@@ -200,6 +235,7 @@ fn node_tokens(node: &Node) -> Result<TokenStream2> {
             } else {
                 quote! { ::view::row }
             };
+            let children = all_children(node)?;
             let base = quote! { #constructor(vec![#(#children),*]) };
             apply_attrs(base, node, &[], NODE_ATTRS)
         }
@@ -226,12 +262,14 @@ fn node_tokens(node: &Node) -> Result<TokenStream2> {
             let on_click = attr(node, "on_click").ok_or_else(|| {
                 syn::Error::new_spanned(&node.tag, "Button requires on_click=...")
             })?;
+            let children = all_children(node)?;
             let base = quote! { ::view::button(vec![#(#children),*], #on_click) };
             let mut allowed = NODE_ATTRS.to_vec();
             allowed.push("on_click");
             apply_attrs(base, node, &["on_click"], &allowed)
         }
         "Show" => {
+            ensure_attrs(node, &["when", "fallback"])?;
             let when = attr(node, "when")
                 .ok_or_else(|| syn::Error::new_spanned(&node.tag, "Show requires when=..."))?;
             let fallback = attr(node, "fallback")
@@ -239,16 +277,12 @@ fn node_tokens(node: &Node) -> Result<TokenStream2> {
             if node.children.is_empty() {
                 return Err(syn::Error::new_spanned(&node.tag, "Show requires children"));
             }
-            let body = if node.children.len() == 1 {
-                child_tokens(&node.children[0])?
-            } else {
-                quote! { ::view::fragment(vec![#(#children),*]) }
-            };
-            Ok(quote! {
-                ::view::show(#when, move |cx| #body, #fallback)
-            })
+            let body = control_body(&node.children)?;
+            let when = as_closure(when);
+            Ok(quote! { Show(#when, #fallback, move |cx| #body) })
         }
         "Loading" => {
+            ensure_attrs(node, &["fallback"])?;
             let fallback = attr(node, "fallback").ok_or_else(|| {
                 syn::Error::new_spanned(&node.tag, "Loading requires fallback=...")
             })?;
@@ -258,20 +292,26 @@ fn node_tokens(node: &Node) -> Result<TokenStream2> {
                     "Loading requires children",
                 ));
             }
-            let body = if node.children.len() == 1 {
-                child_tokens(&node.children[0])?
-            } else {
-                quote! { ::view::fragment(vec![#(#children),*]) }
-            };
-            if let Some(ready) = attr(node, "ready") {
-                Ok(quote! {
-                    ::view::loading_when(#ready, #fallback, move |cx| #body)
-                })
-            } else {
-                Ok(quote! {
-                    ::view::loading_auto(#fallback, move |cx| #body)
-                })
+            let body = control_body(&node.children)?;
+            Ok(quote! { Loading(#fallback, move |cx| #body) })
+        }
+        "LoadingWhen" => {
+            ensure_attrs(node, &["ready", "fallback"])?;
+            let ready = attr(node, "ready").ok_or_else(|| {
+                syn::Error::new_spanned(&node.tag, "LoadingWhen requires ready=...")
+            })?;
+            let fallback = attr(node, "fallback").ok_or_else(|| {
+                syn::Error::new_spanned(&node.tag, "LoadingWhen requires fallback=...")
+            })?;
+            if node.children.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    &node.tag,
+                    "LoadingWhen requires children",
+                ));
             }
+            let body = control_body(&node.children)?;
+            let ready = as_closure(ready);
+            Ok(quote! { LoadingWhen(#ready, #fallback, move |cx| #body) })
         }
         "Embed" => {
             let expr = attr(node, "expr")
@@ -287,6 +327,7 @@ fn node_tokens(node: &Node) -> Result<TokenStream2> {
             apply_attrs(quote! { #expr }, node, &["expr"], &allowed)
         }
         "For" => {
+            ensure_attrs(node, &["each", "key", "children"])?;
             let each = attr(node, "each")
                 .ok_or_else(|| syn::Error::new_spanned(&node.tag, "For requires each=..."))?;
             let key = attr(node, "key")
@@ -299,8 +340,64 @@ fn node_tokens(node: &Node) -> Result<TokenStream2> {
                     "For is self-closing; put children=... on the tag",
                 ));
             }
-            Ok(quote! { ::view::keyed_list(#each, #key, #children) })
+            let each = as_closure(each);
+            Ok(quote! { For(#each, #key, #children) })
         }
+        "Repeat" => {
+            ensure_attrs(node, &["count"])?;
+            let count = attr(node, "count")
+                .ok_or_else(|| syn::Error::new_spanned(&node.tag, "Repeat requires count=..."))?;
+            if node.children.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    &node.tag,
+                    "Repeat requires children",
+                ));
+            }
+            let body = control_body(&node.children)?;
+            let count = as_closure(count);
+            Ok(quote! { Repeat(#count, move |cx, _index| #body) })
+        }
+        "Switch" => {
+            ensure_attrs(node, &[])?;
+            if node.children.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    &node.tag,
+                    "Switch requires Match children",
+                ));
+            }
+            let mut branches = Vec::new();
+            for child in &node.children {
+                let Child::Node(branch) = child else {
+                    return Err(syn::Error::new_spanned(
+                        &node.tag,
+                        "Switch children must be <Match>",
+                    ));
+                };
+                if branch.tag != "Match" {
+                    return Err(syn::Error::new_spanned(
+                        &branch.tag,
+                        "Switch children must be <Match>",
+                    ));
+                }
+                ensure_attrs(branch, &["when"])?;
+                let when = attr(branch, "when")
+                    .ok_or_else(|| syn::Error::new_spanned(&branch.tag, "Match requires when=..."))?;
+                if branch.children.is_empty() {
+                    return Err(syn::Error::new_spanned(
+                        &branch.tag,
+                        "Match requires children",
+                    ));
+                }
+                let body = control_body(&branch.children)?;
+                let when = as_closure(when);
+                branches.push(quote! { Match(#when, move |cx| #body) });
+            }
+            Ok(quote! { Switch(vec![#(#branches),*]) })
+        }
+        "Match" => Err(syn::Error::new_spanned(
+            &node.tag,
+            "Match is only valid inside Switch",
+        )),
         tag if tag.chars().next().is_some_and(char::is_uppercase) => {
             let props = syn::Ident::new(&format!("{tag}Props"), node.tag.span());
             let tag_ident = &node.tag;
@@ -320,6 +417,7 @@ fn node_tokens(node: &Node) -> Result<TokenStream2> {
                         "component children cannot be both an attribute and content",
                     ));
                 }
+                let children = all_children(node)?;
                 calls.push(quote! {
                     .children(::view::fragment(vec![#(#children),*]))
                 });
@@ -330,7 +428,7 @@ fn node_tokens(node: &Node) -> Result<TokenStream2> {
         }
         _ => Err(syn::Error::new_spanned(
             &node.tag,
-            "unknown tag; expected a component or Column, Row, Text, Button, Show, Loading, Embed, or For",
+            "unknown tag; expected a component or Column, Row, Text, Button, Show, Loading, Embed, For, or Repeat",
         )),
     }
 }

@@ -1,4 +1,4 @@
-//! Two-instance counter reference app on the native window and wgpu backend.
+//! Ten-instance counter reference app on the native window and wgpu backend.
 //!
 //! Module layout:
 //! - `app`: window lifecycle and `main`
@@ -21,15 +21,16 @@ use view::ViewTree;
 
 mod styles {
     use renderer_api::{
-        Color, DefiniteLength, Edges, FlexDirection, Length, ResolvedStyle, Size, TextStyle,
+        Color, DefiniteLength, Edges, FlexDirection, FlexWrap, Length, ResolvedStyle, Size,
+        TextStyle,
     };
     use view::StateStyle;
 
     pub fn text() -> TextStyle {
         TextStyle {
             color: Color::new(0.92, 0.92, 0.95, 1.0),
-            font_size: 20.0,
-            line_height: 26.0,
+            font_size: 16.0,
+            line_height: 20.0,
             weight: 400,
         }
     }
@@ -41,30 +42,26 @@ mod styles {
         }
     }
 
-    pub fn stack() -> ResolvedStyle {
+    pub fn counter() -> ResolvedStyle {
         let mut style = base();
-        style.flex.direction = FlexDirection::Column;
+        style.flex.direction = FlexDirection::Row;
         style.gap = Size {
-            width: DefiniteLength::Px(0.0),
-            height: DefiniteLength::Px(8.0),
+            width: DefiniteLength::Px(8.0),
+            height: DefiniteLength::Px(0.0),
         };
         style.padding = Edges {
-            top: DefiniteLength::Px(12.0),
-            right: DefiniteLength::Px(12.0),
-            bottom: DefiniteLength::Px(12.0),
-            left: DefiniteLength::Px(12.0),
+            top: DefiniteLength::Px(8.0),
+            right: DefiniteLength::Px(10.0),
+            bottom: DefiniteLength::Px(8.0),
+            left: DefiniteLength::Px(10.0),
         };
         style.background = Some(Color::new(0.16, 0.17, 0.2, 1.0));
         style
     }
 
-    pub fn root() -> ResolvedStyle {
+    pub fn page() -> ResolvedStyle {
         let mut style = base();
-        style.flex.direction = FlexDirection::Row;
-        style.gap = Size {
-            width: DefiniteLength::Px(16.0),
-            height: DefiniteLength::Px(0.0),
-        };
+        style.flex.direction = FlexDirection::Column;
         style.padding = Edges {
             top: DefiniteLength::Px(16.0),
             right: DefiniteLength::Px(16.0),
@@ -75,17 +72,29 @@ mod styles {
         style
     }
 
+    /// The control-flow view is logical, so the counters wrap in this row.
+    pub fn grid() -> ResolvedStyle {
+        let mut style = base();
+        style.flex.direction = FlexDirection::Row;
+        style.flex.wrap = FlexWrap::Wrap;
+        style.gap = Size {
+            width: DefiniteLength::Px(16.0),
+            height: DefiniteLength::Px(8.0),
+        };
+        style
+    }
+
     pub fn button() -> ResolvedStyle {
         let mut style = base();
         style.size = Size {
-            width: Length::Px(260.0),
-            height: Length::Px(40.0),
+            width: Length::Px(100.0),
+            height: Length::Px(32.0),
         };
         style.padding = Edges {
-            top: DefiniteLength::Px(8.0),
-            right: DefiniteLength::Px(10.0),
-            bottom: DefiniteLength::Px(8.0),
-            left: DefiniteLength::Px(10.0),
+            top: DefiniteLength::Px(4.0),
+            right: DefiniteLength::Px(8.0),
+            bottom: DefiniteLength::Px(4.0),
+            left: DefiniteLength::Px(8.0),
         };
         style.background = Some(Color::new(0.24, 0.28, 0.36, 1.0));
         style.border = Edges {
@@ -100,8 +109,8 @@ mod styles {
 
     pub fn button_label() -> ResolvedStyle {
         let mut style = base();
-        style.text.font_size = 16.0;
-        style.text.line_height = 20.0;
+        style.text.font_size = 14.0;
+        style.text.line_height = 18.0;
         style
     }
 
@@ -157,6 +166,7 @@ mod basecomponents {
 mod uicomponents {
     use macros::{component, view};
     use reactive_core::{memo, signal, Cx};
+    use view::control::Repeat;
     use view::{CallbackWith, Prop, View};
 
     use crate::basecomponents::{ActionButton, ActionButtonProps, TextLine, TextLineProps};
@@ -174,7 +184,7 @@ mod uicomponents {
         let double = memo!(cx, move |cx, _| local.get(cx) * 2);
 
         view! {
-            <Column style={styles::stack()}>
+            <Row style={styles::counter()}>
                 <ActionButton
                     label={Prop::derived(cx, move |cx| {
                         format!("local {}", local.get(cx))
@@ -194,7 +204,7 @@ mod uicomponents {
                 <TextLine value={Prop::derived(cx, move |cx| {
                     format!("local double {}", double.get(cx))
                 })} />
-            </Column>
+            </Row>
         }
     }
 
@@ -205,10 +215,13 @@ mod uicomponents {
             (move |cx: &Cx<'_>, amount: u32| bump.update_with(cx, |value| value + amount)).into();
 
         view! {
-            <Row style={styles::root()}>
-                <Counter shared={shared} increment={increment.clone()} />
-                <Counter shared={shared} increment={increment} />
-            </Row>
+            <Column style={styles::page()}>
+                <Row style={styles::grid()}>
+                    <Repeat count={10}>
+                        <Counter shared={shared} increment={increment.clone()} />
+                    </Repeat>
+                </Row>
+            </Column>
         }
     }
 }

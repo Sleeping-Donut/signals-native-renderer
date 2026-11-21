@@ -8,6 +8,7 @@ use std::task::Poll;
 use reactive_core::{create_async_memo, memo, signal, Runtime};
 use renderer_api::ResolvedStyle;
 use renderer_null::{NullRenderer, SharedNullRenderer};
+use view::control::{For, Loading, LoadingWhen, Match, Repeat, Show, Switch};
 use view::{Callback, View, ViewTree};
 
 #[test]
@@ -102,12 +103,12 @@ fn view_macro_loading_switches_from_fallback_to_content() {
     let root = tree.mount(
         &cx,
         view! {
-            <Loading
+            <LoadingWhen
                 ready={move |cx| ready.get(cx)}
                 fallback={|_cx| view! { <Text>"loading"</Text> }}
             >
                 <Text>"content"</Text>
-            </Loading>
+            </LoadingWhen>
         },
     );
     tree.frame(&cx, 0);
@@ -333,5 +334,121 @@ fn view_macro_component_callback_conversion() {
     cx.flush().unwrap();
     tree.frame(&cx, 1);
     assert_eq!(count.get(&cx), 1);
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn view_macro_repeat_renders_count_children() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let renderer = Rc::new(RefCell::new(NullRenderer::new()));
+    let tree = ViewTree::new(
+        Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
+        runtime.clone(),
+    );
+    let root = tree.mount(
+        &cx,
+        view! {
+            <Column>
+                <Repeat count={3}>
+                    <Text>"x"</Text>
+                </Repeat>
+            </Column>
+        },
+    );
+    tree.frame(&cx, 0);
+    let repeat = tree.children(root)[0];
+    let children = tree.children(repeat);
+    assert_eq!(children.len(), 3);
+    for child in children {
+        let text = tree.renderer_id(child).unwrap();
+        assert_eq!(renderer.borrow().text_of(text), Some("x"));
+    }
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn view_macro_repeat_tracks_count() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let renderer = Rc::new(RefCell::new(NullRenderer::new()));
+    let tree = ViewTree::new(
+        Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
+        runtime.clone(),
+    );
+    let (count, set_count) = signal!(&cx, 2_u32);
+    let root = tree.mount(
+        &cx,
+        view! {
+            <Column>
+                <Repeat count={count.get(cx) as usize}>
+                    <Text>"x"</Text>
+                </Repeat>
+            </Column>
+        },
+    );
+    tree.frame(&cx, 0);
+    let repeat = tree.children(root)[0];
+    assert_eq!(tree.children(repeat).len(), 2);
+
+    set_count.set(&cx, 5);
+    cx.flush().unwrap();
+    tree.frame(&cx, 1);
+    assert_eq!(tree.children(repeat).len(), 5);
+
+    set_count.set(&cx, 1);
+    cx.flush().unwrap();
+    tree.frame(&cx, 2);
+    let children = tree.children(repeat);
+    assert_eq!(children.len(), 1);
+    let text = tree.renderer_id(children[0]).unwrap();
+    assert_eq!(renderer.borrow().text_of(text), Some("x"));
+    tree.unmount(&cx, root);
+}
+
+#[test]
+fn view_macro_switch_selects_first_match() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let renderer = Rc::new(RefCell::new(NullRenderer::new()));
+    let tree = ViewTree::new(
+        Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
+        runtime.clone(),
+    );
+    let (mode, set_mode) = signal!(&cx, 0_u32);
+    let root = tree.mount(
+        &cx,
+        view! {
+            <Switch>
+                <Match when={mode.get(cx) == 0}>
+                    <Text>"zero"</Text>
+                </Match>
+                <Match when={mode.get(cx) == 1}>
+                    <Text>"one"</Text>
+                </Match>
+                <Match when={true}>
+                    <Text>"other"</Text>
+                </Match>
+            </Switch>
+        },
+    );
+
+    let text_of = |root| {
+        tree.frame(&cx, 0);
+        let child = tree.children(root)[0];
+        let text = tree.renderer_id(child).unwrap();
+        renderer.borrow().text_of(text).map(str::to_string)
+    };
+
+    assert_eq!(text_of(root).as_deref(), Some("zero"));
+
+    set_mode.set(&cx, 1);
+    cx.flush().unwrap();
+    assert_eq!(text_of(root).as_deref(), Some("one"));
+
+    set_mode.set(&cx, 2);
+    cx.flush().unwrap();
+    assert_eq!(text_of(root).as_deref(), Some("other"));
+
     tree.unmount(&cx, root);
 }

@@ -13,7 +13,7 @@
 //! | `#[component]` | a function taking `&Cx` plus a props struct |
 //! | `view! { <Column style={s}> }` | `view::column(vec![...]).style(s)` |
 //! | `<Panel>…</Panel>` | `panel(cx, PanelProps { …, children })` |
-//! | `<Loading>` / `<Text>` | `view::loading_auto` / `view::text_fn` |
+//! | `<Loading>` / `<Text>` | `view::control::Loading` / `view::text_fn` |
 //!
 //! Behaviour is identical to `states.rs`; only the authoring surface differs.
 
@@ -244,7 +244,8 @@ mod basecomponents {
 
 mod uicomponents {
     use reactive_core::{create_async_memo, create_derived_signal, create_memo, is_pending, Cx};
-    use view::{column, loading_auto, row, CallbackWith, Prop, View};
+    use view::control::Loading;
+    use view::{column, row, CallbackWith, Prop, View};
 
     use crate::basecomponents::{
         loading_view, panel, select_list, text_line, PanelProps, SelectListProps, TextLineProps,
@@ -349,8 +350,8 @@ mod uicomponents {
             cities.get(cx).first().cloned().unwrap_or_default()
         });
 
-        // The `<Loading>` tag expands to `loading_auto`.
-        loading_auto(loading_view, move |cx| {
+        // The `<Loading>` tag expands to `view::control::Loading`.
+        Loading(loading_view, move |cx| {
             content(
                 cx,
                 ContentProps {

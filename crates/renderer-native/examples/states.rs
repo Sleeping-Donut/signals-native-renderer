@@ -239,6 +239,7 @@ mod basecomponents {
 mod uicomponents {
     use macros::{component, view};
     use reactive_core::{is_pending, memo, signal, Cx};
+    use view::control::Loading;
     use view::{CallbackWith, Prop, View};
 
     use crate::basecomponents::{

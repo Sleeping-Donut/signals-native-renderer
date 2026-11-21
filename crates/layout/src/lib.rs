@@ -12,14 +12,14 @@
 use std::collections::{HashMap, HashSet};
 
 use renderer_api::{
-    Align, Color, DefiniteLength, Display, FlexDirection, Justify, Length, Position, ResolvedStyle,
-    Size, TextMeasureRequest, TextMetrics, TextStyle,
+    Align, Color, DefiniteLength, Display, FlexDirection, FlexWrap, Justify, Length, Position,
+    ResolvedStyle, Size, TextMeasureRequest, TextMetrics, TextStyle,
 };
 use taffy::{
     AlignItems, AvailableSpace, Dimension, Display as TaffyDisplay,
-    FlexDirection as TaffyDirection, JustifyContent, LayoutInput, LayoutOutput, LengthPercentage,
-    NodeId as TaffyId, Position as TaffyPosition, Rect as TaffyRect, Size as TaffySize, Style,
-    TaffyTree,
+    FlexDirection as TaffyDirection, FlexWrap as TaffyWrap, JustifyContent, LayoutInput,
+    LayoutOutput, LengthPercentage, NodeId as TaffyId, Position as TaffyPosition,
+    Rect as TaffyRect, Size as TaffySize, Style, TaffyTree,
 };
 
 /// Stable layout identity.
@@ -251,6 +251,21 @@ impl LayoutEngine {
     }
 
     /// Mark a node as a layout root.
+    /// Replace the root set, used when logical roots hoist their children.
+    pub fn set_roots(&mut self, roots: &[LayoutId]) {
+        let next: Vec<LayoutId> = roots
+            .iter()
+            .copied()
+            .filter(|id| self.nodes.contains_key(id))
+            .collect();
+        if self.roots == next {
+            return;
+        }
+        self.roots = next;
+        self.invalidate_all();
+    }
+
+    /// Register a layout root.
     pub fn add_root(&mut self, id: LayoutId) {
         if self.nodes.contains_key(&id) && !self.roots.contains(&id) {
             self.roots.push(id);
@@ -519,6 +534,11 @@ fn to_taffy_style(style: &ResolvedStyle, scale: f32) -> Style {
         flex_direction: match style.flex.direction {
             FlexDirection::Row => TaffyDirection::Row,
             FlexDirection::Column => TaffyDirection::Column,
+        },
+        flex_wrap: match style.flex.wrap {
+            FlexWrap::NoWrap => TaffyWrap::NoWrap,
+            FlexWrap::Wrap => TaffyWrap::Wrap,
+            FlexWrap::WrapReverse => TaffyWrap::WrapReverse,
         },
         flex_grow: style.flex.grow,
         flex_shrink: style.flex.shrink,

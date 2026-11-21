@@ -42,7 +42,8 @@ fn select_marks_and_updates_the_selected_row() {
     );
     tree.set_viewport(200.0, 200.0);
     tree.frame(&cx, 0);
-    let rows = tree.children(root);
+    let list = tree.children(root)[0];
+    let rows = tree.children(list);
     assert_eq!(rows.len(), 3);
 
     tree.click_node(rows[1]);

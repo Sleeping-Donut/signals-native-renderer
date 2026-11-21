@@ -77,21 +77,25 @@ form uses `ElementKind::Row`, `ElementKind::Text`, `ElementKind::Button`, etc.
 ## 2. `view!`
 
 **Current implementation.** The macro supports `Column`, `Row`, `Text`,
-`Button`, `Show`, `Loading`, `For`, and `Embed`; literal or `{expression}` text; and
-attributes for `style`, `hover_style`, `focus_style`, `cursor`, `tooltip`,
-`disabled_when`, `tab_index`, `focusable`, and `disabled`. `Button` requires
-`on_click`. `For` expands to `keyed_list`; `Embed` inserts an existing `View`.
-`Loading` takes `ready={...}` and `fallback={...}` and expands to the view-aware
-loading boundary. The explicit `ready` probe is the v0.1 API; automatic pending
-detection from the mounted content is explicitly Phase 8 work.
+`Button`, `Show`, `Loading`, `LoadingWhen`, `For`, `Repeat`, `Switch`,
+`Match`, and `Embed`; literal or `{expression}` text; and attributes for
+`style`, `hover_style`, `focus_style`, `cursor`, `tooltip`, `disabled_when`,
+`tab_index`, `focusable`, and `disabled`. `Button` requires `on_click`.
+Control-flow names are emitted unqualified, so import the ones you use from
+`view::control`. `Embed` inserts an existing `View`.
+
+`Loading` reveals its children once every binding under them is ready.
+`LoadingWhen` takes an explicit `ready` probe instead:
 
 ```rust
-<Loading
+use view::control::LoadingWhen;
+
+<LoadingWhen
     ready={move |cx| { let _ = states.get(cx); true }}
     fallback={|_cx| loading_view()}
 >
     <Embed expr={content_view(...)} />
-</Loading>
+</LoadingWhen>
 ```
 
 `view_builder!` is the second, experimental front-end:
@@ -245,11 +249,17 @@ passed as a `children: View` prop; named slots are ordinary
 props of type `Option<View>` or `Prop<View>`. Named slots have no special macro
 syntax yet. `view::select` provides a keyed selectable-list component.
 
-Two copies of the states demo exercise this surface. `examples/states.rs` uses
-`view!`, `signal!`, `memo!`, `#[macros::props]`, and `#[component]`;
-`examples/states_manual.rs` builds the same UI with `create_signal`,
-`create_memo`, plain props structs, and `view::column` / `view::row` /
-`text_fn`. Reading them side by side shows what the macros expand to.
+Both demos ship in two copies. `examples/states.rs` and `examples/counter.rs`
+use `view!`, `signal!`, `memo!`, `#[macros::props]`, and `#[component]`;
+`examples/states_manual.rs` and `examples/counter_manual.rs` build the same UIs
+with `create_signal`, `create_memo`, plain props structs, and `view::column` /
+`view::row` / `text_fn` / `view::control::Repeat`. Reading each pair side by side
+shows what the macros expand to; both snapshots are byte-identical.
+
+`examples/todos.rs` exercises the async side: an optimistic overlay keeps the
+saved rows plus the ops still in flight, and a spawned save commits or drops
+each op when it settles. The overlay is app-level (v0.1 has no action nodes),
+which is why the store lives in the example rather than in `reactive-core`.
 
 ### 2.1 Syntax
 
@@ -273,6 +283,9 @@ view! {
 - `{expr}` is a child expression (text or view).
 - `if`/`for`/`match` are Rust control flow; the macro rewrites them into
   `Show`/`For`/`Switch` nodes to preserve identity.
+- `Show`, `For`, `Repeat`, `Loading`, `LoadingWhen`, and `Switch` (with
+  `Match`) are control-flow tags. `view!` emits the imported names, so `use view::control::*`
+  (or specific names) is required. They take no `style` attribute.
 - `..` spread of props is supported for components.
 
 ### 2.2 Expansion sketch
@@ -603,48 +616,89 @@ the widget layer change without backend churn, and avoids a widget zoo in the
 core. The `Select` in [13-reference-apps.md](13-reference-apps.md) is the
 example: a button, a popup, and a `For` list, with no backend changes.
 
-## 4. Control-flow helpers
+## 4. Control-flow components
+
+Control flow lives in [`view::control`](../crates/view/src/control.rs). Tags are
+resolved through imports — `view!` emits `Show(…)`, `Repeat(…)`, and so on, the
+same way it emits a component call:
+
+```rust
+use view::control::{For, Loading, LoadingWhen, Match, Repeat, Show, Switch};
+```
+
+These views are **logical**: they create no layout node and paint nothing. Their
+children take part in the surrounding element's layout, which also means control
+flow takes no `style` attribute. Wrap it in an element when placement matters.
 
 ### 4.1 `Show`
 
 ```rust
-<Show when=move || cond fallback=|| view! { <Empty /> }>
+<Show when={flag.get(cx)} fallback={|cx| view! { <Empty /> }}>
     <Content />
 </Show>
 ```
 
-- `when` is a `Fn() -> bool` (or a `Memo<bool>`).
-- `fallback` is optional.
-- The child is a `ViewFn` and is mounted only when true.
-- Flipping disposes one branch and mounts the other.
-- `keep_alive=true` (v0.1.1) caches the inactive branch.
+- `when` accepts an expression evaluated with `cx`, or `Fn(&Cx<'_>) -> bool`.
+- `fallback` is required by the tag form; pass a closure or a function item.
+- Only the taken branch is mounted. Flipping disposes the previous branch.
 
 ### 4.2 `For`
 
 ```rust
-<For each=items key=|item| item.id children=|item| view! { <Row item=item /> } />
+<For
+    each={rows.get(cx)}
+    key={|row: &Row| row.id}
+    children={move |cx, row| view! { <RowLine row={row.clone()} /> }}
+/>
 ```
 
-- `each` is `Memo<Vec<T>>` or a signal read.
-- `key` returns a stable `Key`.
-- `children` mounts a row given the item.
+- `each` accepts a signal read expression or `Fn(&Cx<'_>) -> Vec<T>`.
+- `key` returns a stable key; `children` builds the row view.
 - The keyed diff is in [07-retained-renderer.md](07-retained-renderer.md).
-- `each` can be a store's `iter_keyed()`; the row receives a `Field<T>`.
+- Rows are logical children of the parent; wrap the list in a `Column`/`Row`
+  when the rows need a gap or a direction.
 
-### 4.3 `Switch` / `Match`
+### 4.3 `Repeat`
+
+```rust
+<Row style={styles::grid()}>
+    <Repeat count={10}>
+        <Counter shared={shared} increment={increment.clone()} />
+    </Repeat>
+</Row>
+```
+
+- `count` accepts an expression evaluated with `cx` (so `count={n.get(cx)}`
+  tracks) or `Fn(&Cx<'_>) -> usize`.
+- The child expression is rebuilt once per row with a zero-based index; the
+  function form (`view::control::Repeat(count_fn, |cx, index| …)`) exposes it.
+- Rows are keyed by index; growing appends, shrinking disposes trailing rows.
+- Rows are logical: the enclosing element decides direction, wrap, and gaps.
+  The counter demo relies on this — `Repeat` sits inside a wrapping `Row`.
+- Nested `Repeat` bodies capture by move, so a non-`Copy` prop must be created
+  per row or captured through a `Copy` handle.
+
+`For` remains the right choice for lists with stable keys; `Repeat` is for a
+count.
+
+### 4.4 `Switch` / `Match`
 
 ```rust
 <Switch>
-    <Match when=move || state.is_loading()> <Spinner /> </Match>
-    <Match when=move || state.is_error()> <ErrorView /> </Match>
-    <Match when=move || true> <Content /> </Match>
+    <Match when={state.is_loading()}> <Spinner /> </Match>
+    <Match when={state.is_error()}> <ErrorView /> </Match>
+    <Match when={true}> <Content /> </Match>
 </Switch>
 ```
 
-Only the first matching branch is mounted. Branches are keyed by their position;
-use explicit keys if the order can change.
+- The first branch whose `when` is true mounts; none true mounts nothing.
+- `when` accepts an expression evaluated with `cx` or `Fn(&Cx<'_>) -> bool`.
+- The selected branch index is the slot key: changing the match disposes the old
+  branch and mounts the new one.
+- `Match(when, then)` builds a `Branch`; the tag expands to
+  `Switch(vec![Match(…), …])`.
 
-### 4.4 `KeepAlive` (v0.1.1)
+### 4.5 `KeepAlive` (v0.1.1)
 
 ```rust
 <KeepAlive when=move || tab.is_settings()>

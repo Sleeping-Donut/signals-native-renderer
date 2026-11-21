@@ -430,11 +430,25 @@ pub enum Justify {
     SpaceBetween,
 }
 
+/// Cross-axis wrapping.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FlexWrap {
+    /// Keep everything on one line.
+    #[default]
+    NoWrap,
+    /// Wrap onto additional lines.
+    Wrap,
+    /// Wrap onto additional lines in reverse order.
+    WrapReverse,
+}
+
 /// Flex style fields.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FlexStyle {
     /// Direction.
     pub direction: FlexDirection,
+    /// Cross-axis wrapping.
+    pub wrap: FlexWrap,
     /// Grow factor.
     pub grow: f32,
     /// Shrink factor.
