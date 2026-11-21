@@ -29,7 +29,8 @@ in-tree apps and examples.
 ## Experimental / may change
 
 - `async_derived_signal` details and staged multi-node transaction semantics.
-- Component tag conventions, slots, and the component/props macro.
+- Component tag conventions, slots, and the component/props/`Props` builder
+  macros.
 - Automatic `Loading` internals (effect readiness tokens, subtree collection).
 - Store enum tuple-variant ergonomics, dynamic-store schema helpers.
 - Damage scissoring, incremental layout, and partial presentation.

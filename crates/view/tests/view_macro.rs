@@ -189,8 +189,9 @@ fn view_macro_loading_detects_pending_content_without_ready() {
     tree.unmount(&cx, root);
 }
 
-#[derive(Default)]
+#[derive(macros::Props, Default)]
 struct BadgeProps {
+    #[prop(into)]
     label: Prop<String>,
 }
 
@@ -214,7 +215,7 @@ fn view_macro_component_and_props() {
         &cx,
         view! {
             <Column>
-                <Badge label={Prop::static_value("badge".to_string())} />
+                <Badge label={String::from("badge")} />
             </Column>
         },
     );
@@ -225,6 +226,7 @@ fn view_macro_component_and_props() {
     tree.unmount(&cx, root);
 }
 
+#[derive(macros::Props)]
 struct PanelProps {
     children: View,
 }

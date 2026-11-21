@@ -113,11 +113,30 @@ It is a syntax front-end, not a separate runtime. It currently supports
 `Column`, `Row`, `Text`, `Button`, children, values, `on_click`, and the shared
 state/style attributes. Component tags are supported by convention: `<Badge label={...} />` expands to
 `Badge(&cx, BadgeProps { label: ... })`; mark the function with
-`#[component]`. Component props can use `Prop<T>` for static/reactive values.
+`#[component]`. Component props use `#[derive(macros::Props)]`; the component tag
+calls the generated `FooProps::builder()`.
+
+```rust
+#[derive(macros::Props)]
+struct BadgeProps {
+    #[prop(into)]
+    label: Prop<String>,
+    #[prop(optional)]
+    muted: bool,
+}
+
+<Badge label={String::from("hi")} />
+```
+
+`#[prop(into)]` makes the builder accept `impl Into<FieldType>`, so values,
+`ReadSignal<T>`, and `Memo<T>` convert without an explicit `.into()` at the call
+site. `#[prop(optional)]` uses `Default` for a missing field;
+`#[prop(default = expr)]` uses an expression.
+
 `Prop<T>` stores either a static value, a `ReadSignal<T>`, or a `Memo<T>`; it has
-`From<T>`, `From<ReadSignal<T>>`, and `From<Memo<T>>` conversions, so callers do
-not need a boxed closure. `Prop::derived(cx, closure)` creates a cached memo node
-for a closure. Component content is passed as a `children: View` prop; named slots are ordinary
+`From<T>`, `From<ReadSignal<T>>`, and `From<Memo<T>>` conversions.
+`Prop::derived(cx, closure)` creates a cached memo node. Component content is
+passed as a `children: View` prop; named slots are ordinary
 props of type `Option<View>` or `Prop<View>`. Named slots have no special macro
 syntax yet. `view::select` provides a keyed selectable-list component.
 

@@ -3,8 +3,11 @@
 ## Unreleased
 
 - Experimental `view_builder!` fluent authoring front-end.
-- `Prop<T>` now stores `ReadSignal`/`Memo` handles instead of boxed closures;
+- `Prop<T>` stores `ReadSignal`/`Memo` handles instead of boxed closures;
   `From<T>`, `From<ReadSignal<T>>`, and `From<Memo<T>>` are supported.
+- Component props use `#[derive(Props)]` builders with `#[prop(into)]`,
+  `#[prop(optional)]`, and `#[prop(default = ...)]`; `view!` auto-converts
+  `into` fields and appends `children`.
 - Component children and the `view::select` selectable-list component.
 - Automatic view-aware `Loading` no longer needs a `ready` probe.
 

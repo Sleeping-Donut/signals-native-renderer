@@ -22,7 +22,7 @@ use proc_macro::TokenStream;
 use proc_macro2::{TokenStream as TokenStream2, TokenTree};
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
-use syn::{parse_macro_input, Expr, Ident, LitStr, Result, Token};
+use syn::{parse_macro_input, Data, DeriveInput, Expr, Fields, Ident, LitStr, Result, Token};
 
 enum Child {
     Node(Node),
@@ -304,13 +304,13 @@ fn node_tokens(node: &Node) -> Result<TokenStream2> {
         tag if tag.chars().next().is_some_and(char::is_uppercase) => {
             let props = syn::Ident::new(&format!("{tag}Props"), node.tag.span());
             let tag_ident = &node.tag;
-            let mut fields: Vec<TokenStream2> = node
+            let mut calls: Vec<TokenStream2> = node
                 .attrs
                 .iter()
                 .map(|attr| {
                     let key = &attr.key;
                     let value = &attr.value;
-                    quote! { #key: #value }
+                    quote! { .#key(#value) }
                 })
                 .collect();
             if !node.children.is_empty() {
@@ -320,11 +320,13 @@ fn node_tokens(node: &Node) -> Result<TokenStream2> {
                         "component children cannot be both an attribute and content",
                     ));
                 }
-                fields.push(quote! {
-                    children: ::view::fragment(vec![#(#children),*])
+                calls.push(quote! {
+                    .children(::view::fragment(vec![#(#children),*]))
                 });
             }
-            Ok(quote! { #tag_ident(&cx, #props { #(#fields),* }) })
+            Ok(quote! {
+                #tag_ident(&cx, #props::builder()#(#calls)*.build())
+            })
         }
         _ => Err(syn::Error::new_spanned(
             &node.tag,
@@ -538,4 +540,133 @@ pub fn view_builder(input: TokenStream) -> TokenStream {
         Ok(tokens) => tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }
+}
+
+struct PropField {
+    ident: syn::Ident,
+    ty: syn::Type,
+    into: bool,
+    optional: bool,
+    default: Option<Expr>,
+}
+
+/// Derive a component props builder.
+///
+/// Field attributes:
+/// - `#[prop(into)]` — the builder accepts `impl Into<FieldType>`
+/// - `#[prop(optional)]` — missing value uses `Default`
+/// - `#[prop(default = expr)]` — missing value uses `expr`
+#[proc_macro_derive(Props, attributes(prop))]
+pub fn derive_props(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+    let Data::Struct(data) = &input.data else {
+        return syn::Error::new_spanned(&input, "Props supports structs only")
+            .to_compile_error()
+            .into();
+    };
+    let Fields::Named(fields) = &data.fields else {
+        return syn::Error::new_spanned(&input, "Props requires named fields")
+            .to_compile_error()
+            .into();
+    };
+
+    let mut prop_fields = Vec::new();
+    for field in &fields.named {
+        let ident = field.ident.clone().expect("named field");
+        let mut into = false;
+        let mut optional = false;
+        let mut default = None;
+        for attr in &field.attrs {
+            if !attr.path().is_ident("prop") {
+                continue;
+            }
+            if let Err(error) = attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("into") {
+                    into = true;
+                    Ok(())
+                } else if meta.path.is_ident("optional") {
+                    optional = true;
+                    Ok(())
+                } else if meta.path.is_ident("default") {
+                    let expr: Expr = meta.value()?.parse()?;
+                    default = Some(expr);
+                    Ok(())
+                } else {
+                    Err(meta.error("unsupported prop attribute"))
+                }
+            }) {
+                return error.to_compile_error().into();
+            }
+        }
+        prop_fields.push(PropField {
+            ident,
+            ty: field.ty.clone(),
+            into,
+            optional,
+            default,
+        });
+    }
+
+    let builder = syn::Ident::new(&format!("{name}Builder"), name.span());
+    let builder_fields = prop_fields.iter().map(|field| {
+        let ident = &field.ident;
+        let ty = &field.ty;
+        quote! { #ident: Option<#ty> }
+    });
+    let setters = prop_fields.iter().map(|field| {
+        let ident = &field.ident;
+        let ty = &field.ty;
+        if field.into {
+            quote! {
+                pub fn #ident<T: Into<#ty>>(mut self, value: T) -> Self {
+                    self.#ident = Some(value.into());
+                    self
+                }
+            }
+        } else {
+            quote! {
+                pub fn #ident(mut self, value: #ty) -> Self {
+                    self.#ident = Some(value);
+                    self
+                }
+            }
+        }
+    });
+    let builds = prop_fields.iter().map(|field| {
+        let ident = &field.ident;
+        let value = if let Some(default) = &field.default {
+            quote! { self.#ident.unwrap_or_else(|| #default) }
+        } else if field.optional {
+            quote! { self.#ident.unwrap_or_default() }
+        } else {
+            quote! { self.#ident.expect(concat!("missing prop `", stringify!(#ident), "`")) }
+        };
+        quote! { #ident: #value }
+    });
+
+    quote! {
+        #[derive(Default)]
+        pub struct #builder {
+            #(#builder_fields,)*
+        }
+
+        impl #builder {
+            #(#setters)*
+            #[must_use]
+            pub fn build(self) -> #name {
+                #name {
+                    #(#builds,)*
+                }
+            }
+        }
+
+        impl #name {
+            #[must_use]
+            pub fn builder() -> #builder {
+                #builder::default()
+            }
+        }
+    }
+    .into()
 }
