@@ -411,6 +411,36 @@ impl<T: 'static> LoadingBoundary<T> {
         cx.rt.is_disposed(self.id)
     }
 
+    /// Re-arm the boundary when any dependency of `read` changes.
+    ///
+    /// The closure's result is discarded; the boundary reacts to any tracked
+    /// read changing. Content is rebuilt rather than kept alive, matching the
+    /// v0.1 fallback behavior.
+    pub fn on(self, cx: &Cx<'_>, read: impl Fn(&Cx<'_>) + 'static) -> Self {
+        let (hits, set_hits) = create_signal(cx, 0_u64);
+        let first = Rc::new(Cell::new(true));
+        let first_for_apply = Rc::clone(&first);
+        let _ = render_effect(
+            cx,
+            move |cx| {
+                read(cx);
+            },
+            move |cx, ()| {
+                if first_for_apply.replace(false) {
+                    return;
+                }
+                set_hits.update_with(cx, |hits| hits + 1);
+            },
+        );
+        if let Some(node) = cx.rt.node(self.id) {
+            if let Some(boundary) = node.borrow_mut().boundary.borrow_mut().as_mut() {
+                boundary.on = Some(hits);
+                boundary.last_on.set(hits.get(cx));
+            }
+        }
+        self
+    }
+
     /// A tracked read of the boundary value.
     pub fn with<R>(self, cx: &Cx<'_>, f: impl FnOnce(&T) -> R) -> R {
         cx.rt.track(self.id);
@@ -1525,6 +1555,15 @@ impl Runtime {
             fns.has_content.set(false);
         }
 
+        if let Some(on) = fns.on {
+            let hits = on.get(&self.cx());
+            if hits != fns.last_on.get() {
+                fns.last_on.set(hits);
+                fns.armed.set(true);
+                fns.has_content.set(false);
+            }
+        }
+
         let mut fallback_value = None;
         if fns.armed.get() || !fns.has_content.get() || old.is_none() {
             fallback_value = Some(catch_unwind(AssertUnwindSafe(|| {
@@ -2443,6 +2482,8 @@ where
         content: Box::new(move |cx| Box::new(content(cx))),
         fallback: Box::new(move |cx| Box::new(fallback(cx))),
         key,
+        on: None,
+        last_on: Cell::new(0),
         armed: Cell::new(true),
         current_key: RefCell::new(None),
         has_content: Cell::new(false),
@@ -2713,6 +2754,8 @@ struct BoundaryFns {
     content: BoundaryFn,
     fallback: BoundaryFn,
     key: Option<ReadSignal<u64>>,
+    on: Option<ReadSignal<u64>>,
+    last_on: Cell<u64>,
     armed: Cell<bool>,
     current_key: RefCell<Option<u64>>,
     has_content: Cell<bool>,

@@ -16,6 +16,8 @@
   longer notify readers.
 - `RuntimeHandle::action` with `ActionCx` (`guess`, `set`, `update_with`, `get`)
   and `ActionHandle::result`. The optimistic todos demo uses framework actions.
+- `LoadingBoundary::on(cx, closure)` re-arms a loaded boundary when a tracked
+  dependency changes, showing the fallback for the new question.
 
 ## v0.1.1 — 2026-11-21
 

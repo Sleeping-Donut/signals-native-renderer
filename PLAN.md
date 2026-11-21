@@ -479,8 +479,10 @@ optimistic todos app is the acceptance target for guesses/actions.
    clears guesses at settle. Gate met: `actions_guess_then_commit_after_await`
    and `actions_report_errors_and_clear_guesses`; the optimistic todos demo uses
    actions and the overlay is deleted.
-6. **Full `on` re-arm.** F-4/F-5 boundary behavior beyond keyed remount. Gate:
-   boundary tests for armed/disarmed content and held frames.
+6. ✅ **Full `on` re-arm.** `LoadingBoundary::on(cx, closure)` bumps a tracked
+   counter and re-arms the boundary without a key; content is rebuilt on reveal.
+   Gate met: `on_rearms_the_boundary_without_a_key` and
+   `without_on_a_disarmed_boundary_keeps_content`.
 7. ✅ **Damage scissoring.** Offscreen targets render with `LoadOp::Load` and
    per-damage scissor rects; window surfaces use a persistent scene texture and
    a blit. Gate met: `wgpu_incremental_damage_matches_a_full_render` and

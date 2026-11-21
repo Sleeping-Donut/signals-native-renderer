@@ -282,3 +282,68 @@ fn actions_report_errors_and_clear_guesses() {
     assert!(!is_pending(&cx, |cx| count.get(cx)));
     assert_eq!(handle.result().get(&cx), Some(Err(String::from("nope"))));
 }
+
+#[test]
+fn on_rearms_the_boundary_without_a_key() {
+    let runtime = Runtime::new();
+    let cx = runtime.cx();
+    let (page, set_page) = create_signal(&cx, 0_u32);
+    let data = create_async_memo(&cx, move |cx, _: Option<&u32>| delayed(page.get(cx) * 10));
+    let boundary =
+        loading_boundary(&cx, None, move |cx| data.get(cx), |_| 999_u32).on(&cx, move |cx| {
+            let _ = page.get(cx);
+        });
+    let _ = boundary.get(&cx);
+    for _ in 0..6 {
+        runtime.pump();
+        cx.flush().unwrap();
+    }
+    assert_eq!(boundary.get(&cx), 0);
+
+    set_page.set(&cx, 1);
+    cx.flush().unwrap();
+    assert_eq!(
+        boundary.get(&cx),
+        999,
+        "on re-arms the boundary and shows the fallback"
+    );
+
+    for _ in 0..6 {
+        runtime.pump();
+        cx.flush().unwrap();
+    }
+    assert_eq!(
+        boundary.get(&cx),
+        10,
+        "the new content replaces the fallback"
+    );
+}
+
+#[test]
+fn without_on_a_disarmed_boundary_keeps_content() {
+    let runtime = Runtime::new();
+    let cx = runtime.cx();
+    let (page, set_page) = create_signal(&cx, 0_u32);
+    let data = create_async_memo(&cx, move |cx, _: Option<&u32>| delayed(page.get(cx) * 10));
+    let boundary = loading_boundary(&cx, None, move |cx| data.get(cx), |_| 999_u32);
+    let _ = boundary.get(&cx);
+    for _ in 0..6 {
+        runtime.pump();
+        cx.flush().unwrap();
+    }
+    assert_eq!(boundary.get(&cx), 0);
+
+    set_page.set(&cx, 1);
+    cx.flush().unwrap();
+    assert_eq!(
+        boundary.get(&cx),
+        0,
+        "a disarmed boundary forwards and keeps the old content"
+    );
+
+    for _ in 0..6 {
+        runtime.pump();
+        cx.flush().unwrap();
+    }
+    assert_eq!(boundary.get(&cx), 10);
+}

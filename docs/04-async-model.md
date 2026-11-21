@@ -969,7 +969,7 @@ nodes/readers/flights; the older id survives.
 pub struct LoadingBoundary {
     armed: bool,
     key: Option<Memo<Key>>,    // v0.1: changing the key remounts the boundary
-    on: Option<OnDeps>,        // v0.2: dependency-list re-arm, notification only
+    on: Option<ReadSignal<u64>>, // re-arm counter bumped by a tracked closure
     content: ViewNodeId,
     fallback: ViewNodeId,
 }
@@ -988,21 +988,16 @@ Semantics:
   remounted under the same parent. The new boundary is fresh/armed, so a load
   shows the fallback, then content. This covers the common navigation/reload
   shape without the full `on` semantics. State inside the content is lost.
-- **`on` re-arm (v0.2)**: when the `on` memo changes, the boundary arms again
-  without remounting. If something under it is pending, it shows the fallback
-  with the change's frame; otherwise the arm is a no-op. This requires the full
-  boundary/txn interaction (`F-4`/`F-5`, `D-15`/`D-16`), so it is deferred.
+- **`on` re-arm (v0.2, implemented)**: a tracked closure re-arms the boundary
+  when any read inside it changes. The fallback appears with the change's frame,
+  and content is rebuilt on reveal (the v0.1 disposal rule). Unlike the `key`
+  remount, the boundary node is kept.
 - **Nested boundaries**: the nearest armed boundary catches. A disarmed inner
   boundary forwards to the outer boundary/transaction.
 
-Why `on` is v0.2: it is not just "reset a bool". It must identify the frame of the
-change that armed it, keep the fallback off screen when the same data is read
-outside the boundary, collect pending readers that were already forwarded, and
-interact with lanes when the `on` read is display-ahead. Those are the cases in
-`D-15`/`D-16`; implementing the simple version would produce a boundary that
-sometimes shows a fallback with the wrong frame or strands a hold. The `key`
-remount gives the same observable behavior for the common case with far less
-machinery.
+The implementation wraps the closure in a render effect and bumps a counter on
+any change after the first run; the boundary subscribes to that counter. This is
+the notification shape described below: `on` is a dependency read, not a value.
 
 **What `on` is for.** A boundary that has shown content normally stays disarmed
 during a refetch: the old content remains on screen until the new data lands.
@@ -1048,14 +1043,15 @@ has no equivalent automatic wrap unless our `view!` macro does it. The safe
 shape is an explicit tracked closure:
 
 ```rust
-LoadingBoundary::new(cx)
-    .on(|cx| { let _ = product_id.get(cx); })
-    .fallback(...)
+let page = loading_boundary(&cx, None, content, fallback)
+    .on(&cx, move |cx| {
+        let _ = product_id.get(cx);
+    });
 ```
 
 `view!` sugar can lower `on={product_id.get(cx)}` to that closure later, but the
-primitive should not depend on the macro. `on` remains v0.2 because the frame
-questions below are about the boundary, not about the API shape.
+primitive should not depend on the macro. The tracked closure keeps the API independent of the macro; `view!` sugar can
+lower `on={product_id.get(cx)}` to it later.
 
 **Leptos equivalent.** Leptos does not have an `on` dependency list. Its coarse
 version is the choice between `<Suspense>` and `<Transition>`:
