@@ -14,8 +14,11 @@
 - `latest(memo)`, display-only `guess`/`clear_guess`, and quiet `refresh`.
   Async results ready at one flush commit together, and equal async answers no
   longer notify readers.
-- `RuntimeHandle::action` with `ActionCx` (`guess`, `set`, `update_with`, `get`)
-  and `ActionHandle::result`. The optimistic todos demo uses framework actions.
+- `RuntimeHandle::action`/`action_with` with a poll-scoped action: writes after
+  `await` stay in the action without an `ActionCx` argument. `OptimisticSignal`
+  guesses, plain writes are buffered until settle, and guesses are stored per
+  action. `ActionHandle::result` reports completion; the todos demo uses the
+  ambient form.
 - `LoadingBoundary::on(cx, closure)` re-arms a loaded boundary when a tracked
   dependency changes, showing the fallback for the new question.
 - Renderer `NodeId` contract frozen: opaque non-zero ids, `INVALID_NODE_ID`

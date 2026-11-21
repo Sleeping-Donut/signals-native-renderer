@@ -446,7 +446,7 @@ is green.
 
 ### Phase 9 — v0.2: async lanes, optimism, and presentation (6–10 weeks)
 
-**Build:** lanes and guesses, `latest`, `affects`, actions (`ActionCx`), full
+**Build:** lanes and guesses, `latest`, `affects`, poll-scoped actions, full
 `on` re-arm; damage scissoring and partial presentation; store field read/write
 split; renderer `NodeId` contract freeze; the decisions still listed as open in
 [docs/12](docs/12-decisions-and-risks.md) Part F (transaction merge criterion,
@@ -478,11 +478,14 @@ value-changing flushes) and 32 seeds x 30 re-ask steps, zero violations.
 4. ✅ **`affects`.** Declared pending marks until commit. Gate met:
    `affects_marks_derivations_pending_until_the_next_flush` covers a signal,
    its derivation, and an `is_pending` reader.
-5. ✅ **Actions + `ActionCx`.** `RuntimeHandle::action` owns the future;
-   `ActionCx` guesses, commits, and reads committed values across `await`, and
-   clears guesses at settle. Gate met: `actions_guess_then_commit_after_await`
-   and `actions_report_errors_and_clear_guesses`; the optimistic todos demo uses
-   actions and the overlay is deleted.
+5. ✅ **Actions with a poll-scoped ambient action.** `RuntimeHandle::action`
+   sets `current_action` around every poll; `OptimisticSignal` guesses,
+   `WriteSignal` writes are buffered until settle, and per-action guess carriers
+   stop overlapping actions clearing each other. Gate met:
+   `actions_guess_then_commit_after_await`,
+   `overlapping_actions_keep_their_own_guesses`,
+   `optimistic_signal_guesses_inside_actions`; the todos demo passes no action
+   argument.
 6. ✅ **Full `on` re-arm.** `LoadingBoundary::on(cx, closure)` bumps a tracked
    counter and re-arms the boundary without a key; content is rebuilt on reveal.
    Gate met: `on_rearms_the_boundary_without_a_key` and
@@ -504,9 +507,9 @@ value-changing flushes) and 32 seeds x 30 re-ask steps, zero violations.
 - transaction merge and re-ask decisions recorded with fuzz coverage;
 - `latest` returns staged values under a lane; derived `latest`/`is_pending`
   reads do not tear against the screen;
-- actions with `ActionCx` commit when their flights settle; writes after
-  `await` join the action; the optimistic todos demo uses framework actions
-  instead of its app-level overlay;
+- poll-scoped actions commit when their flights settle; writes after `await`
+  join the action; the optimistic todos demo uses framework actions instead of
+  its app-level overlay;
 - `affects` marks derivations pending until commit; full `on` re-arm has the
   documented F-4/F-5 behavior;
 - damage scissoring presents only damaged regions on the native backend, with a

@@ -24,7 +24,7 @@ use std::ops::Deref;
 use std::panic::{catch_unwind, panic_any, resume_unwind, AssertUnwindSafe};
 use std::pin::Pin;
 use std::rc::Rc;
-use std::task::Poll;
+use std::task::{Context, Poll};
 
 use crate::{Arena, ManualSpawner, NodeId, Spawner, VirtualClock};
 
@@ -178,6 +178,14 @@ impl<T: Clone + 'static> ReadSignal<T> {
     pub fn get(self, cx: &Cx<'_>) -> T {
         self.with(cx, T::clone)
     }
+
+    /// The committed value, ignoring guesses and pending state.
+    ///
+    /// Diagnostics/test read; UI code should use [`ReadSignal::get`].
+    #[must_use]
+    pub fn committed(self, cx: &Cx<'_>) -> Option<T> {
+        cx.rt.committed_value(self.id).ok()
+    }
 }
 
 impl<T: 'static> ReadSignal<T> {
@@ -195,12 +203,8 @@ impl<T: 'static> ReadSignal<T> {
         let node = cx.rt.node(self.id).expect("signal was disposed");
         let node = node.borrow();
         if cx.rt.reader_class.get() == ReaderClass::Display {
-            if let Some(guess) = node
-                .guess
-                .borrow()
-                .as_ref()
-                .and_then(|value| value.downcast_ref::<T>())
-            {
+            let guesses = node.guesses.borrow();
+            if let Some(guess) = newest_guess::<T>(&guesses) {
                 return f(guess);
             }
         }
@@ -252,9 +256,10 @@ impl<T: 'static> WriteSignal<T> {
         cx.rt.is_disposed(self.id)
     }
 
-    /// Replace the value. It becomes visible at the next flush.
+    /// Replace the value. Inside an action the write is held until the action
+    /// settles; otherwise it becomes visible at the next flush.
     pub fn set(self, cx: &Cx<'_>, value: T) {
-        cx.rt.stage(self.id, Box::new(value));
+        cx.rt.write_value(cx, self.id, Box::new(value));
     }
 
     /// Replace the value with one computed from the previous effective value.
@@ -267,7 +272,7 @@ impl<T: 'static> WriteSignal<T> {
             let value = previous.downcast_ref::<T>().expect("signal value type");
             f(value)
         };
-        cx.rt.stage(self.id, Box::new(next));
+        cx.rt.write_value(cx, self.id, Box::new(next));
     }
 
     /// Mutate in place. This bypasses equality and always notifies at flush.
@@ -281,7 +286,67 @@ impl<T: 'static> WriteSignal<T> {
                 .expect("signal value type");
             f(value);
         }
-        cx.rt.stage(self.id, value);
+        cx.rt.write_value(cx, self.id, value);
+    }
+}
+
+/// A signal whose writes are guesses while an action is running.
+///
+/// Outside an action, `set`/`update_with` behave like a normal signal write.
+/// Inside one, they show a display-only guess tagged with that action; use
+/// `commit` for the truth write.
+pub struct OptimisticSignal<T> {
+    read: ReadSignal<T>,
+    write: WriteSignal<T>,
+}
+
+impl<T> Clone for OptimisticSignal<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Copy for OptimisticSignal<T> {}
+
+impl<T: PartialEq + Clone + 'static> OptimisticSignal<T> {
+    /// Create an optimistic signal.
+    #[must_use]
+    pub fn new(cx: &Cx<'_>, value: T) -> Self {
+        let (read, write) = create_signal(cx, value);
+        Self { read, write }
+    }
+
+    /// The display read handle.
+    #[must_use]
+    pub fn read(&self) -> ReadSignal<T> {
+        self.read
+    }
+
+    /// Read the display value (including guesses).
+    #[must_use]
+    pub fn get(&self, cx: &Cx<'_>) -> T {
+        self.read.get(cx)
+    }
+
+    /// Guess inside an action, commit outside one.
+    pub fn set(&self, cx: &Cx<'_>, value: T) {
+        if cx.rt.current_action.get().is_some() {
+            guess(cx, &self.read, value);
+        } else {
+            self.write.set(cx, value);
+        }
+    }
+
+    /// Update the display value and guess the result.
+    pub fn update_with(&self, cx: &Cx<'_>, f: impl FnOnce(&mut T)) {
+        let mut value = self.read.get(cx);
+        f(&mut value);
+        self.set(cx, value);
+    }
+
+    /// Stage a committed write. Inside an action it lands when the action
+    /// settles, which is how a refresh replaces the guess with the truth.
+    pub fn commit(&self, cx: &Cx<'_>, value: T) {
+        self.write.set(cx, value);
     }
 }
 
@@ -334,12 +399,8 @@ impl<T: 'static> Memo<T> {
         let node = cx.rt.node(self.id).expect("memo was disposed");
         let node = node.borrow();
         if cx.rt.reader_class.get() == ReaderClass::Display {
-            if let Some(guess) = node
-                .guess
-                .borrow()
-                .as_ref()
-                .and_then(|value| value.downcast_ref::<T>())
-            {
+            let guesses = node.guesses.borrow();
+            if let Some(guess) = newest_guess::<T>(&guesses) {
                 return f(guess);
             }
         }
@@ -597,31 +658,74 @@ impl RuntimeHandle {
 }
 
 impl RuntimeHandle {
-    /// Run an optimistic action: guesses show at once, committed writes land in
-    /// one flush when the future settles, and guesses clear at settle.
+    /// Run an optimistic action with no settle callback.
+    ///
+    /// Guesses show at once, committed writes are held until the future
+    /// settles, and the action's guesses clear at settle.
     pub fn action<F, Fut, T, E>(&self, f: F) -> ActionHandle<T>
     where
-        F: FnOnce(ActionCx) -> Fut + 'static,
+        F: FnOnce() -> Fut + 'static,
         Fut: std::future::Future<Output = Result<T, E>> + 'static,
         T: Clone + 'static,
         E: ToString + 'static,
     {
+        self.action_with(f, |_cx, _result| {})
+    }
+
+    /// Run an optimistic action with a settle callback.
+    ///
+    /// The callback runs outside the action scope after its buffered writes and
+    /// guesses are resolved, so its writes are mainline (visible at the next
+    /// flush). Use it for error reporting.
+    pub fn action_with<F, Fut, T, E, S>(&self, f: F, settle: S) -> ActionHandle<T>
+    where
+        F: FnOnce() -> Fut + 'static,
+        Fut: std::future::Future<Output = Result<T, E>> + 'static,
+        T: Clone + 'static,
+        E: ToString + 'static,
+        S: FnOnce(&Cx<'_>, &Result<T, E>) + 'static,
+    {
         let runtime = self.clone();
         let (result, set_result) = create_signal_unchecked(&self.cx(), None::<Result<T, String>>);
-        let action = ActionCx {
-            runtime: self.clone(),
-            guesses: Rc::new(RefCell::new(Vec::new())),
-        };
-        let guesses = Rc::clone(&action.guesses);
+        let id = ActionId(self.runtime().next_action.get() + 1);
+        self.runtime().next_action.set(id.0);
+        self.runtime()
+            .actions
+            .borrow_mut()
+            .insert(id, ActionState::default());
+
+        let runtime_for_task = self.clone();
         self.spawner().spawn_local(Box::pin(async move {
-            let outcome = f(action).await;
+            let scoped = ScopedAction {
+                inner: Box::pin(f()),
+                runtime: runtime_for_task.clone(),
+                id,
+            };
+            let outcome = scoped.await;
             let cx = runtime.cx();
-            for id in guesses.borrow().iter().copied() {
-                runtime.clear_guess_id(id);
-            }
+            runtime.finish_action(id, outcome.is_ok());
+            settle(&cx, &outcome);
             set_result.set(&cx, Some(outcome.map_err(|error| error.to_string())));
         }));
         ActionHandle { result }
+    }
+}
+
+struct ScopedAction<F> {
+    inner: Pin<Box<F>>,
+    runtime: RuntimeHandle,
+    id: ActionId,
+}
+
+impl<F: Future> Future for ScopedAction<F> {
+    type Output = F::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+        let this = self.get_mut();
+        let previous = this.runtime.current_action.replace(Some(this.id));
+        let result = this.inner.as_mut().poll(cx);
+        this.runtime.current_action.set(previous);
+        result
     }
 }
 
@@ -785,6 +889,36 @@ impl<'a> Cx<'a> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct ActionId(u64);
+
+type DeferredWrite = Box<dyn for<'a> FnOnce(&Cx<'a>)>;
+
+#[derive(Default)]
+struct ActionState {
+    guesses: Vec<NodeId>,
+    writes: Vec<DeferredWrite>,
+}
+
+struct Guess {
+    action: Option<ActionId>,
+    seq: u64,
+    value: Box<dyn Any>,
+}
+
+fn newest_guess<T: 'static>(guesses: &[Guess]) -> Option<&T> {
+    guesses
+        .iter()
+        .filter_map(|guess| {
+            guess
+                .value
+                .downcast_ref::<T>()
+                .map(|value| (guess.seq, value))
+        })
+        .max_by_key(|(seq, _)| *seq)
+        .map(|(_, value)| value)
+}
+
 /// The reactive graph runtime.
 pub struct Runtime {
     nodes: RefCell<Arena<NodeRc>>,
@@ -813,6 +947,10 @@ pub struct Runtime {
     effect_tokens: RefCell<HashMap<NodeId, NodeId>>,
     pending_probe: Cell<bool>,
     pending_probe_found: Cell<bool>,
+    current_action: Cell<Option<ActionId>>,
+    actions: RefCell<HashMap<ActionId, ActionState>>,
+    next_action: Cell<u64>,
+    guess_seq: Cell<u64>,
 }
 
 impl Default for Runtime {
@@ -864,6 +1002,10 @@ impl Runtime {
             effect_tokens: RefCell::new(HashMap::new()),
             pending_probe: Cell::new(false),
             pending_probe_found: Cell::new(false),
+            current_action: Cell::new(None),
+            actions: RefCell::new(HashMap::new()),
+            next_action: Cell::new(0),
+            guess_seq: Cell::new(0),
         }
     }
 
@@ -958,7 +1100,7 @@ impl Runtime {
                 return true;
             }
             let node = node.borrow();
-            if node.guess.borrow().is_some() {
+            if !node.guesses.borrow().is_empty() {
                 return true;
             }
             let has_value = node.value.borrow().is_some();
@@ -1207,9 +1349,94 @@ impl Runtime {
 
     fn clear_guess_id(&self, id: NodeId) {
         if let Some(node) = self.node(id) {
-            node.borrow().guess.borrow_mut().take();
+            node.borrow().guesses.borrow_mut().clear();
         }
         self.mark_display_changed(id);
+        self.bump_affects();
+    }
+
+    fn clear_action_guesses(&self, action: ActionId) {
+        let nodes = self
+            .actions
+            .borrow()
+            .get(&action)
+            .map(|state| state.guesses.clone())
+            .unwrap_or_default();
+        for id in nodes {
+            if let Some(node) = self.node(id) {
+                node.borrow()
+                    .guesses
+                    .borrow_mut()
+                    .retain(|guess| guess.action != Some(action));
+            }
+            self.mark_display_changed(id);
+        }
+        self.bump_affects();
+    }
+
+    fn guess_for(&self, action: Option<ActionId>, id: NodeId, value: Box<dyn Any>) {
+        let seq = self.guess_seq.get() + 1;
+        self.guess_seq.set(seq);
+        if let Some(node) = self.node(id) {
+            node.borrow()
+                .guesses
+                .borrow_mut()
+                .push(Guess { action, seq, value });
+        }
+        if let Some(action) = action {
+            self.actions
+                .borrow_mut()
+                .entry(action)
+                .or_default()
+                .guesses
+                .push(id);
+        }
+        self.mark_display_changed(id);
+        self.bump_affects();
+    }
+
+    fn write_value(&self, _cx: &Cx<'_>, id: NodeId, value: Box<dyn Any>) {
+        if let Some(action) = self.current_action.get() {
+            let write: DeferredWrite = Box::new(move |cx| cx.rt.stage(id, value));
+            self.actions
+                .borrow_mut()
+                .entry(action)
+                .or_default()
+                .writes
+                .push(write);
+        } else {
+            self.stage(id, value);
+        }
+    }
+
+    fn write_for(&self, action: ActionId, id: NodeId, value: Box<dyn Any>) {
+        let write: DeferredWrite = Box::new(move |cx| cx.rt.stage(id, value));
+        self.actions
+            .borrow_mut()
+            .entry(action)
+            .or_default()
+            .writes
+            .push(write);
+    }
+
+    fn finish_action(&self, id: ActionId, commit: bool) {
+        let Some(state) = self.actions.borrow_mut().remove(&id) else {
+            return;
+        };
+        if commit {
+            for write in state.writes {
+                write(&self.cx());
+            }
+        }
+        for node_id in state.guesses {
+            if let Some(node) = self.node(node_id) {
+                node.borrow()
+                    .guesses
+                    .borrow_mut()
+                    .retain(|guess| guess.action != Some(id));
+            }
+            self.mark_display_changed(node_id);
+        }
         self.bump_affects();
     }
 
@@ -2050,12 +2277,8 @@ impl Runtime {
             return Err(LatestError::Loading);
         };
         let node = node_ref.borrow();
-        if let Some(guess) = node
-            .guess
-            .borrow()
-            .as_ref()
-            .and_then(|value| value.downcast_ref::<T>())
-        {
+        let guesses = node.guesses.borrow();
+        if let Some(guess) = newest_guess::<T>(&guesses) {
             return Ok(guess.clone());
         }
         if let Some(Ok(value)) = node.async_result.borrow().as_ref() {
@@ -2227,45 +2450,47 @@ pub fn refresh<T>(cx: &Cx<'_>, memo: Memo<T>) {
 /// Derivations keep reading the committed value. The guess marks the node
 /// pending and lasts until [`clear_guess`].
 pub fn guess<T: Clone + 'static, H: NodeHandle>(cx: &Cx<'_>, node: &H, value: T) {
-    let id = node.node_id();
-    if let Some(node) = cx.rt.node(id) {
-        node.borrow().guess.borrow_mut().replace(Box::new(value));
-    }
-    cx.rt.mark_display_changed(id);
-    cx.rt.bump_affects();
+    let action = cx.rt.current_action.get();
+    cx.rt.guess_for(action, node.node_id(), Box::new(value));
 }
 
 /// Remove a guess and return display reads to the committed value.
 pub fn clear_guess<H: NodeHandle>(cx: &Cx<'_>, node: &H) {
-    cx.rt.clear_guess_id(node.node_id());
+    if let Some(action) = cx.rt.current_action.get() {
+        cx.rt.clear_action_guesses(action);
+    } else {
+        cx.rt.clear_guess_id(node.node_id());
+    }
 }
 
 /// The capability an action uses to guess and commit writes.
 #[derive(Clone)]
 pub struct ActionCx {
     runtime: RuntimeHandle,
-    guesses: Rc<RefCell<Vec<NodeId>>>,
+    id: ActionId,
 }
 
 impl ActionCx {
     /// Show a display-only guess for the duration of the action.
     pub fn guess<T: Clone + 'static, H: NodeHandle>(&self, node: &H, value: T) {
-        guess(&self.runtime.cx(), node, value);
-        let id = node.node_id();
-        let mut guesses = self.guesses.borrow_mut();
-        if !guesses.contains(&id) {
-            guesses.push(id);
-        }
+        self.runtime
+            .guess_for(Some(self.id), node.node_id(), Box::new(value));
     }
 
-    /// Stage a committed write. It becomes visible at the next flush.
+    /// Stage a committed write. It becomes visible when the action settles.
     pub fn set<T: 'static>(&self, signal: WriteSignal<T>, value: T) {
-        signal.set(&self.runtime.cx(), value);
+        self.runtime
+            .write_for(self.id, signal.id(), Box::new(value));
     }
 
     /// Stage a committed update computed from the previous value.
-    pub fn update_with<T: 'static>(&self, signal: WriteSignal<T>, f: impl FnOnce(&T) -> T) {
-        signal.update_with(&self.runtime.cx(), f);
+    pub fn update_with<T: Clone + 'static>(&self, signal: WriteSignal<T>, f: impl FnOnce(&T) -> T) {
+        let previous = self
+            .runtime
+            .committed_value::<T>(signal.id())
+            .expect("signal has a committed value");
+        let next = f(&previous);
+        self.runtime.write_for(self.id, signal.id(), Box::new(next));
     }
 
     /// Read the committed value of a signal without tracking or guesses.
@@ -2691,7 +2916,7 @@ struct Node {
     future_flight: Cell<u64>,
     in_flight: Cell<bool>,
     quiet: Cell<bool>,
-    guess: RefCell<Option<Box<dyn Any>>>,
+    guesses: RefCell<Vec<Guess>>,
     async_result: RefCell<Option<Result<Box<dyn Any>, AsyncError>>>,
     async_error: RefCell<Option<String>>,
     boundary: RefCell<Option<BoundaryFns>>,
@@ -2736,7 +2961,7 @@ impl Node {
             future_flight: Cell::new(0),
             in_flight: Cell::new(false),
             quiet: Cell::new(false),
-            guess: RefCell::new(None),
+            guesses: RefCell::new(Vec::new()),
             async_result: RefCell::new(None),
             async_error: RefCell::new(None),
             boundary: RefCell::new(None),

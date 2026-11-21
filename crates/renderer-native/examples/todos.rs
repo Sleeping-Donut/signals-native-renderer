@@ -128,7 +128,9 @@ mod model {
 mod store {
     use std::rc::Rc;
 
-    use reactive_core::{create_signal, Cx, ReadSignal, RuntimeHandle, WriteSignal};
+    use reactive_core::{
+        create_signal, Cx, OptimisticSignal, ReadSignal, RuntimeHandle, WriteSignal,
+    };
 
     use crate::model::{Api, Todo};
 
@@ -150,12 +152,12 @@ mod store {
         }
     }
 
-    /// Committed rows plus the action guesses layered over them.
+    /// Optimistic rows. Writes inside an action are guesses; the commit and
+    /// refresh writes are held until that action settles.
     pub struct TodosStore {
         runtime: RuntimeHandle,
         api: Rc<Api>,
-        todos: ReadSignal<Vec<TodoRow>>,
-        set_todos: WriteSignal<Vec<TodoRow>>,
+        todos: OptimisticSignal<Vec<TodoRow>>,
         ready: ReadSignal<bool>,
         error: ReadSignal<String>,
         set_error: WriteSignal<String>,
@@ -165,7 +167,7 @@ mod store {
 
     impl TodosStore {
         pub fn new(cx: &Cx<'_>, runtime: RuntimeHandle, api: Rc<Api>) -> Rc<Self> {
-            let (todos, set_todos) = create_signal(cx, Vec::new());
+            let todos = OptimisticSignal::new(cx, Vec::new());
             let (ready, set_ready) = create_signal(cx, false);
             let (error, set_error) = create_signal(cx, String::new());
             let (fail_next, set_fail_next) = create_signal(cx, false);
@@ -175,7 +177,7 @@ mod store {
             runtime.spawner().spawn_local(Box::pin(async move {
                 let list = api_for_task.list().await;
                 let cx = runtime_for_task.cx();
-                set_todos.set(&cx, list.into_iter().map(row).collect());
+                todos.set(&cx, list.into_iter().map(row).collect());
                 set_ready.set(&cx, true);
             }));
 
@@ -183,7 +185,6 @@ mod store {
                 runtime,
                 api,
                 todos,
-                set_todos,
                 ready,
                 error,
                 set_error,
@@ -193,7 +194,7 @@ mod store {
         }
 
         pub fn rows(&self) -> ReadSignal<Vec<TodoRow>> {
-            self.todos
+            self.todos.read()
         }
 
         pub fn ready(&self) -> ReadSignal<bool> {
@@ -216,91 +217,79 @@ mod store {
         pub fn toggle(self: &Rc<Self>, _cx: &Cx<'_>, id: u64) {
             let api = Rc::clone(&self.api);
             let todos = self.todos;
-            let set_todos = self.set_todos;
             let set_error = self.set_error;
             let set_fail_next = self.set_fail_next;
-            let _ = self.runtime.action(move |act| async move {
-                act.set(set_error, String::new());
-                let optimistic: Vec<TodoRow> = act
-                    .get(todos)
-                    .into_iter()
-                    .map(|row| {
-                        if row.id == id {
-                            TodoRow {
-                                done: !row.done,
-                                pending: true,
-                                ..row
-                            }
-                        } else {
-                            row
-                        }
-                    })
-                    .collect();
-                act.guess(&todos, optimistic.clone());
+            let runtime_for_action = self.runtime.clone();
 
-                match api.toggle(id).await {
-                    Ok(()) => {
-                        let committed = optimistic
-                            .into_iter()
-                            .map(|row| TodoRow {
-                                pending: false,
-                                ..row
-                            })
-                            .collect();
-                        act.set(set_todos, committed);
+            let _ = self.runtime.action_with(
+                move || {
+                    let rt = runtime_for_action.clone();
+                    async move {
+                        todos.update_with(&rt.cx(), |rows| {
+                            if let Some(row) = rows.iter_mut().find(|row| row.id == id) {
+                                row.done = !row.done;
+                                row.pending = true;
+                            }
+                        });
+
+                        api.toggle(id).await?;
+
+                        let list = api.list().await;
+                        todos.commit(&rt.cx(), list.into_iter().map(row).collect());
                         Ok::<(), String>(())
                     }
+                },
+                move |cx, result| match result {
+                    Ok(()) => set_error.set(cx, String::new()),
                     Err(message) => {
-                        act.set(set_fail_next, false);
-                        act.set(set_error, message.clone());
-                        Err(message)
+                        set_fail_next.set(cx, false);
+                        set_error.set(cx, message.clone());
                     }
-                }
-            });
+                },
+            );
         }
 
         pub fn add(self: &Rc<Self>, _cx: &Cx<'_>, text: String) {
             let api = Rc::clone(&self.api);
             let todos = self.todos;
-            let set_todos = self.set_todos;
             let set_error = self.set_error;
             let set_fail_next = self.set_fail_next;
             let id = self.api.next_id();
-            let _ = self.runtime.action(move |act| async move {
-                act.set(set_error, String::new());
-                let mut optimistic = act.get(todos);
-                optimistic.push(TodoRow {
-                    id,
-                    text: text.clone(),
-                    done: false,
-                    pending: true,
-                });
-                act.guess(&todos, optimistic.clone());
+            let runtime_for_action = self.runtime.clone();
 
-                let todo = Todo {
-                    id,
-                    text,
-                    done: false,
-                };
-                match api.add(todo).await {
-                    Ok(()) => {
-                        let committed = optimistic
-                            .into_iter()
-                            .map(|row| TodoRow {
-                                pending: false,
-                                ..row
-                            })
-                            .collect();
-                        act.set(set_todos, committed);
+            let _ = self.runtime.action_with(
+                move || {
+                    let rt = runtime_for_action.clone();
+                    async move {
+                        todos.update_with(&rt.cx(), |rows| {
+                            rows.push(TodoRow {
+                                id,
+                                text: text.clone(),
+                                done: false,
+                                pending: true,
+                            });
+                        });
+
+                        api.add(Todo {
+                            id,
+                            text,
+                            done: false,
+                        })
+                        .await?;
+
+                        let list = api.list().await;
+                        todos.commit(&rt.cx(), list.into_iter().map(row).collect());
                         Ok::<(), String>(())
                     }
+                },
+                move |cx, result| match result {
+                    Ok(()) => set_error.set(cx, String::new()),
                     Err(message) => {
-                        act.set(set_fail_next, false);
-                        act.set(set_error, message.clone());
-                        Err(message)
+                        set_fail_next.set(cx, false);
+                        set_error.set(cx, message.clone());
                     }
-                }
-            });
+                },
+            );
         }
     }
 }

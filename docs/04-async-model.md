@@ -248,7 +248,7 @@ the same capabilities:
 |---|---|---|---|---|
 | `&Cx` | No | Yes | Yes | Mount, events, sync compute |
 | `CxHandle` | Yes | Yes | No | Async compute |
-| `ActionCx` | Yes | Yes | Yes, joins the action txn | Actions (v0.2) |
+| Action scope | Yes | Yes | Yes, joins the action txn | Actions (v0.2) |
 | `TaskCx` | Yes | Yes | Yes, mainline | Detached tasks and continuations |
 
 - `CxHandle` is cloneable and `!Send`; the runtime is UI-thread-affine. It keeps
@@ -257,7 +257,8 @@ the same capabilities:
   after the first poll adds an edge mid-flight; if it changes, the flight is
   superseded and a new run starts. The node must accept edges added mid-flight.
 - Compute gets a **read-only** handle: a derive cannot write. Actions get
-  `ActionCx`, which carries the txn id; a write through it joins the action.
+  the poll-scoped action (`Runtime::current_action`), so a write inside the
+  action joins it; `ActionCx` remains the explicit handle.
   A detached task gets `TaskCx`; its writes are mainline, not part of an action.
 - `async |cx|` binds `cx: CxHandle` (owned); a sync closure binds `&Cx`. The
   macro injects the right one from the closure form. The node type is unchanged.
@@ -1249,33 +1250,57 @@ are ready at one flush commit together, so readers see one merged update
 
 ## 8. Actions (v0.2, implemented)
 
-An action is an optimistic future with an owned capability handle:
+An action is an optimistic future whose scope follows the future's polls. The
+action is ambient while it runs, so setters do not take it as an argument:
 
 ```rust
-let handle = runtime.action(move |act| async move {
-    act.guess(&todos, optimistic);      // display at once
-    if save().await.is_err() {
-        return Err(String::from("rejected"));
-    }
-    act.set(set_todos, committed);      // stage the truth
-    Ok(())
-});
+let todos = OptimisticSignal::new(&cx, rows);
+let runtime_for_action = runtime.clone();
+
+let handle = runtime.action_with(
+    move || {
+        let rt = runtime_for_action.clone();
+        async move {
+            todos.update_with(&rt.cx(), |rows| {        // guess
+                let row = rows.iter_mut().find(|row| row.id == id).unwrap();
+                row.done = !row.done;
+                row.pending = true;
+            });
+
+            api.save_toggle(id).await?;                 // still scoped
+
+            let truth = api.list().await;
+            todos.commit(&rt.cx(), truth.rows());       // buffered truth
+            Ok::<(), String>(())
+        }
+    },
+    move |cx, result| {                                 // settle callback
+        if let Err(error) = result {
+            set_error.set(cx, error.clone());
+        }
+    },
+);
 ```
 
-- `RuntimeHandle::action` spawns the future on the runtime's spawner.
-- `ActionCx` carries the runtime, so writes after `await` still work; there is
-  no ambient async context and no `&Cx` capture.
-- `guess` sets a display-only overlay, `set`/`update_with` stage committed
-  writes, and `get` reads committed values without tracking.
-- At settle the action clears every guess it set and records the outcome in
-  `ActionHandle::result()`. Guesses clear and committed writes land in one
-  flush, so a success never flickers back to the old value.
-- v0.2 uses guesses as the lane; there are no multi-node transaction ids yet,
-  and `flush` is not reachable from `ActionCx`.
+- `RuntimeHandle::action` and `action_with` spawn the future. The settle
+  callback runs outside the action scope, so its writes are mainline; use it for
+  error reporting.
+- A wrapper future sets `Runtime::current_action` around every `poll` and
+  restores it afterwards. Unlike Solid's generator slices, writes after an
+  `await` stay scoped automatically; no bare `yield` is required.
+- `OptimisticSignal::set`/`update_with` create a guess tagged with the current
+  action; `commit` writes truth. `WriteSignal::set`/`update_with` inside an
+  action are buffered and applied when it settles.
+- Guesses are stored per action (`Node::guesses`). Settle removes only that
+  action's entries, so overlapping actions do not clear each other's guesses.
+- Settle applies buffered writes on success, discards them on failure, drops the
+  action's guesses, then runs the settle callback and publishes
+  `ActionHandle::result`.
 
-`actions_guess_then_commit_after_await` and
-`actions_report_errors_and_clear_guesses` cover the success and failure paths.
-The optimistic todos app now uses actions; its app-level overlay was deleted.
+Limits: guesses are whole values per node, not keyed patches, so two overlapping
+actions that build from the same committed list can still commit stale bases.
+Serializing per store or adding keyed patch guesses is the next step. Detached
+tasks do not inherit the action scope, and nested actions are separate scopes.
 
 ## 9. Rule subset and what each buys
 
@@ -1307,7 +1332,8 @@ The optimistic todos app now uses actions; its app-level overlay was deleted.
 - **No `latest` in v0.1.** It arrives with the lane model in v0.2.
 - **No optimistic writes, actions, or `affects` in v0.1.** The node shape reserves
   space; the machinery is v0.2.
-- **Actions require `ActionCx` (v0.2).** There is no ambient async context in Rust,
+- **Actions use a poll-scoped ambient scope (v0.2).** `Future::poll` wraps each
+  slice, so writes after `await` join the action without `ActionCx`;
   so a write after `await` joins an action only through the action's capability.
 
 ## 10. Testing
@@ -1375,7 +1401,8 @@ much machinery is involved; it is not a weekend addition.
    forces the internal fallback.
 2. **Boundary content lifetime.** v0.1 disposes on fallback; Solid keeps alive.
    Which is the better default for a native app with scroll/focus state?
-3. **Action writes after await (v0.2).** `ActionCx` is required. Is that too
+3. **Action writes after await (resolved).** The poll-scoped action covers
+   continuations, so `ActionCx` is optional rather than required. Is that too
    restrictive for library code that takes a plain `Cx`?
 4. **`affects` (v0.2).** It should move with the verdict machinery; confirm the
    arity and store coverage at that point.

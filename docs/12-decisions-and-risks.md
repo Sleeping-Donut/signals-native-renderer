@@ -734,7 +734,7 @@ or a measurement.
 - License is GPL-2.0-or-later; GPUI is reference-only for v0.1.
 - `DynamicStore` is v0.2 with a Leptos-style fallback.
 - Async code uses owned context capabilities: `&Cx` for sync, read-only
-  `CxHandle` for async compute, `ActionCx` for action writes, `TaskCx` for
+  a poll-scoped action for action writes, `CxHandle` for async compute, `TaskCx` for
   detached mainline work. Reads after `await` are tracked.
 - Optional props are `MaybeProp<T>`; `Prop<Option<T>>` stays for nullable
   values.
@@ -746,9 +746,10 @@ or a measurement.
 - Re-ask detection: `refresh` marks a quiet flight; `is_pending` stays false and
   an equal answer does not notify. Covered by `refresh_is_a_quiet_re_ask` and
   seeded fuzz `reask_fuzz_is_quiet` (32 seeds x 30 steps, zero violations).
-- Optimistic actions: `RuntimeHandle::action` + `ActionCx` (guess, set,
-  update_with, get), with guesses clearing at settle. The optimistic todos demo
-  uses it instead of an app-level overlay.
+- Optimistic actions: `RuntimeHandle::action`/`action_with` with a poll-scoped
+  `current_action`. `OptimisticSignal` writes guesses, `WriteSignal` writes are
+  buffered until settle, and guesses are stored per action. The optimistic todos
+  demo needs no explicit action argument.
 - Store field split: `Field::split` / `read_only` / `write_only` expose
   `ReadField`/`WriteField` capability views; `Field` stays combined for existing
   code.

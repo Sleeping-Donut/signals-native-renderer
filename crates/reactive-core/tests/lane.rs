@@ -8,7 +8,7 @@ use std::task::Poll;
 
 use reactive_core::{
     clear_guess, create_async_memo, create_memo, create_signal, guess, is_pending, latest,
-    loading_boundary, refresh, render_effect, AsyncError, LatestError, Runtime,
+    loading_boundary, refresh, render_effect, AsyncError, LatestError, OptimisticSignal, Runtime,
 };
 
 type Fut<T> = Pin<Box<dyn std::future::Future<Output = Result<T, AsyncError>>>>;
@@ -218,14 +218,19 @@ fn actions_guess_then_commit_after_await() {
     );
     cx.flush().unwrap();
     assert_eq!(seen.borrow().as_slice(), &[1]);
-
-    let handle = runtime.action(move |act| async move {
-        act.guess(&count, 5_u32);
-        if delayed(()).await.is_err() {
-            return Err(String::from("async error"));
+    let runtime_for_action = runtime.clone();
+    let handle = runtime.action(move || {
+        let rt = runtime_for_action.clone();
+        async move {
+            let cx = rt.cx();
+            guess(&cx, &count, 5_u32);
+            set_count.set(&rt.cx(), 7_u32); // buffered before the await
+            if delayed(()).await.is_err() {
+                return Err(String::from("async error"));
+            }
+            set_count.set(&rt.cx(), 9_u32); // buffered after the await
+            Ok::<(), String>(())
         }
-        act.set(set_count, 7_u32);
-        Ok::<(), String>(())
     });
 
     runtime.pump();
@@ -235,14 +240,23 @@ fn actions_guess_then_commit_after_await() {
         Some(5),
         "the guess shows during the await"
     );
+    assert_eq!(
+        count.committed(&cx),
+        Some(1),
+        "committed writes are held until the action settles"
+    );
     assert!(is_pending(&cx, |cx| count.get(cx)));
 
     for _ in 0..4 {
         runtime.pump();
         cx.flush().unwrap();
     }
-    assert_eq!(count.get(&cx), 7, "the write after await commits");
-    assert_eq!(seen.borrow().last().copied(), Some(7));
+    assert_eq!(
+        count.committed(&cx),
+        Some(9),
+        "writes after await land at settle"
+    );
+    assert_eq!(seen.borrow().last().copied(), Some(9));
     assert!(!is_pending(&cx, |cx| count.get(cx)));
     assert_eq!(
         handle.result().get(&cx),
@@ -254,16 +268,72 @@ fn actions_guess_then_commit_after_await() {
 }
 
 #[test]
+fn overlapping_actions_keep_their_own_guesses() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let (count, _set_count) = create_signal(&cx, 1_u32);
+    let seen: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
+    let seen_for_effect = Rc::clone(&seen);
+    let effect = render_effect(
+        &cx,
+        move |cx| count.get(cx),
+        move |_cx, value: &u32| seen_for_effect.borrow_mut().push(*value),
+    );
+    cx.flush().unwrap();
+
+    let runtime_a = runtime.clone();
+    let _a = runtime.action(move || {
+        let rt = runtime_a.clone();
+        async move {
+            guess(&rt.cx(), &count, 5_u32);
+            Ok::<(), String>(())
+        }
+    });
+    let runtime_b = runtime.clone();
+    let _b = runtime.action(move || {
+        let rt = runtime_b.clone();
+        async move {
+            guess(&rt.cx(), &count, 6_u32);
+            if delayed(()).await.is_err() {
+                return Err(String::from("async error"));
+            }
+            Ok::<(), String>(())
+        }
+    });
+
+    runtime.pump();
+    cx.flush().unwrap();
+    assert_eq!(
+        seen.borrow().last().copied(),
+        Some(6),
+        "A settling must not clear B's guess"
+    );
+
+    for _ in 0..4 {
+        runtime.pump();
+        cx.flush().unwrap();
+    }
+    assert_eq!(count.committed(&cx), Some(1));
+    assert_eq!(seen.borrow().last().copied(), Some(1));
+
+    effect.dispose(&cx);
+}
+
+#[test]
 fn actions_report_errors_and_clear_guesses() {
     let runtime = Runtime::new().into_handle();
     let cx = runtime.cx();
     let (count, _set_count) = create_signal(&cx, 1_u32);
-    let handle = runtime.action(move |act| async move {
-        act.guess(&count, 5_u32);
-        if delayed(()).await.is_err() {
-            return Err(String::from("async error"));
+    let runtime_for_action = runtime.clone();
+    let handle = runtime.action(move || {
+        let rt = runtime_for_action.clone();
+        async move {
+            guess(&rt.cx(), &count, 5_u32);
+            if delayed(()).await.is_err() {
+                return Err(String::from("async error"));
+            }
+            Err::<(), String>(String::from("nope"))
         }
-        Err::<(), String>(String::from("nope"))
     });
 
     runtime.pump();
@@ -275,8 +345,8 @@ fn actions_report_errors_and_clear_guesses() {
         cx.flush().unwrap();
     }
     assert_eq!(
-        count.get(&cx),
-        1,
+        count.committed(&cx),
+        Some(1),
         "a failed action reveals no committed write"
     );
     assert!(!is_pending(&cx, |cx| count.get(cx)));
@@ -513,4 +583,125 @@ fn reask_fuzz_is_quiet() {
         effect.dispose(&cx);
     }
     eprintln!("re-ask fuzz: 32 seeds x 30 steps, {checks} checks, 0 violations");
+}
+
+#[test]
+fn optimistic_signal_guesses_inside_actions() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let todos = OptimisticSignal::new(&cx, vec![1_u32]);
+    let seen: Rc<RefCell<Vec<Vec<u32>>>> = Rc::new(RefCell::new(Vec::new()));
+    let seen_for_effect = Rc::clone(&seen);
+    let effect = render_effect(
+        &cx,
+        move |cx| todos.get(cx),
+        move |_cx, rows: &Vec<u32>| seen_for_effect.borrow_mut().push(rows.clone()),
+    );
+    cx.flush().unwrap();
+
+    let runtime_for_action = runtime.clone();
+    let handle = runtime.action(move || {
+        let rt = runtime_for_action.clone();
+        async move {
+            todos.update_with(&rt.cx(), |rows| rows.push(2));
+            if delayed(()).await.is_err() {
+                return Err(String::from("async error"));
+            }
+            todos.commit(&rt.cx(), vec![1, 2, 3]);
+            Ok::<(), String>(())
+        }
+    });
+
+    runtime.pump();
+    cx.flush().unwrap();
+    assert_eq!(
+        seen.borrow().last().cloned(),
+        Some(vec![1, 2]),
+        "the optimistic handle shows the guess during the action"
+    );
+    assert_eq!(
+        todos.read().committed(&cx),
+        Some(vec![1]),
+        "the commit is held until settle"
+    );
+    assert!(is_pending(&cx, |cx| todos.get(cx)));
+
+    for _ in 0..4 {
+        runtime.pump();
+        cx.flush().unwrap();
+    }
+    assert_eq!(todos.read().committed(&cx), Some(vec![1, 2, 3]));
+    assert_eq!(seen.borrow().last().cloned(), Some(vec![1, 2, 3]));
+    assert!(!is_pending(&cx, |cx| todos.get(cx)));
+    assert_eq!(handle.result().get(&cx), Some(Ok(())));
+
+    effect.dispose(&cx);
+}
+
+#[test]
+fn optimistic_signal_failure_reverts_the_guess() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let todos = OptimisticSignal::new(&cx, vec![1_u32]);
+    let runtime_for_action = runtime.clone();
+    let handle = runtime.action(move || {
+        let rt = runtime_for_action.clone();
+        async move {
+            todos.update_with(&rt.cx(), |rows| rows.push(2));
+            if delayed(()).await.is_err() {
+                return Err(String::from("async error"));
+            }
+            Err::<(), String>(String::from("rejected"))
+        }
+    });
+
+    runtime.pump();
+    cx.flush().unwrap();
+    assert_eq!(todos.get(&cx), vec![1, 2]);
+
+    for _ in 0..4 {
+        runtime.pump();
+        cx.flush().unwrap();
+    }
+    assert_eq!(todos.get(&cx), vec![1]);
+    assert_eq!(todos.read().committed(&cx), Some(vec![1]));
+    assert_eq!(
+        handle.result().get(&cx),
+        Some(Err(String::from("rejected")))
+    );
+}
+
+#[test]
+fn action_settle_callback_writes_outside_the_scope() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let (error, set_error) = create_signal(&cx, String::new());
+    let runtime_for_action = runtime.clone();
+    let _handle = runtime.action_with(
+        move || {
+            let _rt = runtime_for_action.clone();
+            async move {
+                if delayed(()).await.is_err() {
+                    return Err(String::from("async error"));
+                }
+                Err::<(), String>(String::from("rejected"))
+            }
+        },
+        move |cx, result| {
+            if let Err(message) = result {
+                set_error.set(cx, message.clone());
+            }
+        },
+    );
+
+    runtime.pump();
+    for _ in 0..4 {
+        runtime.pump();
+        cx.flush().unwrap();
+    }
+    assert_eq!(
+        error.get(&cx),
+        "rejected",
+        "the settle callback runs mainline after the action scope"
+    );
 }
