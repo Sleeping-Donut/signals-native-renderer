@@ -1,8 +1,10 @@
 //! Two-instance counter reference app on the native window and wgpu backend.
 //!
-//! Each counter owns a local signal; both share a module-level signal. The
-//! local double is a memo. Clicks and keyboard focus are handled by the view
-//! tree, not by renderer-specific event hooks.
+//! Module layout:
+//! - `app`: window lifecycle and `main`
+//! - `uicomponents`: `App` and `Counter`
+//! - `basecomponents`: reusable `ActionButton` and `TextLine`
+//! - `styles`: shared style builders
 //!
 //! Set `COUNTER_SNAPSHOT=/path/to/frame.rgba` to render one offscreen frame at
 //! 1520x720 (2x) without opening a window.
@@ -11,71 +13,16 @@ use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
 
-use reactive_core::{ReadSignal, Runtime, RuntimeHandle, WriteSignal};
-use renderer_api::{
-    Color, CursorIcon, DefiniteLength, Edges, KeyEvent, Length, PointerEvent, ResolvedStyle, Size,
-    TextStyle,
-};
+use reactive_core::RuntimeHandle;
+use renderer_api::{KeyEvent, PointerEvent};
 use renderer_native::{run_windowed, BackendMetrics, FrameOutput, WindowApp};
 use renderer_null::{NullRenderer, SharedNullRenderer};
 use view::ViewTree;
 
-mod signals {
-    use super::styles;
-    use super::*;
-    use macros::view;
-    use reactive_core::{memo, signal};
-    use view::View;
-
-    pub fn counter(
-        cx: &reactive_core::Cx<'_>,
-        shared: ReadSignal<u32>,
-        bump: WriteSignal<u32>,
-    ) -> View {
-        let (local, set_local) = signal!(cx, 0_u32);
-        let double = memo!(cx, move |cx, _| local.get(cx) * 2);
-
-        view! {
-            <Column style={styles::stack()}>
-                <Button
-                    style={styles::button()}
-                    hover_style={styles::HOVER}
-                    focus_style={styles::FOCUS}
-                    cursor={CursorIcon::Pointer}
-                    on_click={move |cx| set_local.update_with(cx, |value| value + 1)}
-                >
-                    <Text style={styles::button_label()}>{format!("local {}", local.get(cx))}</Text>
-                </Button>
-                <Button
-                    style={styles::button()}
-                    hover_style={styles::HOVER}
-                    focus_style={styles::FOCUS}
-                    cursor={CursorIcon::Pointer}
-                    on_click={move |cx| bump.update_with(cx, |value| value + 1)}
-                >
-                    <Text style={styles::button_label()}>{format!("shared {}", shared.get(cx))}</Text>
-                </Button>
-                <Text style={styles::base()}>{format!("local double {}", double.get(cx))}</Text>
-            </Column>
-        }
-    }
-
-    pub fn root(
-        cx: &reactive_core::Cx<'_>,
-        shared: ReadSignal<u32>,
-        bump: WriteSignal<u32>,
-    ) -> View {
-        view! {
-            <Row style={styles::root()}>
-                <Embed expr={counter(cx, shared, bump)} />
-                <Embed expr={counter(cx, shared, bump)} />
-            </Row>
-        }
-    }
-}
-
 mod styles {
-    use super::*;
+    use renderer_api::{
+        Color, DefiniteLength, Edges, FlexDirection, Length, ResolvedStyle, Size, TextStyle,
+    };
     use view::StateStyle;
 
     pub fn text() -> TextStyle {
@@ -84,18 +31,6 @@ mod styles {
             font_size: 20.0,
             line_height: 26.0,
             weight: 400,
-        }
-    }
-
-    pub fn button_label() -> ResolvedStyle {
-        ResolvedStyle {
-            text: TextStyle {
-                color: Color::new(0.92, 0.92, 0.95, 1.0),
-                font_size: 16.0,
-                line_height: 20.0,
-                weight: 400,
-            },
-            ..ResolvedStyle::default()
         }
     }
 
@@ -108,7 +43,7 @@ mod styles {
 
     pub fn stack() -> ResolvedStyle {
         let mut style = base();
-        style.flex.direction = renderer_api::FlexDirection::Column;
+        style.flex.direction = FlexDirection::Column;
         style.gap = Size {
             width: DefiniteLength::Px(0.0),
             height: DefiniteLength::Px(8.0),
@@ -125,7 +60,7 @@ mod styles {
 
     pub fn root() -> ResolvedStyle {
         let mut style = base();
-        style.flex.direction = renderer_api::FlexDirection::Row;
+        style.flex.direction = FlexDirection::Row;
         style.gap = Size {
             width: DefiniteLength::Px(16.0),
             height: DefiniteLength::Px(0.0),
@@ -163,27 +98,134 @@ mod styles {
         style
     }
 
+    pub fn button_label() -> ResolvedStyle {
+        let mut style = base();
+        style.text.font_size = 16.0;
+        style.text.line_height = 20.0;
+        style
+    }
+
     pub const HOVER: StateStyle = StateStyle::new().background(Color::new(0.3, 0.36, 0.46, 1.0));
     pub const FOCUS: StateStyle = StateStyle::new()
         .background(Color::new(0.2, 0.42, 0.62, 1.0))
         .border_color(Color::new(0.62, 0.82, 1.0, 1.0));
 }
 
+mod basecomponents {
+    use macros::{component, view};
+    use reactive_core::Cx;
+    use renderer_api::CursorIcon;
+    use view::{Callback, View};
+
+    use crate::styles;
+
+    #[macros::props]
+    pub struct ActionButtonProps {
+        pub label: String,
+        pub on_click: Callback,
+    }
+
+    #[component]
+    pub fn ActionButton(_cx: &Cx<'_>, props: ActionButtonProps) -> View {
+        let label = props.label;
+        let on_click = props.on_click;
+        view! {
+            <Button
+                style={styles::button()}
+                hover_style={styles::HOVER}
+                focus_style={styles::FOCUS}
+                cursor={CursorIcon::Pointer}
+                on_click={move |cx: &Cx<'_>| on_click.call(cx)}
+            >
+                <Text style={styles::button_label()}>{label.get(cx)}</Text>
+            </Button>
+        }
+    }
+
+    #[macros::props]
+    pub struct TextLineProps {
+        pub value: String,
+    }
+
+    #[component]
+    pub fn TextLine(_cx: &Cx<'_>, props: TextLineProps) -> View {
+        let value = props.value;
+        view! { <Text style={styles::base()}>{value.get(cx)}</Text> }
+    }
+}
+
+mod uicomponents {
+    use macros::{component, view};
+    use reactive_core::{memo, signal, Cx};
+    use view::{CallbackWith, Prop, View};
+
+    use crate::basecomponents::{ActionButton, ActionButtonProps, TextLine, TextLineProps};
+    use crate::styles;
+
+    #[macros::props]
+    pub struct CounterProps {
+        pub shared: u32,
+        pub increment: CallbackWith<u32>,
+    }
+
+    #[component]
+    pub fn Counter(cx: &Cx<'_>, props: CounterProps) -> View {
+        let (local, set_local) = signal!(cx, 0_u32);
+        let double = memo!(cx, move |cx, _| local.get(cx) * 2);
+
+        view! {
+            <Column style={styles::stack()}>
+                <ActionButton
+                    label={Prop::derived(cx, move |cx| {
+                        format!("local {}", local.get(cx))
+                    })}
+                    on_click={move |cx: &Cx<'_>| {
+                        set_local.update_with(cx, |value| value + 1)
+                    }}
+                />
+                <ActionButton
+                    label={Prop::derived(cx, move |cx| {
+                        format!("shared {}", props.shared.get(cx))
+                    })}
+                    on_click={move |cx: &Cx<'_>| {
+                        props.increment.call(cx, 1)
+                    }}
+                />
+                <TextLine value={Prop::derived(cx, move |cx| {
+                    format!("local double {}", double.get(cx))
+                })} />
+            </Column>
+        }
+    }
+
+    #[component]
+    pub fn App(cx: &Cx<'_>) -> View {
+        let (shared, bump) = signal!(cx, 0_u32);
+        let increment: CallbackWith<u32> =
+            (move |cx: &Cx<'_>, amount: u32| bump.update_with(cx, |value| value + amount)).into();
+
+        view! {
+            <Row style={styles::root()}>
+                <Counter shared={shared} increment={increment.clone()} />
+                <Counter shared={shared} increment={increment} />
+            </Row>
+        }
+    }
+}
+
 mod app {
     use super::*;
-    use reactive_core::create_signal;
-    use renderer_native::{PaintBackend, WgpuBackend};
 
     pub struct CounterApp {
-        runtime: RuntimeHandle,
-        tree: ViewTree,
-        root: reactive_core::NodeId,
-        frames: u64,
+        pub runtime: RuntimeHandle,
+        pub tree: ViewTree,
+        pub root: reactive_core::NodeId,
+        pub frames: u64,
     }
 
     impl CounterApp {
         pub fn new() -> Self {
-            let runtime = Runtime::new().into_handle();
+            let runtime = reactive_core::Runtime::new().into_handle();
             let renderer = Rc::new(RefCell::new(NullRenderer::new()));
             let tree = ViewTree::new_with_shaper(
                 Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
@@ -191,8 +233,7 @@ mod app {
                 Box::new(text::CosmicShaper::new()),
             );
             let cx = runtime.cx();
-            let (shared, bump) = create_signal(&cx, 0_u32);
-            let root = tree.mount(&cx, crate::signals::root(&cx, shared, bump));
+            let root = tree.mount(&cx, crate::uicomponents::App(&cx));
             Self {
                 runtime,
                 tree,
@@ -241,8 +282,8 @@ mod app {
             self.tree.key_down(event)
         }
 
-        fn cursor_icon(&self) -> CursorIcon {
-            self.tree.cursor().unwrap_or(CursorIcon::Default)
+        fn cursor_icon(&self) -> renderer_api::CursorIcon {
+            self.tree.cursor().unwrap_or_default()
         }
 
         fn accesskit_update(&self) -> Option<accesskit::TreeUpdate> {
@@ -255,16 +296,13 @@ mod app {
     }
 
     pub fn write_snapshot(path: &str) {
+        use renderer_native::PaintBackend;
         let metrics = BackendMetrics::new(1520, 720, 2.0);
         let mut app = CounterApp::new();
         app.resize(metrics);
         let output = app.frame(metrics);
-        let mut backend = WgpuBackend::new_headless(
-            metrics.physical_width,
-            metrics.physical_height,
-            metrics.scale,
-        )
-        .expect("headless wgpu");
+        let mut backend =
+            renderer_native::WgpuBackend::new_headless(1520, 720, 2.0).expect("headless wgpu");
         backend
             .render(&output.scene, &output.damage)
             .expect("render");

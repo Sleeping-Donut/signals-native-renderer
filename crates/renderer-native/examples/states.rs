@@ -1,18 +1,18 @@
 //! States and cities: async memos, a loading boundary, and writable derived
 //! selection signals on the native window.
+//!
+//! Module layout mirrors the counter demo:
+//! - `app`: window lifecycle and `main`
+//! - `uicomponents`: `App` and `Content`
+//! - `basecomponents`: `Panel`, `SelectList`, `TextLine`
+//! - `model` / `styles`
 
 use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
-use std::time::Duration;
 
-use reactive_core::{
-    is_pending, memo, signal, Memo, ReadSignal, Runtime, RuntimeHandle, WriteSignal,
-};
-use renderer_api::{
-    Color, CursorIcon, DefiniteLength, Edges, KeyEvent, Length, PointerEvent, ResolvedStyle, Size,
-    TextStyle,
-};
+use reactive_core::RuntimeHandle;
+use renderer_api::{KeyEvent, PointerEvent};
 use renderer_native::{run_windowed, BackendMetrics, FrameOutput, WindowApp};
 use renderer_null::{NullRenderer, SharedNullRenderer};
 use view::ViewTree;
@@ -52,7 +52,9 @@ mod model {
 }
 
 mod styles {
-    use super::*;
+    use renderer_api::{
+        Color, DefiniteLength, Edges, FlexDirection, Length, ResolvedStyle, Size, TextStyle,
+    };
 
     pub fn text() -> ResolvedStyle {
         ResolvedStyle {
@@ -67,15 +69,10 @@ mod styles {
     }
 
     pub fn row_label() -> ResolvedStyle {
-        ResolvedStyle {
-            text: TextStyle {
-                color: Color::new(0.92, 0.92, 0.95, 1.0),
-                font_size: 16.0,
-                line_height: 20.0,
-                weight: 400,
-            },
-            ..ResolvedStyle::default()
-        }
+        let mut style = text();
+        style.text.font_size = 16.0;
+        style.text.line_height = 20.0;
+        style
     }
 
     pub fn panel() -> ResolvedStyle {
@@ -97,7 +94,7 @@ mod styles {
             background: Some(Color::new(0.16, 0.17, 0.2, 1.0)),
             ..ResolvedStyle::default()
         };
-        style.flex.direction = renderer_api::FlexDirection::Column;
+        style.flex.direction = FlexDirection::Column;
         style
     }
 
@@ -141,7 +138,7 @@ mod styles {
             background: Some(Color::new(0.08, 0.09, 0.12, 1.0)),
             ..ResolvedStyle::default()
         };
-        style.flex.direction = renderer_api::FlexDirection::Column;
+        style.flex.direction = FlexDirection::Column;
         style
     }
 
@@ -168,88 +165,177 @@ mod styles {
     }
 }
 
-mod signals {
-    use super::styles;
-    use super::*;
-    use macros::view;
-    use reactive_core::memo;
-    use view::{select, View};
+mod basecomponents {
+    use macros::{component, view};
+    use reactive_core::Cx;
+    use view::{select, CallbackWith, View};
 
-    pub fn content_view(
-        cx: &reactive_core::Cx<'_>,
-        states: Memo<Vec<String>>,
-        cities: Memo<Vec<String>>,
-        state: ReadSignal<String>,
-        city: ReadSignal<String>,
-        set_state: WriteSignal<String>,
-        set_city: WriteSignal<String>,
-    ) -> View {
-        let selection = memo!(cx, move |cx, _previous: Option<&String>| {
-            format!("Selection: {}, {}", city.get(cx), state.get(cx))
-        });
+    use crate::styles;
 
+    #[macros::props]
+    pub struct PanelProps {
+        pub title: String,
+        pub children: View,
+    }
+
+    #[component]
+    pub fn Panel(cx: &Cx<'_>, props: PanelProps) -> View {
+        let title = props.title;
+        let children = props.children;
         view! {
-            <Column style={styles::root()}>
-                <Row style={styles::row_container()}>
-                    <Column style={styles::panel()}>
-                        <Text style={styles::text()}>"States"</Text>
-                        <Embed expr={select(
-                            move |cx| states.get(cx),
-                            |name: &String| name.clone(),
-                            |name: &String| name.clone(),
-                            move |cx| state.get(cx),
-                            move |cx, item| set_state.set(cx, item),
-                            styles::row(),
-                            |_cx| false,
-                        )} />
-                    </Column>
-                    <Column style={styles::panel()}>
-                        <Text style={styles::text()}>"Cities"</Text>
-                        <Embed expr={select(
-                            move |cx| cities.get(cx),
-                            |name: &String| name.clone(),
-                            |name: &String| name.clone(),
-                            move |cx| city.get(cx),
-                            move |cx, item| set_city.set(cx, item),
-                            styles::row(),
-                            move |cx| is_pending(cx, move |cx| cities.get(cx)),
-                        )} />
-                    </Column>
-                </Row>
-                <Text style={styles::text()}>{selection.get(cx)}</Text>
+            <Column style={styles::panel()}>
+                <TextLine value={title} />
+                <Embed expr={children} />
             </Column>
         }
     }
 
-    pub fn app_view(
-        states: Memo<Vec<String>>,
-        cities: Memo<Vec<String>>,
-        state: ReadSignal<String>,
-        city: ReadSignal<String>,
-        set_state: WriteSignal<String>,
-        set_city: WriteSignal<String>,
-    ) -> View {
-        view! {
-            <Loading fallback={|_cx| loading_view()}>
-                <Embed expr={content_view(cx, states, cities, state, city, set_state, set_city)} />
-            </Loading>
-        }
+    #[macros::props]
+    pub struct TextLineProps {
+        pub value: String,
     }
 
-    pub fn loading_view() -> View {
+    #[component]
+    pub fn TextLine(_cx: &Cx<'_>, props: TextLineProps) -> View {
+        let value = props.value;
+        view! { <Text style={styles::text()}>{value.get(cx)}</Text> }
+    }
+
+    #[macros::props]
+    pub struct SelectListProps {
+        pub items: Vec<String>,
+        pub selected: String,
+        pub on_select: CallbackWith<String>,
+        pub disabled: bool,
+    }
+
+    #[component]
+    pub fn SelectList(_cx: &Cx<'_>, props: SelectListProps) -> View {
+        let items = props.items;
+        let selected = props.selected;
+        let on_select = props.on_select;
+        let disabled = props.disabled;
+        select(
+            move |cx| items.get(cx),
+            |name: &String| name.clone(),
+            |name: &String| name.clone(),
+            move |cx| selected.get(cx),
+            move |cx, item| on_select.call(cx, item),
+            styles::row(),
+            move |cx| disabled.get(cx),
+        )
+    }
+
+    #[component]
+    pub fn LoadingView(cx: &Cx<'_>) -> View {
         view! {
             <Column style={styles::loading_root()}>
-                <Text style={styles::text()}>"Loading…"</Text>
+                <TextLine value={String::from("Loading…")}/>
             </Column>
         }
     }
 }
 
+mod uicomponents {
+    use macros::{component, view};
+    use reactive_core::{is_pending, memo, signal, Cx};
+    use view::{CallbackWith, Prop, View};
+
+    use crate::basecomponents::{
+        LoadingView, Panel, PanelProps, SelectList, SelectListProps, TextLine, TextLineProps,
+    };
+    use crate::model;
+    use crate::styles;
+
+    #[macros::props]
+    pub struct ContentProps {
+        pub states: Vec<String>,
+        pub cities: Vec<String>,
+        pub state: String,
+        pub city: String,
+        pub on_state: CallbackWith<String>,
+        pub on_city: CallbackWith<String>,
+    }
+
+    #[component]
+    pub fn Content(cx: &Cx<'_>, props: ContentProps) -> View {
+        let state_for_display = props.state.clone();
+        let city_for_display = props.city.clone();
+        let cities_for_pending = props.cities.clone();
+        let selection = memo!(cx, move |cx, _| {
+            format!(
+                "Selection: {}, {}",
+                city_for_display.get(cx),
+                state_for_display.get(cx)
+            )
+        });
+        view! {
+            <Column style={styles::root()}>
+                <Row style={styles::row_container()}>
+                    <Panel title={String::from("States")}>
+                        <SelectList
+                            items={props.states}
+                            selected={props.state}
+                            on_select={props.on_state}
+                            disabled={false}
+                        />
+                    </Panel>
+                    <Panel title={String::from("Cities")}>
+                        <SelectList
+                            items={props.cities}
+                            selected={props.city}
+                            on_select={props.on_city}
+                            disabled={Prop::derived(cx, move |cx| {
+                                let cities = cities_for_pending.clone();
+                                is_pending(cx, move |cx| cities.get(cx))
+                            })}
+                        />
+                    </Panel>
+                </Row>
+                <TextLine value={selection} />
+            </Column>
+        }
+    }
+
+    #[component]
+    pub fn App(cx: &Cx<'_>) -> View {
+        let states = memo!(async cx, |_cx, _: Option<&Vec<String>>| {
+            Box::pin(async move {
+                model::sleep(model::DELAY_MS).await;
+                Ok(model::STATES.iter().map(|state| (*state).to_string()).collect())
+            })
+        });
+        let (state, set_state) = signal!(derive cx, move |cx, _| {
+            states.get(cx).first().cloned().unwrap_or_default()
+        });
+        let cities = memo!(async cx, move |cx, _: Option<&Vec<String>>| {
+            let state_name = state.get(cx);
+            Box::pin(async move {
+                model::sleep(model::DELAY_MS).await;
+                Ok(model::cities_for(&state_name))
+            })
+        });
+        let (city, set_city) = signal!(derive cx, move |cx, _| {
+            cities.get(cx).first().cloned().unwrap_or_default()
+        });
+
+        view! {
+            <Loading fallback={LoadingView}>
+                <Content
+                    states={states}
+                    cities={cities}
+                    state={state}
+                    city={city}
+                    on_state={CallbackWith::set(set_state)}
+                    on_city={CallbackWith::set(set_city)}
+                />
+            </Loading>
+        }
+    }
+}
+
 mod app {
-    use super::model;
-    use super::signals;
     use super::*;
-    use renderer_native::{PaintBackend, WgpuBackend};
 
     pub struct StatesApp {
         runtime: RuntimeHandle,
@@ -260,7 +346,7 @@ mod app {
 
     impl StatesApp {
         pub fn new() -> Self {
-            let runtime = Runtime::new().into_handle();
+            let runtime = reactive_core::Runtime::new().into_handle();
             let renderer = Rc::new(RefCell::new(NullRenderer::new()));
             let tree = ViewTree::new_with_shaper(
                 Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
@@ -268,33 +354,7 @@ mod app {
                 Box::new(text::CosmicShaper::new()),
             );
             let cx = runtime.cx();
-
-            let states = memo!(async &cx, |_cx, _: Option<&Vec<String>>| {
-                Box::pin(async move {
-                    model::sleep(model::DELAY_MS).await;
-                    Ok(model::STATES
-                        .iter()
-                        .map(|state| (*state).to_string())
-                        .collect())
-                })
-            });
-            let (state, set_state) = signal!(derive & cx, move |cx, _| {
-                states.get(cx).first().cloned().unwrap_or_default()
-            });
-            let cities = memo!(async &cx, move |cx, _: Option<&Vec<String>>| {
-                let state_name = state.get(cx);
-                Box::pin(async move {
-                    model::sleep(model::DELAY_MS).await;
-                    Ok(model::cities_for(&state_name))
-                })
-            });
-            let (city, set_city) = signal!(derive & cx, move |cx, _| {
-                cities.get(cx).first().cloned().unwrap_or_default()
-            });
-            let root = tree.mount(
-                &cx,
-                signals::app_view(states, cities, state, city, set_state, set_city),
-            );
+            let root = tree.mount(&cx, crate::uicomponents::App(&cx));
             Self {
                 runtime,
                 tree,
@@ -346,8 +406,8 @@ mod app {
             self.tree.key_down(event)
         }
 
-        fn cursor_icon(&self) -> CursorIcon {
-            self.tree.cursor().unwrap_or(CursorIcon::Default)
+        fn cursor_icon(&self) -> renderer_api::CursorIcon {
+            self.tree.cursor().unwrap_or_default()
         }
 
         fn wants_frame(&self) -> bool {
@@ -364,20 +424,17 @@ mod app {
     }
 
     pub fn write_snapshot(path: &str) {
+        use renderer_native::PaintBackend;
         let metrics = BackendMetrics::new(1520, 720, 2.0);
         let mut app = StatesApp::new();
         app.resize(metrics);
         let mut output = app.frame(metrics);
         for _ in 0..100 {
-            std::thread::sleep(Duration::from_millis(16));
+            std::thread::sleep(std::time::Duration::from_millis(16));
             output = app.frame(metrics);
         }
-        let mut backend = WgpuBackend::new_headless(
-            metrics.physical_width,
-            metrics.physical_height,
-            metrics.scale,
-        )
-        .expect("headless wgpu");
+        let mut backend =
+            renderer_native::WgpuBackend::new_headless(1520, 720, 2.0).expect("headless wgpu");
         backend
             .render(&output.scene, &output.damage)
             .expect("render");

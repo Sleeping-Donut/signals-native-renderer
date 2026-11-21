@@ -8,7 +8,7 @@ use std::task::Poll;
 use reactive_core::{create_async_memo, memo, signal, Runtime};
 use renderer_api::ResolvedStyle;
 use renderer_null::{NullRenderer, SharedNullRenderer};
-use view::{Prop, View, ViewTree};
+use view::{Callback, View, ViewTree};
 
 #[test]
 fn view_macro_builds_a_counter() {
@@ -189,10 +189,9 @@ fn view_macro_loading_detects_pending_content_without_ready() {
     tree.unmount(&cx, root);
 }
 
-#[derive(macros::Props, Default)]
+#[macros::props]
 struct BadgeProps {
-    #[prop(into)]
-    label: Prop<String>,
+    label: String,
 }
 
 #[component]
@@ -226,7 +225,7 @@ fn view_macro_component_and_props() {
     tree.unmount(&cx, root);
 }
 
-#[derive(macros::Props)]
+#[macros::props]
 struct PanelProps {
     children: View,
 }
@@ -289,5 +288,50 @@ fn view_builder_builds_a_counter() {
     tree.click_node(children[1]);
     tree.frame(&cx, 1);
     assert_eq!(renderer.borrow().text_of(text), Some("count 1"));
+    tree.unmount(&cx, root);
+}
+
+// An alias is invisible to `#[props]`, so it needs the explicit escape hatch.
+type ClickHandler = Callback;
+
+#[macros::props]
+struct ClickerProps {
+    #[prop(raw)]
+    on_click: ClickHandler,
+}
+
+#[component]
+fn Clicker(_cx: &reactive_core::Cx<'_>, props: ClickerProps) -> View {
+    let on_click = props.on_click;
+    view! {
+        <Button on_click={move |cx: &reactive_core::Cx<'_>| on_click.call(cx)}>
+            <Text>"click"</Text>
+        </Button>
+    }
+}
+
+#[test]
+fn view_macro_component_callback_conversion() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let renderer = Rc::new(RefCell::new(NullRenderer::new()));
+    let tree = ViewTree::new(
+        Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
+        runtime.clone(),
+    );
+    let (count, set_count) = signal!(&cx, 0_u32);
+    let root = tree.mount(
+        &cx,
+        view! {
+            <Clicker on_click={move |cx: &reactive_core::Cx<'_>| {
+                set_count.update_with(cx, |value| value + 1)
+            }} />
+        },
+    );
+    tree.frame(&cx, 0);
+    tree.click_node(root);
+    cx.flush().unwrap();
+    tree.frame(&cx, 1);
+    assert_eq!(count.get(&cx), 1);
     tree.unmount(&cx, root);
 }

@@ -3444,6 +3444,110 @@ where
     }
 }
 
+/// A callback prop invoked with the reactive context and no payload.
+///
+/// Use [`CallbackWith<T>`] when the action carries a value. Both are actions,
+/// not readable values, so `#[props]` leaves them as declared instead of
+/// wrapping them in `Prop<T>`.
+#[derive(Clone)]
+pub struct Callback(Rc<dyn for<'a, 'b> Fn(&'a reactive_core::Cx<'b>)>);
+
+impl Callback {
+    /// A callback from a concrete closure.
+    #[must_use]
+    pub fn new(callback: impl for<'a, 'b> Fn(&'a reactive_core::Cx<'b>) + 'static) -> Self {
+        Self(Rc::new(callback))
+    }
+
+    /// Invoke the callback.
+    pub fn call(&self, cx: &reactive_core::Cx<'_>) {
+        (self.0)(cx);
+    }
+}
+
+impl<F: for<'a, 'b> Fn(&'a reactive_core::Cx<'b>) + 'static> From<F> for Callback {
+    fn from(callback: F) -> Self {
+        Self::new(callback)
+    }
+}
+
+type CallbackWithFn<T> = dyn for<'a, 'b> Fn(&'a reactive_core::Cx<'b>, T);
+
+/// A callback that receives one argument.
+///
+/// This is the payload-carrying counterpart of [`Callback`]. The name says what
+/// the type is for: a callback *with* a value, rather than an arity number.
+///
+/// ```ignore
+/// pub on_click: Callback,                 // no payload
+/// pub on_select: CallbackWith<String>,    // called with a string
+/// pub drag: CallbackWith<(f32, f32)>,     // two values travel as a tuple
+/// ```
+///
+/// Callbacks are actions, not readable values. `#[props]` leaves them as
+/// declared, and the generated builder accepts closures, so they are never
+/// wrapped in `Prop<T>`.
+#[derive(Clone)]
+pub struct CallbackWith<T>(Rc<CallbackWithFn<T>>);
+
+impl<T> CallbackWith<T> {
+    /// A callback from a concrete closure.
+    ///
+    /// The closure takes the reactive context first, then the payload:
+    ///
+    /// ```ignore
+    /// on_select={move |cx, value: String| set_state.set(cx, value)}
+    /// ```
+    #[must_use]
+    pub fn new(callback: impl for<'a, 'b> Fn(&'a reactive_core::Cx<'b>, T) + 'static) -> Self {
+        Self(Rc::new(callback))
+    }
+
+    /// Invoke the callback.
+    pub fn call(&self, cx: &reactive_core::Cx<'_>, value: T) {
+        (self.0)(cx, value);
+    }
+}
+
+impl<T: 'static> CallbackWith<T> {
+    /// A callback that assigns its argument to a signal.
+    ///
+    /// This is a named constructor, not a conversion, so the assignment
+    /// semantics are visible where the prop is passed:
+    ///
+    /// ```ignore
+    /// on_select={CallbackWith::set(set_state)}
+    /// ```
+    ///
+    /// It is only correct when the action means "the value is now this". For
+    /// reducers (`+=`, `toggle`, `push`) write the closure instead:
+    ///
+    /// ```ignore
+    /// increment={move |cx, amount: u32| {
+    ///     shared.update_with(cx, |value| value + amount)
+    /// }}
+    /// ```
+    #[must_use]
+    pub fn set(write: reactive_core::WriteSignal<T>) -> Self {
+        Self::new(move |cx, value| write.set(cx, value))
+    }
+}
+
+impl<T, F> From<F> for CallbackWith<T>
+where
+    F: for<'a, 'b> Fn(&'a reactive_core::Cx<'b>, T) + 'static,
+{
+    fn from(callback: F) -> Self {
+        Self::new(callback)
+    }
+}
+
+impl<T: 'static> From<reactive_core::WriteSignal<T>> for CallbackWith<T> {
+    fn from(write: reactive_core::WriteSignal<T>) -> Self {
+        Self::set(write)
+    }
+}
+
 /// A component prop that is either a static value or a reactive read.
 ///
 /// Reactive props store a copyable graph handle, not a boxed closure. Derived
