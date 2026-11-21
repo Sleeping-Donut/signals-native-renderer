@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use layout::{LayoutEngine, LayoutId, LayoutStats, Rect, TextContent};
 use reactive_core::{
-    loading_boundary, render_effect, EffectHandle, NodeId as ViewNodeId, OwnerHandle, ReadSignal,
-    RuntimeHandle,
+    create_memo_unchecked, loading_boundary, render_effect, EffectHandle, Memo,
+    NodeId as ViewNodeId, OwnerHandle, ReadSignal, RuntimeHandle,
 };
 use renderer_api::{
     A11yRole, Color, CursorIcon, Display, Edges, ElementTag, FlexDirection, FrameInfo, Key,
@@ -3445,12 +3445,17 @@ where
 }
 
 /// A component prop that is either a static value or a reactive read.
+///
+/// Reactive props store a copyable graph handle, not a boxed closure. Derived
+/// props are created as memo nodes with `create_memo_unchecked`.
 #[derive(Clone)]
 pub enum Prop<T> {
     /// A value captured at mount time.
     Static(T),
-    /// A tracked read evaluated on demand.
-    Dynamic(Rc<dyn Fn(&reactive_core::Cx<'_>) -> T>),
+    /// A writable signal's read half.
+    Signal(ReadSignal<T>),
+    /// A cached derivation.
+    Memo(Memo<T>),
 }
 
 impl<T: Default> Default for Prop<T> {
@@ -3466,10 +3471,18 @@ impl<T: Clone + 'static> Prop<T> {
         Self::Static(value)
     }
 
-    /// A reactive prop.
+    /// A reactive derived prop.
+    pub fn derived(
+        cx: &reactive_core::Cx<'_>,
+        read: impl Fn(&reactive_core::Cx<'_>) -> T + 'static,
+    ) -> Self {
+        Self::Memo(create_memo_unchecked(cx, move |cx, _| read(cx)))
+    }
+
+    /// A reactive signal prop.
     #[must_use]
-    pub fn dynamic(read: impl Fn(&reactive_core::Cx<'_>) -> T + 'static) -> Self {
-        Self::Dynamic(Rc::new(read))
+    pub fn signal(signal: ReadSignal<T>) -> Self {
+        Self::Signal(signal)
     }
 
     /// Read the prop, tracking the underlying signals for a dynamic prop.
@@ -3477,14 +3490,33 @@ impl<T: Clone + 'static> Prop<T> {
     pub fn get(&self, cx: &reactive_core::Cx<'_>) -> T {
         match self {
             Self::Static(value) => value.clone(),
-            Self::Dynamic(read) => read(cx),
+            Self::Signal(signal) => signal.get(cx),
+            Self::Memo(memo) => memo.get(cx),
         }
     }
 
     /// Whether the prop is reactive.
     #[must_use]
     pub fn is_reactive(&self) -> bool {
-        matches!(self, Self::Dynamic(_))
+        !matches!(self, Self::Static(_))
+    }
+}
+
+impl<T: Clone + 'static> From<T> for Prop<T> {
+    fn from(value: T) -> Self {
+        Self::Static(value)
+    }
+}
+
+impl<T: Clone + 'static> From<ReadSignal<T>> for Prop<T> {
+    fn from(value: ReadSignal<T>) -> Self {
+        Self::Signal(value)
+    }
+}
+
+impl<T: Clone + 'static> From<Memo<T>> for Prop<T> {
+    fn from(value: Memo<T>) -> Self {
+        Self::Memo(value)
     }
 }
 

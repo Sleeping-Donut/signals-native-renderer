@@ -114,7 +114,10 @@ It is a syntax front-end, not a separate runtime. It currently supports
 state/style attributes. Component tags are supported by convention: `<Badge label={...} />` expands to
 `Badge(&cx, BadgeProps { label: ... })`; mark the function with
 `#[component]`. Component props can use `Prop<T>` for static/reactive values.
-Component content is passed as a `children: View` prop; named slots are ordinary
+`Prop<T>` stores either a static value, a `ReadSignal<T>`, or a `Memo<T>`; it has
+`From<T>`, `From<ReadSignal<T>>`, and `From<Memo<T>>` conversions, so callers do
+not need a boxed closure. `Prop::derived(cx, closure)` creates a cached memo node
+for a closure. Component content is passed as a `children: View` prop; named slots are ordinary
 props of type `Option<View>` or `Prop<View>`. Named slots have no special macro
 syntax yet. `view::select` provides a keyed selectable-list component.
 

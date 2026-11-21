@@ -19,7 +19,7 @@ in-tree apps and examples.
   - pointer/key/wheel/IME event types
   - resolved styles, transforms, overflow, a11y roles, cursor icons
 - `view`
-  - `View`, builders, `Prop`, `view!`, `StateStyle`
+  - `View`, builders, `Prop` (static/signal/memo), `view!`, `StateStyle`
   - focus/tab, input dispatch, scroll, drag/drop, text input
   - AccessKit snapshot/action methods
 - `renderer-native`
