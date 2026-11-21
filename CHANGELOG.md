@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## v0.1.1 — 2026-11-21
+
+Second pre-release. Authoring ergonomics, logical control flow, an optimistic
+reference app, and the single-row layout budget.
 
 - Experimental `view_builder!` fluent authoring front-end.
 - `Prop<T>` stores `ReadSignal`/`Memo` handles instead of boxed closures;

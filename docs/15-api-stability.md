@@ -42,7 +42,7 @@ in-tree apps and examples.
 
 ## Compatibility notes
 
-- All crates are `0.1.0`; no semver guarantees before v1.
+- All crates are `0.1.1`; no semver guarantees before v1.
 - Public APIs take `&Cx`; there is no global runtime.
 - Reads use `get`; pending is checked with `is_pending(cx, |cx| ...)`.
 - No `RwSignal`, combined public signal handle, or `AsyncMemo` type.

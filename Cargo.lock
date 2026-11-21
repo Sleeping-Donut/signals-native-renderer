@@ -1196,7 +1196,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "layout"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "renderer-api",
  "taffy",
@@ -1281,7 +1281,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1916,11 +1916,11 @@ checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 
 [[package]]
 name = "reactive-core"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "reactive-stores"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "reactive-core",
  "reactive-stores-macro",
@@ -1928,7 +1928,7 @@ dependencies = [
 
 [[package]]
 name = "reactive-stores-macro"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1992,11 +1992,11 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "renderer-api"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "renderer-native"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -2016,7 +2016,7 @@ dependencies = [
 
 [[package]]
 name = "renderer-null"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "reactive-core",
  "renderer-api",
@@ -2024,7 +2024,7 @@ dependencies = [
 
 [[package]]
 name = "runtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "reactive-core",
 ]
@@ -2093,7 +2093,7 @@ dependencies = [
 
 [[package]]
 name = "scene"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "renderer-api",
  "text",
@@ -2405,7 +2405,7 @@ dependencies = [
 
 [[package]]
 name = "text"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cosmic-text",
  "renderer-api",
@@ -2633,7 +2633,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "view"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "accesskit",
  "layout",
