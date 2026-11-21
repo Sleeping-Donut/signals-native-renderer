@@ -5,9 +5,14 @@
 - Experimental `view_builder!` fluent authoring front-end.
 - `Prop<T>` stores `ReadSignal`/`Memo` handles instead of boxed closures;
   `From<T>`, `From<ReadSignal<T>>`, and `From<Memo<T>>` are supported.
-- Component props use `#[derive(Props)]` builders with `#[prop(into)]`,
-  `#[prop(optional)]`, and `#[prop(default = ...)]`; `view!` auto-converts
-  `into` fields and appends `children`.
+- Component props use `#[macros::props]` builders. Plain field types are wrapped
+  as `Prop<T>` automatically, while view and capability types (`View`,
+  `Callback`, `CallbackWith<T>`, `WriteSignal<T>`, …) stay as declared.
+  `#[prop(raw)]` is only needed for aliases and custom types. Optional/default
+  fields and automatic `view!` prop conversion are supported.
+- `Callback` (no payload) and `CallbackWith<T>` (one payload) prop types.
+  `CallbackWith<T>` accepts `Fn(&Cx, T)` and converts from `WriteSignal<T>`;
+  `CallbackWith::set(write)` spells that conversion out at the call site.
 - Component children and the `view::select` selectable-list component.
 - Automatic view-aware `Loading` no longer needs a `ready` probe.
 

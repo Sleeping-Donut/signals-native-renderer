@@ -113,25 +113,130 @@ It is a syntax front-end, not a separate runtime. It currently supports
 `Column`, `Row`, `Text`, `Button`, children, values, `on_click`, and the shared
 state/style attributes. Component tags are supported by convention: `<Badge label={...} />` expands to
 `Badge(&cx, BadgeProps { label: ... })`; mark the function with
-`#[component]`. Component props use `#[derive(macros::Props)]`; the component tag
-calls the generated `FooProps::builder()`.
+`#[component]`. Component props use `#[macros::props]`; the field types are
+declared as plain values and the macro rewrites each one to `Prop<T>` in the
+generated struct. The component tag calls `FooProps::builder()`.
 
 ```rust
-#[derive(macros::Props)]
+#[macros::props]
 struct BadgeProps {
-    #[prop(into)]
-    label: Prop<String>,
+    label: String,       // stored as Prop<String>
     #[prop(optional)]
-    muted: bool,
+    muted: bool,         // stored as Prop<bool>
 }
 
 <Badge label={String::from("hi")} />
 ```
 
-`#[prop(into)]` makes the builder accept `impl Into<FieldType>`, so values,
-`ReadSignal<T>`, and `Memo<T>` convert without an explicit `.into()` at the call
-site. `#[prop(optional)]` uses `Default` for a missing field;
+The macro leaves view and capability types as declared — `View`, `Callback`,
+`CallbackWith<T>`, `WriteSignal<T>`, `ReadSignal<T>`, `Memo<T>`, `Prop<T>`, and
+`Option`/`Vec` of those — and wraps every other field in `Prop<T>`. Builder
+methods accept `impl Into<FieldType>`, so values, signals, memos, and closures
+all convert without `.into()` at the call site.
+
+```rust
+#[macros::props]
+struct CounterProps {
+    shared: u32,                     // Prop<u32>
+    on_increment: CallbackWith<u32>, // CallbackWith<u32>
+    bump: WriteSignal<u32>,          // WriteSignal<u32>
+}
+```
+
+The check is syntactic. Aliases and renamed imports are invisible to it, so
+`#[prop(raw)]` forces the declared type through in those cases:
+
+```rust
+type ClickHandler = Callback;
+
+#[macros::props]
+struct AliasedProps {
+    #[prop(raw)]
+    on_click: ClickHandler,
+}
+```
+
+`#[prop(into)]` is implied for every field and only kept for older props.
+`#[prop(optional)]` uses `Default` for a missing field;
 `#[prop(default = expr)]` uses an expression.
+
+#### Prop shapes
+
+Declare props as data or as actions:
+
+| Declared field | Stored as | Call-site value |
+| --- | --- | --- |
+| `count: u32` | `Prop<u32>` | a value, `ReadSignal`, or `Memo` |
+| `on_click: Callback` | `Callback` | a closure |
+| `on_change: CallbackWith<T>` | `CallbackWith<T>` | a closure or a `WriteSignal<T>` |
+| `children: View` | `View` | child view content |
+
+Do not declare `ReadSignal<T>` or `WriteSignal<T>` in a props struct. They are
+recognized and left as declared, so they compile, but they are the wrong shape:
+
+- a read handle makes the child depend on a signal the owner should have passed
+  as a value;
+- a write handle gives the child the owner's capability and forces every layer
+  above it to forward the same handle.
+
+Use a value plus a callback instead. The owner keeps the signals and decides what
+a call means:
+
+```rust
+#[macros::props]
+struct CounterProps {
+    shared: u32,
+    increment: CallbackWith<u32>,   // payload: by how much
+}
+
+<Counter shared={shared} increment={increment} />
+```
+
+`shared` accepts the `ReadSignal` at the call site; the field stays `Prop<u32>`.
+
+#### Callback props
+
+Callbacks are actions, not readable values, so `#[props]` leaves them as declared
+and they are never wrapped in `Prop<T>`.
+
+| Type | Declared as | Called as | Typical use |
+| --- | --- | --- | --- |
+| `Callback` | `pub on_click: Callback` | `props.on_click.call(cx)` | click, close, submit |
+| `CallbackWith<T>` | `pub on_select: CallbackWith<String>` | `props.on_select.call(cx, value)` | selection, input, drag |
+
+The two names are deliberate. A zero-payload action is a `Callback`; a
+payload-carrying action is a `CallbackWith<T>`, read as “a callback with a
+string.” There is no `Callback2`, `Callback3`, …: more than one value travels as
+a tuple or as a named struct.
+
+```rust
+pub drag: CallbackWith<(f32, f32)>,
+on_drag={move |cx: &Cx<'_>, (x, y)| { ... }}
+
+pub move_to: CallbackWith<MoveTo>,
+on_move_to={move |cx: &Cx<'_>, target: MoveTo| { ... }}
+```
+
+`CallbackWith::set(write)` produces a callback that assigns its argument to the
+signal, spelled out at the call site. `From<WriteSignal<T>>` does the same
+implicitly:
+
+```rust
+on_select={CallbackWith::set(set_state)}   // same as on_select={set_state}
+```
+
+Prefer the named constructor when the assignment matters to a reader. It is only
+correct when the action means “the value is now this.” Reducers need a closure,
+because a write handle can only set:
+
+```rust
+increment={move |cx: &Cx<'_>, amount: u32| {
+    bump.update_with(cx, |value| value + amount)
+}}
+```
+
+Write handles are capabilities, not readable values, which is why the callback
+shape above is preferred over declaring `WriteSignal<T>` on the child.
 
 `Prop<T>` stores either a static value, a `ReadSignal<T>`, or a `Memo<T>`; it has
 `From<T>`, `From<ReadSignal<T>>`, and `From<Memo<T>>` conversions.
