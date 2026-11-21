@@ -136,17 +136,15 @@ mod basecomponents {
 
     #[component]
     pub fn ActionButton(_cx: &Cx<'_>, props: ActionButtonProps) -> View {
-        let label = props.label;
-        let on_click = props.on_click;
         view! {
             <Button
                 style={styles::button()}
                 hover_style={styles::HOVER}
                 focus_style={styles::FOCUS}
                 cursor={CursorIcon::Pointer}
-                on_click={move |cx: &Cx<'_>| on_click.call(cx)}
+                on_click={move |cx: &Cx<'_>| props.on_click.call(cx)}
             >
-                <Text style={styles::button_label()}>{label.get(cx)}</Text>
+                <Text style={styles::button_label()}>{props.label.get(cx)}</Text>
             </Button>
         }
     }
@@ -158,8 +156,7 @@ mod basecomponents {
 
     #[component]
     pub fn TextLine(_cx: &Cx<'_>, props: TextLineProps) -> View {
-        let value = props.value;
-        view! { <Text style={styles::base()}>{value.get(cx)}</Text> }
+        view! { <Text style={styles::base()}>{props.value.get(cx)}</Text> }
     }
 }
 

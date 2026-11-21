@@ -180,12 +180,10 @@ mod basecomponents {
 
     #[component]
     pub fn Panel(cx: &Cx<'_>, props: PanelProps) -> View {
-        let title = props.title;
-        let children = props.children;
         view! {
             <Column style={styles::panel()}>
-                <TextLine value={title} />
-                <Embed expr={children} />
+                <TextLine value={props.title} />
+                <Embed expr={props.children} />
             </Column>
         }
     }
@@ -197,8 +195,7 @@ mod basecomponents {
 
     #[component]
     pub fn TextLine(_cx: &Cx<'_>, props: TextLineProps) -> View {
-        let value = props.value;
-        view! { <Text style={styles::text()}>{value.get(cx)}</Text> }
+        view! { <Text style={styles::text()}>{props.value.get(cx)}</Text> }
     }
 
     #[macros::props]
@@ -211,18 +208,14 @@ mod basecomponents {
 
     #[component]
     pub fn SelectList(_cx: &Cx<'_>, props: SelectListProps) -> View {
-        let items = props.items;
-        let selected = props.selected;
-        let on_select = props.on_select;
-        let disabled = props.disabled;
         select(
-            move |cx| items.get(cx),
+            move |cx| props.items.get(cx),
             |name: &String| name.clone(),
             |name: &String| name.clone(),
-            move |cx| selected.get(cx),
-            move |cx, item| on_select.call(cx, item),
+            move |cx| props.selected.get(cx),
+            move |cx, item| props.on_select.call(cx, item),
             styles::row(),
-            move |cx| disabled.get(cx),
+            move |cx| props.disabled.get(cx),
         )
     }
 

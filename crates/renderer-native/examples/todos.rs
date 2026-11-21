@@ -502,17 +502,15 @@ mod basecomponents {
 
     #[component]
     pub fn ActionButton(_cx: &Cx<'_>, props: ActionButtonProps) -> View {
-        let label = props.label;
-        let on_click = props.on_click;
         view! {
             <Button
                 style={styles::action_button()}
                 hover_style={styles::HOVER}
                 focus_style={styles::FOCUS}
                 cursor={CursorIcon::Pointer}
-                on_click={move |cx: &Cx<'_>| on_click.call(cx)}
+                on_click={move |cx: &Cx<'_>| props.on_click.call(cx)}
             >
-                <Text style={styles::button_label()}>{label.get(cx)}</Text>
+                <Text style={styles::button_label()}>{props.label.get(cx)}</Text>
             </Button>
         }
     }
@@ -525,11 +523,9 @@ mod basecomponents {
 
     #[component]
     pub fn IconButton(_cx: &Cx<'_>, props: IconButtonProps) -> View {
-        let label = props.label;
-        let on_click = props.on_click;
         button(
-            vec![text_fn(move |cx| label.get(cx)).style(styles::button_label())],
-            move |cx: &Cx<'_>| on_click.call(cx),
+            vec![text_fn(move |cx| props.label.get(cx)).style(styles::button_label())],
+            move |cx: &Cx<'_>| props.on_click.call(cx),
         )
         .style(styles::icon_button())
         .hover_style(styles::HOVER)
@@ -544,8 +540,7 @@ mod basecomponents {
 
     #[component]
     pub fn TextLine(_cx: &Cx<'_>, props: TextLineProps) -> View {
-        let value = props.value;
-        text_fn(move |cx| value.get(cx)).style(styles::base())
+        text_fn(move |cx| props.value.get(cx)).style(styles::base())
     }
 
     #[macros::props]
@@ -555,8 +550,7 @@ mod basecomponents {
 
     #[component]
     pub fn ErrorLine(_cx: &Cx<'_>, props: ErrorLineProps) -> View {
-        let value = props.value;
-        text_fn(move |cx| value.get(cx)).style(styles::error())
+        text_fn(move |cx| props.value.get(cx)).style(styles::error())
     }
 }
 

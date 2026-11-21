@@ -198,6 +198,11 @@ struct CounterProps {
 
 `shared` accepts the `ReadSignal` at the call site; the field stays `Prop<u32>`.
 
+Read props in place (`props.title.get(cx)`). Bind a prop to a local only when it
+is used in more than one place that moves it, or when it must be cloned into two
+children; `let title = props.title` is a move of a small handle, not an
+allocation, and it is noise when the prop is read once.
+
 #### Callback props
 
 Callbacks are actions, not readable values, so `#[props]` leaves them as declared

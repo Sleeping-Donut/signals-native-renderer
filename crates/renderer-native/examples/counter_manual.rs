@@ -150,11 +150,9 @@ mod basecomponents {
     }
 
     pub fn action_button(_cx: &Cx<'_>, props: ActionButtonProps) -> View {
-        let label = props.label;
-        let on_click = props.on_click;
         button(
-            vec![text_fn(move |cx| label.get(cx)).style(styles::button_label())],
-            move |cx: &Cx<'_>| on_click.call(cx),
+            vec![text_fn(move |cx| props.label.get(cx)).style(styles::button_label())],
+            move |cx: &Cx<'_>| props.on_click.call(cx),
         )
         .style(styles::button())
         .hover_style(styles::HOVER)
@@ -167,8 +165,7 @@ mod basecomponents {
     }
 
     pub fn text_line(_cx: &Cx<'_>, props: TextLineProps) -> View {
-        let value = props.value;
-        text_fn(move |cx| value.get(cx)).style(styles::base())
+        text_fn(move |cx| props.value.get(cx)).style(styles::base())
     }
 }
 
@@ -188,9 +185,6 @@ mod uicomponents {
     pub fn counter(cx: &Cx<'_>, props: CounterProps) -> View {
         let (local, set_local) = create_signal(cx, 0_u32);
         let double = create_memo(cx, move |cx, _: Option<&u32>| local.get(cx) * 2);
-        let shared = props.shared;
-        let increment = props.increment;
-
         row(vec![
             action_button(
                 cx,
@@ -204,8 +198,8 @@ mod uicomponents {
             action_button(
                 cx,
                 ActionButtonProps {
-                    label: Prop::derived(cx, move |cx| format!("shared {}", shared.get(cx))),
-                    on_click: Callback::new(move |cx: &Cx<'_>| increment.call(cx, 1)),
+                    label: Prop::derived(cx, move |cx| format!("shared {}", props.shared.get(cx))),
+                    on_click: Callback::new(move |cx: &Cx<'_>| props.increment.call(cx, 1)),
                 },
             ),
             text_line(

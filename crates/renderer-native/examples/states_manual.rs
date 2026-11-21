@@ -203,9 +203,8 @@ mod basecomponents {
     }
 
     pub fn text_line(_cx: &Cx<'_>, props: TextLineProps) -> View {
-        let value = props.value;
         // `view! { <Text>{value.get(cx)}</Text> }` expands to `text_fn`.
-        text_fn(move |cx| value.get(cx)).style(styles::text())
+        text_fn(move |cx| props.value.get(cx)).style(styles::text())
     }
 
     pub struct SelectListProps {
@@ -216,18 +215,14 @@ mod basecomponents {
     }
 
     pub fn select_list(_cx: &Cx<'_>, props: SelectListProps) -> View {
-        let items = props.items;
-        let selected = props.selected;
-        let on_select = props.on_select;
-        let disabled = props.disabled;
         select(
-            move |cx| items.get(cx),
+            move |cx| props.items.get(cx),
             |name: &String| name.clone(),
             |name: &String| name.clone(),
-            move |cx| selected.get(cx),
-            move |cx, item| on_select.call(cx, item),
+            move |cx| props.selected.get(cx),
+            move |cx, item| props.on_select.call(cx, item),
             styles::row(),
-            move |cx| disabled.get(cx),
+            move |cx| props.disabled.get(cx),
         )
     }
 
