@@ -29,8 +29,8 @@ mod model {
     use std::task::Poll;
     use std::time::{Duration, Instant};
 
-    pub const LOAD_DELAY_MS: u64 = 200;
-    pub const SAVE_DELAY_MS: u64 = 1000;
+    pub const LOAD_DELAY_MS: u64 = if cfg!(test) { 0 } else { 200 };
+    pub const SAVE_DELAY_MS: u64 = if cfg!(test) { 0 } else { 1000 };
 
     #[derive(Clone, Debug, PartialEq)]
     pub struct Todo {
@@ -748,5 +748,92 @@ fn main() {
     if let Err(error) = run_windowed("optimistic todos", 760, 360, app::TodosApp::new()) {
         eprintln!("{error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use reactive_core::{loading_boundary, Cx, Runtime, RuntimeHandle};
+
+    use crate::model::Api;
+    use crate::store::{create_todos, TodoActions, Todos};
+
+    fn load(runtime: &RuntimeHandle, cx: &Cx<'_>) -> (Rc<Todos>, Rc<TodoActions>) {
+        let api = Rc::new(Api::new());
+        let (read, actions) = create_todos(cx, runtime.clone(), api);
+        let read_for_boundary = Rc::clone(&read);
+        let boundary =
+            loading_boundary(cx, None, move |cx| read_for_boundary.rows(cx).len(), |_| 0);
+        assert_eq!(boundary.get(cx), 0, "the first read is loading");
+        settle(runtime, cx, 6);
+        assert_eq!(boundary.get(cx), 2);
+        (read, actions)
+    }
+
+    fn settle(runtime: &RuntimeHandle, cx: &Cx<'_>, rounds: usize) {
+        for _ in 0..rounds {
+            runtime.pump();
+            cx.flush().unwrap();
+        }
+    }
+
+    #[test]
+    fn toggle_is_optimistic_then_commits_the_refreshed_truth() {
+        let runtime = Runtime::new().into_handle();
+        let cx = runtime.cx();
+        let (read, actions) = load(&runtime, &cx);
+        let before = read.rows(&cx);
+
+        actions.toggle(1);
+        runtime.pump();
+        cx.flush().unwrap();
+        let pending = read.rows(&cx);
+        assert_eq!(pending[0].done, !before[0].done);
+        assert!(pending[0].pending, "the guess stays through the refresh");
+
+        settle(&runtime, &cx, 8);
+        let after = read.rows(&cx);
+        assert_eq!(after[0].done, !before[0].done);
+        assert!(!after[0].pending, "the refreshed truth clears pending");
+        assert!(read.error(&cx).is_empty());
+    }
+
+    #[test]
+    fn add_is_optimistic_then_commits_the_refreshed_truth() {
+        let runtime = Runtime::new().into_handle();
+        let cx = runtime.cx();
+        let (read, actions) = load(&runtime, &cx);
+        let before = read.rows(&cx).len();
+
+        actions.add(String::from("Ship it"));
+        runtime.pump();
+        cx.flush().unwrap();
+        let pending = read.rows(&cx);
+        assert_eq!(pending.len(), before + 1);
+        assert!(pending.last().is_some_and(|row| row.pending));
+
+        settle(&runtime, &cx, 8);
+        let after = read.rows(&cx);
+        assert_eq!(after.len(), before + 1);
+        assert_eq!(after.last().map(|row| row.text.as_str()), Some("Ship it"));
+        assert!(!after.last().is_some_and(|row| row.pending));
+    }
+
+    #[test]
+    fn a_failed_save_reverts_and_reports_the_error() {
+        let runtime = Runtime::new().into_handle();
+        let cx = runtime.cx();
+        let (read, actions) = load(&runtime, &cx);
+        let before = read.rows(&cx);
+
+        actions.fail_next();
+        actions.toggle(2);
+        settle(&runtime, &cx, 8);
+        let after = read.rows(&cx);
+        assert_eq!(after[1].done, before[1].done, "the guess reverted");
+        assert!(!after[1].pending);
+        assert_eq!(read.error(&cx), "The server rejected that change.");
     }
 }

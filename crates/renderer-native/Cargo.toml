@@ -45,6 +45,7 @@ required-features = ["window"]
 [[example]]
 name = "todos"
 required-features = ["window"]
+test = true
 
 [[example]]
 name = "states"
