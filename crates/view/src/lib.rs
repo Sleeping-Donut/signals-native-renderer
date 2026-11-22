@@ -4022,22 +4022,25 @@ where
 ///
 /// Content mounts immediately under `display: none`; the fallback covers it
 /// until every binding mounted in the content subtree has applied at least
-/// once. The fallback is then hidden and the content retained.
+/// once. The fallback is then hidden and the content retained. Each builder is
+/// `FnOnce`: the boundary mounts content and fallback once.
 pub fn loading_auto<F, C>(fallback: F, content: C) -> View
 where
-    F: Fn(&reactive_core::Cx<'_>) -> View + 'static,
-    C: Fn(&reactive_core::Cx<'_>) -> View + 'static,
+    F: FnOnce(&reactive_core::Cx<'_>) -> View + 'static,
+    C: FnOnce(&reactive_core::Cx<'_>) -> View + 'static,
 {
-    let fallback = Rc::new(fallback);
-    let content = Rc::new(content);
+    let mut fallback = Some(fallback);
+    let mut content = Some(content);
     view(move |cx, tree| {
         let root = tree.create_fragment();
+        let content = content.take().expect("loading content mounted once");
         let content_node = content(cx).mount(cx, tree);
         tree.insert_child(root, content_node, None);
         tree.set_display(content_node, Display::None);
 
         let bindings = tree.bindings_under(content_node);
 
+        let fallback = fallback.take().expect("loading fallback mounted once");
         let fallback_node = fallback(cx).mount(cx, tree);
         tree.insert_child(root, fallback_node, None);
 

@@ -117,8 +117,8 @@ impl<E, T, K> ForBuilder<E, T, K> {
 /// Show `fallback` until every binding under `content` is ready.
 pub fn Loading<F, C>(fallback: F, content: C) -> View
 where
-    F: Fn(&Cx<'_>) -> View + 'static,
-    C: Fn(&Cx<'_>) -> View + 'static,
+    F: FnOnce(&Cx<'_>) -> View + 'static,
+    C: FnOnce(&Cx<'_>) -> View + 'static,
 {
     loading_auto(fallback, content)
 }

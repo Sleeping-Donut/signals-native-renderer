@@ -6,8 +6,8 @@
 //! - `store`: read view + actions-only writer over a store derived from `api.list()`;
 //!   a successful action commits the saved list instead of re-fetching
 //! - `styles`
-//! - `basecomponents`: `ActionButton`, `IconButton`, `TextLine`, `ErrorLine`
-//! - `uicomponents`: `App`, `Content`, `TodoRowView`, `LoadingView`
+//! - `basecomponents`: `ActionButton`, `TextLine`, `ErrorLine`
+//! - `uicomponents`: `App`, `Todo`, `LoadingView`
 //! - `app`: window lifecycle and `main`
 //!
 //! Set `TODOS_SNAPSHOT=/path/to/frame.rgba` to render one offscreen frame at
@@ -497,14 +497,14 @@ mod uicomponents {
     }
 
     #[macros::props]
-    pub struct TodoRowViewProps {
+    pub struct TodoProps {
         pub todo: ForItem<TodoRow>,
         pub index: ForIndex,
         pub toggle: Callback,
     }
 
     #[component]
-    pub fn TodoRowView(_cx: &Cx<'_>, props: TodoRowViewProps) -> View {
+    pub fn Todo(_cx: &Cx<'_>, props: TodoProps) -> View {
         button(
             vec![text_fn(move |cx| {
                 let todo = props.todo.get(cx);
@@ -580,52 +580,38 @@ mod uicomponents {
         }
     }
 
-    #[macros::props]
-    pub struct ContentProps {
-        pub todos: Rc<Todos>,
-        pub actions: Rc<TodoActions>,
-    }
-
-    #[component]
-    pub fn Content(cx: &Cx<'_>, props: ContentProps) -> View {
-        let rows = props.todos.clone();
-        let actions_for_rows = props.actions.clone();
-
-        view! {
-            <Column style={styles::root()}>
-                <TodoForm actions={props.actions.clone()} />
-                <For
-                    each={move |cx: &Cx<'_>| rows.rows(cx)}
-                    keyed={|todo: &TodoRow| todo.id}
-                    fallback={|cx: &Cx<'_>| view! {
-                        <TextLine value={String::from("No todos yet")} />
-                    }}
-                    render={move |cx: &Cx<'_>, todo: ForItem<TodoRow>, index: ForIndex| {
-                        let id = todo.get(cx).id;
-                        let toggle = Callback::new({
-                            let actions = actions_for_rows.clone();
-                            move |_cx: &Cx<'_>| actions.toggle(id)
-                        });
-                        view! {
-                            <TodoRowView todo={todo} index={index} toggle={toggle} />
-                        }
-                    }}
-                />
-                <FailButton actions={props.actions.clone()} />
-                <ErrorText todos={props.todos.clone()} />
-            </Column>
-        }
-    }
-
     #[component]
     pub fn App(cx: &Cx<'_>) -> View {
         let runtime = cx.use_context::<RuntimeHandle>().expect("runtime context");
         let api = Rc::new(Api::new());
-        let (read, actions) = create_todos(cx, runtime, api);
+        let (todos, todos_actions) = create_todos(cx, runtime, api);
+        let rows = todos.clone();
+        let actions_for_rows = todos_actions.clone();
 
         view! {
             <Loading fallback={LoadingView}>
-                <Content todos={read.clone()} actions={actions.clone()} />
+                <Column style={styles::root()}>
+                    <TodoForm actions={todos_actions.clone()} />
+                    <For
+                        each={move |cx: &Cx<'_>| rows.rows(cx)}
+                        keyed={|todo: &TodoRow| todo.id}
+                        fallback={|cx: &Cx<'_>| view! {
+                            <TextLine value={String::from("No todos yet")} />
+                        }}
+                        render={move |cx: &Cx<'_>, todo: ForItem<TodoRow>, index: ForIndex| {
+                            let id = todo.get(cx).id;
+                            let toggle = Callback::new({
+                                let actions = actions_for_rows.clone();
+                                move |_cx: &Cx<'_>| actions.toggle(id)
+                            });
+                            view! {
+                                <Todo todo={todo} index={index} toggle={toggle} />
+                            }
+                        }}
+                    />
+                    <FailButton actions={todos_actions.clone()} />
+                    <ErrorText todos={todos.clone()} />
+                </Column>
             </Loading>
         }
     }
