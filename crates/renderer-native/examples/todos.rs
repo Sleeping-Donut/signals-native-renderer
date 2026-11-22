@@ -189,21 +189,20 @@ mod store {
 
     impl TodoActions {
         pub fn toggle(self: &Rc<Self>, id: u64) {
-            let cx = self.runtime.cx();
-            let Some(row) = self.todos.list(|row| row.id).at_key(&cx, &id) else {
-                return;
-            };
+            let rows = self.todos.list(|row| row.id);
+            let source = self.todos.source().clone();
             let api = self.api.clone();
-            let store = self.todos.clone();
             let set_error = self.set_error;
             let _ = self.runtime.action_with(
                 move |rt| async move {
-                    row.update(&rt.cx(), |row| {
-                        row.done = !row.done;
-                        row.pending = true;
+                    rows.update(&rt.cx(), |rows| {
+                        if let Some(row) = rows.iter_mut().find(|row| row.id == id) {
+                            row.done = !row.done;
+                            row.pending = true;
+                        }
                     });
                     let saved = api.toggle(id).await?;
-                    store.commit(&rt.cx(), saved.into_iter().map(todo_row).collect());
+                    source.set(&rt.cx(), saved.into_iter().map(todo_row).collect());
                     Ok::<(), String>(())
                 },
                 move |cx, result| match result {
@@ -214,22 +213,21 @@ mod store {
         }
 
         pub fn add(self: &Rc<Self>, text: String) {
+            let rows = self.todos.list(|row| row.id);
+            let source = self.todos.source().clone();
             let api = self.api.clone();
-            let todos = self.todos.list(|row| row.id);
-            let store = self.todos.clone();
             let set_error = self.set_error;
             let id = self.api.next_id();
             let _ = self.runtime.action_with(
                 move |rt| async move {
-                    todos.push(
-                        &rt.cx(),
-                        TodoRow {
+                    rows.update(&rt.cx(), |rows| {
+                        rows.push(TodoRow {
                             id,
                             text: text.clone(),
                             done: false,
                             pending: true,
-                        },
-                    );
+                        });
+                    });
                     let saved = api
                         .add(Todo {
                             id,
@@ -237,7 +235,7 @@ mod store {
                             done: false,
                         })
                         .await?;
-                    store.commit(&rt.cx(), saved.into_iter().map(todo_row).collect());
+                    source.set(&rt.cx(), saved.into_iter().map(todo_row).collect());
                     Ok::<(), String>(())
                 },
                 move |cx, result| match result {

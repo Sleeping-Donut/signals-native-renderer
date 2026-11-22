@@ -425,7 +425,7 @@ mod optimistic {
     }
 
     #[test]
-    fn a_derived_store_commits_without_re_asking_the_source() {
+    fn a_source_set_persists_without_re_asking() {
         let runtime = Runtime::new().into_handle();
         let cx = runtime.cx();
         let calls = Rc::new(Cell::new(0_u32));
@@ -448,7 +448,7 @@ mod optimistic {
         let _handle = runtime.action(move |rt| async move {
             list_for_action.push(&rt.cx(), 3);
             delayed(1).await;
-            store_for_action.commit(&rt.cx(), vec![1, 2, 3]);
+            store_for_action.source().set(&rt.cx(), vec![1, 2, 3]);
             Ok::<(), String>(())
         });
 
@@ -463,6 +463,93 @@ mod optimistic {
             1,
             "commit writes the known truth instead of re-asking the source"
         );
+    }
+
+    #[test]
+    fn a_list_draft_setter_stages_the_diff() {
+        let runtime = Runtime::new().into_handle();
+        let cx = runtime.cx();
+        let store = store!(&cx, app());
+        let todos = store.todos().optimistic_list(|todo| todo.id);
+        let todos_for_effect = todos.clone();
+        let (seen, _runs, _effect) = effect_of(&cx, move |cx| todos_for_effect.get(cx));
+
+        let todos_for_action = todos.clone();
+        let _handle = runtime.action(move |rt| async move {
+            todos_for_action.update(&rt.cx(), |draft| {
+                draft[0].done = true;
+                draft.push(Todo {
+                    id: 3,
+                    title: String::from("three"),
+                    done: false,
+                });
+            });
+            delayed(1).await;
+            Ok::<(), String>(())
+        });
+
+        runtime.pump();
+        cx.flush().unwrap();
+        assert!(seen.borrow()[0].done, "the edited row shows at once");
+        assert_eq!(seen.borrow().len(), 3, "the appended row shows at once");
+
+        settle(&runtime, &cx);
+        let rows = store.todos().get(&cx);
+        assert!(rows[0].done, "the edited row committed");
+        assert_eq!(rows.len(), 3, "the appended row committed");
+        assert_eq!(rows[2].id, 3);
+    }
+
+    #[test]
+    fn a_list_draft_setter_can_edit_a_pending_row() {
+        let runtime = Runtime::new().into_handle();
+        let cx = runtime.cx();
+        let store = store!(&cx, app());
+        let todos = store.todos().optimistic_list(|todo| todo.id);
+
+        let todos_for_add = todos.clone();
+        let _add = runtime.action(move |rt| async move {
+            todos_for_add.update(&rt.cx(), |draft| {
+                draft.push(Todo {
+                    id: 3,
+                    title: String::from("three"),
+                    done: false,
+                });
+            });
+            delayed(5).await;
+            Ok::<(), String>(())
+        });
+        runtime.pump();
+        cx.flush().unwrap();
+        assert_eq!(todos.len(&cx), 3);
+
+        let todos_for_edit = todos.clone();
+        let _edit = runtime.action(move |rt| async move {
+            todos_for_edit.update(&rt.cx(), |draft| {
+                if let Some(row) = draft.iter_mut().find(|row| row.id == 3) {
+                    row.title = String::from("updated");
+                }
+            });
+            delayed(2).await;
+            Ok::<(), String>(())
+        });
+        runtime.pump();
+        cx.flush().unwrap();
+        assert_eq!(
+            todos
+                .get(&cx)
+                .iter()
+                .find(|row| row.id == 3)
+                .map(|row| row.title.as_str()),
+            Some("updated"),
+            "a row that exists only in a patch can still be edited"
+        );
+
+        settle(&runtime, &cx);
+        let rows = store.todos().get(&cx);
+        let matches: Vec<&Todo> = rows.iter().filter(|row| row.id == 3).collect();
+        assert_eq!(matches.len(), 1, "no duplicate row");
+        assert_eq!(matches[0].title, "updated");
     }
 
     #[test]

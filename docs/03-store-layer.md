@@ -300,10 +300,12 @@ Keyed lists compose three layers per key:
 ```rust
 let todos = state.todos().optimistic_list(|todo| todo.id);
 
-todos.push(&cx, new_todo);          // structural patch
-todos.remove(&cx, &id);             // structural patch
-let row = todos.at_key(&cx, &id);   // Option<Field<Todo>>
-row.unwrap().update(&cx, |todo| todo.done = !todo.done);
+// The `setStore(draft => ...)` equivalent for a keyed list.
+todos.update(&cx, |draft| {
+    let todo = draft.iter_mut().find(|todo| todo.id == id).unwrap();
+    todo.done = !todo.done;
+    todo.pending = true;
+});
 todos.get(&cx);                     // truth -> live patches -> row guesses
 ```
 
@@ -313,9 +315,14 @@ todos.get(&cx);                     // truth -> live patches -> row guesses
 - A successful structural action commits its **delta** against the current
   committed rows (append or remove by key), not the display list, so two
   overlapping actions cannot clobber each other's rows.
+- `update` runs the closure against a clone of the display rows and stages a
+  keyed diff: an appended row is a structural patch, a changed committed row is
+  a per-key guess, a removed row is a remove patch, and a row that exists only
+  in a patch is replaced in that patch. Reorders and middle insertions fall
+  back to a whole-list guess.
 - Row handles use the keyed path `list#hash(key)`, so a guess follows its key
-  across a reorder. `at_key` only addresses committed rows; a row that exists
-  only in a structural guess is list-level until it lands.
+  across a reorder. `at_key` only addresses committed rows; use `update` when
+  the draft may contain a row that is still only a patch.
 
 A store can also be **derived from an async source**, the Rust form of
 `createOptimisticStore(() => api.list(), [])`:
@@ -327,16 +334,17 @@ let todos = OptimisticStore::new(cx, Vec::new(), move || {
 });
 let rows = todos.list(|row| row.id);
 
-refresh(&cx, |cx| { let _ = todos.get(cx); }); // re-ask the source
+// In the action, after the save:
+todos.source().set(&cx, saved_rows);
 ```
 
 - The source's first answer loads the store; `get` joins the source, so a
   first read is a loading state and a loading boundary can cover only that
   load. After it lands, the store is the display value.
-- A successful action writes the server's answer with
-  `OptimisticStore::commit(cx, rows)`. The guess drops at settle and the
-  committed answer stays; there is no re-fetch. Use `refresh` only when the
-  action does not already know the new truth.
+- The source side is truth-only: `todos.source().set(cx, rows)` is the
+  persist-commit step. The overlay's guesses drop at settle and the source
+  truth stays; there is no re-fetch. Use `refresh` only when the action does
+  not already know the new truth.
 - `<Loading>` catches the first read of the derived store, so the fallback
   covers the initial load. A `refresh` re-ask keeps the content visible and
   corrects it when the answer lands.

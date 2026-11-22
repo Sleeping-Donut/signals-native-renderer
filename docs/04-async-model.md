@@ -1342,16 +1342,24 @@ let todos = OptimisticStore::new(cx, Vec::new(), move || {
 });
 let rows = todos.list(|row| row.id);
 
-// In the action, after the save:
-todos.commit(&cx, saved_rows);
+// In the action:
+rows.update(&cx, |draft| {
+    let todo = draft.iter_mut().find(|todo| todo.id == id).unwrap();
+    todo.done = !todo.done;
+    todo.pending = true;
+});
+let saved = api.save(...).await?;
+todos.source().set(&cx, saved_rows);
 ```
 
-`<Loading>` catches the source's first read, so the fallback covers the initial
-load. After a save, `OptimisticStore::commit` writes the server's answer to the
-store; the guess drops at settle and the answer stays, so the action does not
-need a re-fetch. `refresh(cx, |cx| ...)` remains for re-asking when the action
-does not know the new truth. The optimistic todos demo uses the commit shape;
-`error` stays a signal, and the fail-next switch is plain API state.
+`rows.update` is the `setStore(draft => ...)` equivalent for the keyed list:
+the closure edits a display draft and the diff becomes per-key guesses and
+structural patches. The source side is separate: `todos.source().set` is the
+persist-commit step. The overlay's guesses drop at settle and the source truth
+stays, so the action does not need a re-fetch. `refresh(cx, |cx| ...)` remains
+for re-asking when the action does not know the new truth. `<Loading>` catches
+the source's first read; `error` stays a signal, and the fail-next switch is
+plain API state.
 
 This mirrors Solid's carrier rule: `readersOf` dirties the leaves of the keys a
 carrier changed and the container for a structural guess

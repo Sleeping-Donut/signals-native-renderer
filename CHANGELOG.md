@@ -29,12 +29,15 @@
   `ReadField`, `WriteField`, `OptimisticStore`, `OptimisticList`,
   `DynamicStore`) as raw: passing a shared store or action struct no longer
   needs `#[prop(raw)]`.
-- `OptimisticStore` derives a store from an async source
-  (`OptimisticStore::new(cx, seed, || api.list())`). `OptimisticStore::commit`
-  writes a known server answer, so an action can persist-commit without a
-  re-fetch; `refresh(cx, |cx| ...)` re-asks the async nodes a probe read
-  touches, matching `is_pending`'s shape. The todos demo derives its rows from
-  the API, uses `<Loading>` for the first load, and commits the saved list.
+- `OptimisticStore` derives from an async `SourceStore`
+  (`OptimisticStore::new(cx, seed, || api.list())`); the source side is
+  truth-only and `todos.source().set` is the persist-commit step. A successful
+  action writes the saved answer there and the overlay's guesses drop at
+  settle, with no re-fetch. `refresh(cx, |cx| ...)` re-asks the async nodes a
+  probe read touches, matching `is_pending`'s shape.
+- `OptimisticList::update(cx, |draft| ...)` is the `setStore(draft => ...)`
+  equivalent for keyed lists: one closure edits a display draft, and the keyed
+  diff stages row guesses, append/remove patches, and pending-row edits.
 - `LoadingBoundary::on(cx, closure)` re-arms a loaded boundary when a tracked
   dependency changes, showing the fallback for the new question.
 - Renderer `NodeId` contract frozen: opaque non-zero ids, `INVALID_NODE_ID`

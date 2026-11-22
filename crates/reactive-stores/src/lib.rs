@@ -236,13 +236,18 @@ impl<T: Clone + 'static> Store<T> {
 /// per-path guesses, so a success commits optimistically while the refresh
 /// catches up with the server. Reads join the source, so the first load is a
 /// loading state rather than an empty seed.
-pub struct OptimisticStore<T: 'static> {
+/// The persisted source of a derived store.
+///
+/// This is the API-derived truth. Reads are truth-only; `set` is the
+/// persist-commit step an action uses when it already knows the server's
+/// answer. The optimistic overlay reads this source and adds its guesses.
+pub struct SourceStore<T: 'static> {
     store: Store<T>,
     source: Memo<T>,
-    initialized: Rc<std::cell::Cell<bool>>,
+    initialized: Rc<Cell<bool>>,
 }
 
-impl<T> Clone for OptimisticStore<T> {
+impl<T> Clone for SourceStore<T> {
     fn clone(&self) -> Self {
         Self {
             store: self.store.clone(),
@@ -252,12 +257,12 @@ impl<T> Clone for OptimisticStore<T> {
     }
 }
 
-impl<T: Clone + PartialEq + 'static> OptimisticStore<T> {
-    /// Create a store whose truth comes from `load`.
+impl<T: Clone + PartialEq + 'static> SourceStore<T> {
+    /// Create a source whose truth comes from `load`.
     ///
     /// `seed` is the placeholder used before the first answer. The first read
-    /// of the store joins the source, so a loading boundary sees a loading
-    /// state instead of the seed.
+    /// joins the source, so a loading boundary sees a loading state instead of
+    /// the seed.
     pub fn new<F, Fut>(cx: &Cx<'_>, seed: T, mut load: F) -> Self
     where
         F: FnMut() -> Fut + 'static,
@@ -267,7 +272,7 @@ impl<T: Clone + PartialEq + 'static> OptimisticStore<T> {
             Box::pin(load())
         });
         let store = Store::new(cx, seed);
-        let initialized = Rc::new(std::cell::Cell::new(false));
+        let initialized = Rc::new(Cell::new(false));
         let store_for_effect = store.clone();
         let initialized_for_effect = Rc::clone(&initialized);
         let _effect = render_effect(
@@ -287,16 +292,12 @@ impl<T: Clone + PartialEq + 'static> OptimisticStore<T> {
         }
     }
 
-    /// The display value: the store once the source has landed, otherwise the
-    /// source's current answer.
-    ///
-    /// For a list, use [`OptimisticStore::list`] so per-key patches and row
-    /// guesses compose; this is the root value alone.
+    /// The source truth. A first read joins the loading source.
     #[must_use]
     pub fn get(&self, cx: &Cx<'_>) -> T {
         let value = self.source.get(cx);
         if self.initialized.get() {
-            self.store.get(cx)
+            self.store.root().committed(cx)
         } else {
             value
         }
@@ -306,15 +307,55 @@ impl<T: Clone + PartialEq + 'static> OptimisticStore<T> {
     ///
     /// This is the persist-commit step: an action that already knows the
     /// server's answer writes it here instead of re-asking the source. The
-    /// action's guesses drop at settle, leaving this value on screen.
-    pub fn commit(&self, cx: &Cx<'_>, value: T) {
+    /// overlay's guesses drop at settle, leaving this truth on screen.
+    pub fn set(&self, cx: &Cx<'_>, value: T) {
         self.store.root().commit(cx, value);
     }
+}
 
-    /// The root field handle.
+/// A store derived from a source, with per-key optimistic guesses on top.
+///
+/// Reads compose the source truth and the live guesses; `source()` is the
+/// persist-commit handle. The source is the API-derived value, so an action
+/// writes the saved answer there rather than re-fetching.
+pub struct OptimisticStore<T: 'static> {
+    source: SourceStore<T>,
+}
+
+impl<T> Clone for OptimisticStore<T> {
+    fn clone(&self) -> Self {
+        Self {
+            source: self.source.clone(),
+        }
+    }
+}
+
+impl<T: Clone + PartialEq + 'static> OptimisticStore<T> {
+    /// Create an optimistic store whose truth comes from `load`.
+    pub fn new<F, Fut>(cx: &Cx<'_>, seed: T, load: F) -> Self
+    where
+        F: FnMut() -> Fut + 'static,
+        Fut: std::future::Future<Output = Result<T, AsyncError>> + 'static,
+    {
+        Self {
+            source: SourceStore::new(cx, seed, load),
+        }
+    }
+
+    /// The display value: source truth plus live guesses.
+    ///
+    /// For a list, use [`OptimisticStore::list`] so per-key patches and row
+    /// guesses compose; this is the root value alone.
     #[must_use]
-    pub fn root(&self) -> Field<T> {
-        self.store.root()
+    pub fn get(&self, cx: &Cx<'_>) -> T {
+        let _ = self.source.get(cx);
+        self.source.store.root().get(cx)
+    }
+
+    /// The source side: truth reads and the persist-commit write.
+    #[must_use]
+    pub fn source(&self) -> &SourceStore<T> {
+        &self.source
     }
 }
 
@@ -327,10 +368,10 @@ impl<T: Clone + PartialEq + 'static> OptimisticStore<Vec<T>> {
         F: Fn(&T) -> K + 'static,
     {
         OptimisticList {
-            list: self.store.root(),
+            list: self.source.store.root(),
             key: Rc::new(key),
-            source: Some(self.source),
-            initialized: Some(Rc::clone(&self.initialized)),
+            source: Some(self.source.source),
+            initialized: Some(Rc::clone(&self.source.initialized)),
         }
     }
 }
@@ -499,11 +540,6 @@ impl<T: Clone + 'static, K: Clone + Eq + Hash + 'static> OptimisticList<T, K> {
         cx.guess_value::<T, _>(&row_node).is_some()
     }
 
-    /// Write truth. Inside an action it lands when the action settles.
-    pub fn commit(&self, cx: &Cx<'_>, rows: Vec<T>) {
-        self.list.commit(cx, rows);
-    }
-
     fn stage_patch(&self, cx: &Cx<'_>, patch: ListPatch<T, K>) -> bool {
         if !cx.in_action() {
             return false;
@@ -514,6 +550,90 @@ impl<T: Clone + 'static, K: Clone + Eq + Hash + 'static> OptimisticList<T, K> {
 
     fn row_path(&self, key: &K) -> String {
         format!("{}#{}", self.list.path(), hash_key(key))
+    }
+}
+
+impl<T: Clone + PartialEq + 'static, K: Clone + Eq + Hash + 'static> OptimisticList<T, K> {
+    /// Draft-style write: clone the display rows, run `f`, then stage the diff.
+    ///
+    /// A changed committed row is a per-key guess, an added row is a structural
+    /// push, and a removed row is a structural remove. Appends, removals, and
+    /// edits are patches; a reorder or a middle insertion falls back to a
+    /// whole-list guess. Outside an action the draft is written as truth.
+    pub fn update(&self, cx: &Cx<'_>, f: impl FnOnce(&mut Vec<T>)) {
+        let before = self.get(cx);
+        let mut draft = before.clone();
+        f(&mut draft);
+        if before == draft {
+            return;
+        }
+        if !cx.in_action() {
+            self.list.set(cx, draft);
+            return;
+        }
+
+        let before_keys: Vec<K> = before.iter().map(|row| (self.key)(row)).collect();
+        let draft_keys: Vec<K> = draft.iter().map(|row| (self.key)(row)).collect();
+        let before_common: Vec<K> = before_keys
+            .iter()
+            .filter(|key| draft_keys.contains(key))
+            .cloned()
+            .collect();
+        let draft_common: Vec<K> = draft_keys
+            .iter()
+            .filter(|key| before_keys.contains(key))
+            .cloned()
+            .collect();
+        let new_keys: Vec<K> = draft_keys
+            .iter()
+            .filter(|key| !before_keys.contains(key))
+            .cloned()
+            .collect();
+        let suffix = draft_keys.len().saturating_sub(new_keys.len());
+        let appended = new_keys.is_empty()
+            || draft_keys
+                .get(suffix..)
+                .is_some_and(|tail| tail == new_keys.as_slice());
+        if before_common != draft_common || !appended {
+            // Reordering and middle insertion are not patches yet.
+            self.list.set(cx, draft);
+            return;
+        }
+
+        let committed = (self.list.inner.read)();
+        for row in &draft {
+            let key = (self.key)(row);
+            let Some(old) = before.iter().find(|candidate| (self.key)(candidate) == key) else {
+                continue;
+            };
+            if old == row {
+                continue;
+            }
+            if committed
+                .iter()
+                .any(|candidate| (self.key)(candidate) == key)
+            {
+                if let Some(field) = self.at_key(cx, &key) {
+                    field.set(cx, row.clone());
+                }
+            } else {
+                // A row that exists only in a patch: replace its guess.
+                self.remove(cx, &key);
+                self.push(cx, row.clone());
+            }
+        }
+        for row in &before {
+            let key = (self.key)(row);
+            if !draft.iter().any(|candidate| (self.key)(candidate) == key) {
+                self.remove(cx, &key);
+            }
+        }
+        for row in &draft {
+            let key = (self.key)(row);
+            if !before.iter().any(|candidate| (self.key)(candidate) == key) {
+                self.push(cx, row.clone());
+            }
+        }
     }
 }
 
