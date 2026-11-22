@@ -511,12 +511,12 @@ mod uicomponents {
         button(
             vec![text_fn(move |cx| {
                 props.read.row(cx, id).map_or_else(String::new, |row| {
-                    let mark = if row.done { "☑" } else { "☐" };
-                    if row.pending {
-                        format!("{mark}  {}  (saving…)", row.text)
-                    } else {
-                        format!("{mark}  {}", row.text)
-                    }
+                    format!(
+                        "{}  {}{}",
+                        if row.done { "☑" } else { "☐" },
+                        row.text,
+                        if row.pending { "  (saving…)" } else { "" }
+                    )
                 })
             })
             .style(styles::base())],
@@ -536,7 +536,6 @@ mod uicomponents {
     #[component]
     pub fn TodoForm(cx: &Cx<'_>, props: TodoFormProps) -> View {
         let input = TextInputState::new(cx, "");
-        let input_for_add = input.clone();
 
         view! {
             <Row style={styles::form()}>
@@ -545,11 +544,11 @@ mod uicomponents {
                 <ActionButton
                     label={String::from("Add")}
                     on_click={move |cx: &Cx<'_>| {
-                        let text = input_for_add.text().trim().to_string();
+                        let text = input.text().trim().to_string();
                         if text.is_empty() {
                             return;
                         }
-                        input_for_add.clear(cx);
+                        input.clear(cx);
                         props.actions.add(text);
                     }}
                 />
@@ -585,6 +584,32 @@ mod uicomponents {
     }
 
     #[macros::props]
+    pub struct TodoRowsProps {
+        pub read: Rc<Todos>,
+        pub actions: Rc<TodoActions>,
+    }
+
+    #[component]
+    pub fn TodoRows(_cx: &Cx<'_>, props: TodoRowsProps) -> View {
+        let rows = props.read.clone();
+
+        For(
+            move |cx| rows.rows(cx),
+            |row: &TodoRow| row.id,
+            move |cx, row: &TodoRow| {
+                let _ = cx;
+                view! {
+                    <TodoRowView
+                        id={row.id}
+                        read={props.read.clone()}
+                        actions={props.actions.clone()}
+                    />
+                }
+            },
+        )
+    }
+
+    #[macros::props]
     pub struct ContentProps {
         pub read: Rc<Todos>,
         pub actions: Rc<TodoActions>,
@@ -592,23 +617,12 @@ mod uicomponents {
 
     #[component]
     pub fn Content(cx: &Cx<'_>, props: ContentProps) -> View {
-        let read_for_rows = props.read.clone();
-        let read_for_row = props.read.clone();
-        let actions_for_row = props.actions.clone();
-
         view! {
             <Column style={styles::root()}>
                 <TodoForm actions={props.actions.clone()} />
-                <For
-                    each={move |cx| read_for_rows.rows(cx)}
-                    key={|row: &TodoRow| row.id}
-                    children={move |cx, row: &TodoRow| view! {
-                        <TodoRowView
-                            id={row.id}
-                            read={read_for_row.clone()}
-                            actions={actions_for_row.clone()}
-                        />
-                    }}
+                <TodoRows
+                    read={props.read.clone()}
+                    actions={props.actions.clone()}
                 />
                 <FailButton actions={props.actions.clone()} />
                 <ErrorText read={props.read.clone()} />
