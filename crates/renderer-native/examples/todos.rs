@@ -478,7 +478,7 @@ mod uicomponents {
     use reactive_core::{Cx, RuntimeHandle};
     use renderer_api::CursorIcon;
     use view::control::{For, Loading};
-    use view::{button, text_fn, Callback, ForIndex, ForItem, Prop, TextInputState, View};
+    use view::{Callback, ForIndex, ForItem, Prop, TextInputState, View};
 
     use crate::basecomponents::{
         ActionButton, ActionButtonProps, ErrorLine, ErrorLineProps, TextLine, TextLineProps,
@@ -505,24 +505,28 @@ mod uicomponents {
 
     #[component]
     pub fn Todo(_cx: &Cx<'_>, props: TodoProps) -> View {
-        button(
-            vec![text_fn(move |cx| {
-                let todo = props.todo.get(cx);
-                format!(
-                    "{}. {}  {}{}",
-                    props.index.get(cx) + 1,
-                    if todo.done { "☑" } else { "☐" },
-                    todo.text,
-                    if todo.pending { "  (saving…)" } else { "" }
-                )
-            })
-            .style(styles::base())],
-            move |cx: &Cx<'_>| props.toggle.call(cx),
-        )
-        .style(styles::todo_row())
-        .hover_style(styles::HOVER)
-        .focus_style(styles::FOCUS)
-        .cursor(CursorIcon::Pointer)
+        view! {
+            <Button
+                style={styles::todo_row()}
+                hover_style={styles::HOVER}
+                focus_style={styles::FOCUS}
+                cursor={CursorIcon::Pointer}
+                on_click={move |cx: &Cx<'_>| props.toggle.call(cx)}
+            >
+                <Text style={styles::base()}>
+                    {{
+                        let todo = props.todo.get(cx);
+                        format!(
+                            "{}. {}  {}{}",
+                            props.index.get(cx) + 1,
+                            if todo.done { "☑" } else { "☐" },
+                            todo.text,
+                            if todo.pending { "  (saving…)" } else { "" }
+                        )
+                    }}
+                </Text>
+            </Button>
+        }
     }
 
     #[macros::props]
