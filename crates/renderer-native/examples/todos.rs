@@ -427,7 +427,7 @@ mod basecomponents {
     use macros::{component, view};
     use reactive_core::Cx;
     use renderer_api::CursorIcon;
-    use view::{text_fn, Callback, View};
+    use view::{Callback, View};
 
     use crate::styles;
 
@@ -459,7 +459,9 @@ mod basecomponents {
 
     #[component]
     pub fn TextLine(_cx: &Cx<'_>, props: TextLineProps) -> View {
-        text_fn(move |cx| props.value.get(cx)).style(styles::base())
+        view! {
+            <Text style={styles::base()}>{props.value.get(cx)}</Text>
+        }
     }
 
     #[macros::props]
@@ -469,7 +471,9 @@ mod basecomponents {
 
     #[component]
     pub fn ErrorLine(_cx: &Cx<'_>, props: ErrorLineProps) -> View {
-        text_fn(move |cx| props.value.get(cx)).style(styles::error())
+        view! {
+            <Text style={styles::error()}>{props.value.get(cx)}</Text>
+        }
     }
 }
 
@@ -480,7 +484,7 @@ mod uicomponents {
     use reactive_core::{Cx, RuntimeHandle};
     use renderer_api::CursorIcon;
     use view::control::{For, Loading};
-    use view::{button, text_fn, Prop, TextInputState, View};
+    use view::{button, text_fn, Callback, Prop, TextInputState, View};
 
     use crate::basecomponents::{
         ActionButton, ActionButtonProps, ErrorLine, ErrorLineProps, TextLine, TextLineProps,
@@ -500,27 +504,24 @@ mod uicomponents {
 
     #[macros::props]
     pub struct TodoRowViewProps {
-        pub id: u64,
-        pub read: Rc<Todos>,
-        pub actions: Rc<TodoActions>,
+        pub todo: TodoRow,
+        pub toggle: Callback,
     }
 
     #[component]
-    pub fn TodoRowView(cx: &Cx<'_>, props: TodoRowViewProps) -> View {
-        let id = props.id.get(cx);
+    pub fn TodoRowView(_cx: &Cx<'_>, props: TodoRowViewProps) -> View {
         button(
             vec![text_fn(move |cx| {
-                props.read.row(cx, id).map_or_else(String::new, |row| {
-                    format!(
-                        "{}  {}{}",
-                        if row.done { "☑" } else { "☐" },
-                        row.text,
-                        if row.pending { "  (saving…)" } else { "" }
-                    )
-                })
+                let todo = props.todo.get(cx);
+                format!(
+                    "{}  {}{}",
+                    if todo.done { "☑" } else { "☐" },
+                    todo.text,
+                    if todo.pending { "  (saving…)" } else { "" }
+                )
             })
             .style(styles::base())],
-            move |_cx: &Cx<'_>| props.actions.toggle(id),
+            move |cx: &Cx<'_>| props.toggle.call(cx),
         )
         .style(styles::todo_row())
         .hover_style(styles::HOVER)
@@ -573,37 +574,42 @@ mod uicomponents {
 
     #[macros::props]
     pub struct ErrorTextProps {
-        pub read: Rc<Todos>,
+        pub todos: Rc<Todos>,
     }
 
     #[component]
     pub fn ErrorText(cx: &Cx<'_>, props: ErrorTextProps) -> View {
         view! {
-            <ErrorLine value={Prop::derived(cx, move |cx| props.read.error(cx))} />
+            <ErrorLine value={Prop::derived(cx, move |cx| props.todos.error(cx))} />
         }
     }
 
     #[macros::props]
     pub struct TodoRowsProps {
-        pub read: Rc<Todos>,
+        pub todos: Rc<Todos>,
         pub actions: Rc<TodoActions>,
     }
 
     #[component]
     pub fn TodoRows(_cx: &Cx<'_>, props: TodoRowsProps) -> View {
-        let rows = props.read.clone();
+        let rows = props.todos.clone();
 
         For(
             move |cx| rows.rows(cx),
             |row: &TodoRow| row.id,
             move |cx, row: &TodoRow| {
-                let _ = cx;
+                let id = row.id;
+                let fallback = row.clone();
+                let todos = props.todos.clone();
+                let todo = Prop::derived(cx, move |cx| {
+                    todos.row(cx, id).unwrap_or_else(|| fallback.clone())
+                });
+                let toggle = Callback::new({
+                    let actions = props.actions.clone();
+                    move |_cx: &Cx<'_>| actions.toggle(id)
+                });
                 view! {
-                    <TodoRowView
-                        id={row.id}
-                        read={props.read.clone()}
-                        actions={props.actions.clone()}
-                    />
+                    <TodoRowView todo={todo} toggle={toggle} />
                 }
             },
         )
@@ -611,7 +617,7 @@ mod uicomponents {
 
     #[macros::props]
     pub struct ContentProps {
-        pub read: Rc<Todos>,
+        pub todos: Rc<Todos>,
         pub actions: Rc<TodoActions>,
     }
 
@@ -621,11 +627,11 @@ mod uicomponents {
             <Column style={styles::root()}>
                 <TodoForm actions={props.actions.clone()} />
                 <TodoRows
-                    read={props.read.clone()}
+                    todos={props.todos.clone()}
                     actions={props.actions.clone()}
                 />
                 <FailButton actions={props.actions.clone()} />
-                <ErrorText read={props.read.clone()} />
+                <ErrorText todos={props.todos.clone()} />
             </Column>
         }
     }
@@ -638,7 +644,7 @@ mod uicomponents {
 
         view! {
             <Loading fallback={LoadingView}>
-                <Content read={read.clone()} actions={actions.clone()} />
+                <Content todos={read.clone()} actions={actions.clone()} />
             </Loading>
         }
     }
