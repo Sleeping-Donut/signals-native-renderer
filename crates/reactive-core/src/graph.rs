@@ -714,10 +714,12 @@ impl RuntimeHandle {
                 id,
             };
             let outcome = scoped.await;
-            let cx = runtime.cx();
-            runtime.finish_action(id, outcome.is_ok());
-            settle(&cx, &outcome);
-            set_result.set(&cx, Some(outcome.map_err(|error| error.to_string())));
+            let commit = outcome.is_ok();
+            let finish: ActionFinish = Box::new(move |cx| {
+                settle(cx, &outcome);
+                set_result.set(cx, Some(outcome.map_err(|error| error.to_string())));
+            });
+            runtime.finish_action(id, commit, finish);
         }));
         ActionHandle { result }
     }
@@ -960,11 +962,15 @@ impl<'a> Cx<'a> {
 struct ActionId(u64);
 
 type DeferredWrite = Box<dyn for<'a> FnOnce(&Cx<'a>)>;
+type ActionFinish = Box<dyn for<'a> FnOnce(&Cx<'a>)>;
 
 #[derive(Default)]
 struct ActionState {
     guesses: Vec<NodeId>,
     writes: Vec<DeferredWrite>,
+    waits: Vec<NodeId>,
+    held_commit: bool,
+    finish: Option<ActionFinish>,
 }
 
 struct Guess {
@@ -1352,6 +1358,7 @@ impl Runtime {
                 resume_unwind(payload);
             }
         }
+        let action = self.current_action.get();
         let mut refreshed = 0;
         for id in ids {
             if self
@@ -1360,6 +1367,13 @@ impl Runtime {
             {
                 self.mark_refresh(id);
                 refreshed += 1;
+                if let Some(action) = action {
+                    if let Some(state) = self.actions.borrow_mut().get_mut(&action) {
+                        if !state.waits.contains(&id) {
+                            state.waits.push(id);
+                        }
+                    }
+                }
             }
         }
         refreshed
@@ -1527,10 +1541,22 @@ impl Runtime {
             .push(write);
     }
 
-    fn finish_action(&self, id: ActionId, commit: bool) {
+    fn finish_action(&self, id: ActionId, commit: bool, finish: ActionFinish) {
         let Some(state) = self.actions.borrow_mut().remove(&id) else {
             return;
         };
+        if !state.waits.is_empty() {
+            let mut state = state;
+            state.held_commit = commit;
+            state.finish = Some(finish);
+            self.actions.borrow_mut().insert(id, state);
+            return;
+        }
+        self.settle_action(id, state, commit);
+        finish(&self.cx());
+    }
+
+    fn settle_action(&self, id: ActionId, state: ActionState, commit: bool) {
         if commit {
             for write in state.writes {
                 write(&self.cx());
@@ -1546,6 +1572,31 @@ impl Runtime {
             self.mark_display_changed(node_id);
         }
         self.bump_affects();
+    }
+
+    fn note_async_landed(&self, id: NodeId) {
+        for state in self.actions.borrow_mut().values_mut() {
+            state.waits.retain(|wait| *wait != id);
+        }
+    }
+
+    fn drain_held_actions(&self) {
+        let ready: Vec<ActionId> = self
+            .actions
+            .borrow()
+            .iter()
+            .filter(|(_, state)| state.finish.is_some() && state.waits.is_empty())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ready {
+            let Some(mut state) = self.actions.borrow_mut().remove(&id) else {
+                continue;
+            };
+            let commit = state.held_commit;
+            let finish = state.finish.take().expect("held action finish");
+            self.settle_action(id, state, commit);
+            finish(&self.cx());
+        }
     }
 
     fn mark_display_changed(&self, id: NodeId) {
@@ -2282,10 +2333,10 @@ impl Runtime {
         self.spawner.spawn_local(Box::pin(task));
     }
 
-    fn commit_async(&self) {
+    fn commit_async(&self) -> bool {
         let ready = std::mem::take(&mut *self.async_ready.borrow_mut());
         if ready.is_empty() {
-            return;
+            return false;
         }
         let revision = self.revision.get() + 1;
         self.revision.set(revision);
@@ -2343,7 +2394,9 @@ impl Runtime {
                     self.bump_pending(id);
                 }
             }
+            self.note_async_landed(id);
         }
+        true
     }
 
     /// Flush staged writes, commit ready async results, run computes, then
@@ -2354,13 +2407,13 @@ impl Runtime {
         }
         let mut rounds = 0;
         loop {
-            self.commit_async();
+            let landed = self.commit_async();
             let has_work = !self.staged.borrow().is_empty()
                 || !self.heap.borrow().is_empty()
                 || !self.render_applies.borrow().is_empty()
                 || !self.user_applies.borrow().is_empty()
                 || !self.async_ready.borrow().is_empty();
-            if !has_work {
+            if !has_work && !landed {
                 break;
             }
             rounds += 1;
@@ -2371,6 +2424,9 @@ impl Runtime {
             self.promote_staged();
             self.run_heap();
             self.run_applies();
+            if landed {
+                self.drain_held_actions();
+            }
         }
         let affected = std::mem::take(&mut *self.affected.borrow_mut());
         if !affected.is_empty() {

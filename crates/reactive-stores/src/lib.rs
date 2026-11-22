@@ -479,16 +479,18 @@ impl<T: Clone + 'static, K: Clone + Eq + Hash + 'static> OptimisticList<T, K> {
                 removed: Vec::new(),
             },
         ) {
-            let list = self.list.clone();
-            let key = Rc::clone(&self.key);
-            let row_key = key(&row);
-            cx.defer_write(move |cx| {
-                let mut rows = (list.inner.read)();
-                if !rows.iter().any(|candidate| key(candidate) == row_key) {
-                    rows.push(row);
-                }
-                list.set(cx, rows);
-            });
+            if self.commits_on_settle() {
+                let list = self.list.clone();
+                let key = Rc::clone(&self.key);
+                let row_key = key(&row);
+                cx.defer_write(move |cx| {
+                    let mut rows = (list.inner.read)();
+                    if !rows.iter().any(|candidate| key(candidate) == row_key) {
+                        rows.push(row);
+                    }
+                    list.set(cx, rows);
+                });
+            }
             return;
         }
         let mut rows = (self.list.inner.read)();
@@ -510,14 +512,16 @@ impl<T: Clone + 'static, K: Clone + Eq + Hash + 'static> OptimisticList<T, K> {
                 removed: vec![key.clone()],
             },
         ) {
-            let list = self.list.clone();
-            let key_fn = Rc::clone(&self.key);
-            let row_key = key.clone();
-            cx.defer_write(move |cx| {
-                let mut rows = (list.inner.read)();
-                rows.retain(|row| key_fn(row) != row_key);
-                list.set(cx, rows);
-            });
+            if self.commits_on_settle() {
+                let list = self.list.clone();
+                let key_fn = Rc::clone(&self.key);
+                let row_key = key.clone();
+                cx.defer_write(move |cx| {
+                    let mut rows = (list.inner.read)();
+                    rows.retain(|row| key_fn(row) != row_key);
+                    list.set(cx, rows);
+                });
+            }
             return;
         }
         let mut rows = (self.list.inner.read)();
@@ -548,6 +552,20 @@ impl<T: Clone + 'static, K: Clone + Eq + Hash + 'static> OptimisticList<T, K> {
         cx.stage_guess(&node, patch)
     }
 
+    /// A standalone optimistic list commits its guesses at settle. A list
+    /// derived from a source does not: the source set or refresh is truth.
+    fn commits_on_settle(&self) -> bool {
+        self.source.is_none()
+    }
+
+    fn write_draft(&self, cx: &Cx<'_>, draft: Vec<T>) {
+        if self.commits_on_settle() {
+            self.list.set(cx, draft);
+        } else {
+            self.list.guess(cx, draft);
+        }
+    }
+
     fn row_path(&self, key: &K) -> String {
         format!("{}#{}", self.list.path(), hash_key(key))
     }
@@ -568,7 +586,7 @@ impl<T: Clone + PartialEq + 'static, K: Clone + Eq + Hash + 'static> OptimisticL
             return;
         }
         if !cx.in_action() {
-            self.list.set(cx, draft);
+            self.write_draft(cx, draft);
             return;
         }
 
@@ -596,7 +614,7 @@ impl<T: Clone + PartialEq + 'static, K: Clone + Eq + Hash + 'static> OptimisticL
                 .is_some_and(|tail| tail == new_keys.as_slice());
         if before_common != draft_common || !appended {
             // Reordering and middle insertion are not patches yet.
-            self.list.set(cx, draft);
+            self.write_draft(cx, draft);
             return;
         }
 
@@ -614,7 +632,11 @@ impl<T: Clone + PartialEq + 'static, K: Clone + Eq + Hash + 'static> OptimisticL
                 .any(|candidate| (self.key)(candidate) == key)
             {
                 if let Some(field) = self.at_key(cx, &key) {
-                    field.set(cx, row.clone());
+                    if self.commits_on_settle() {
+                        field.set(cx, row.clone());
+                    } else {
+                        field.guess(cx, row.clone());
+                    }
                 }
             } else {
                 // A row that exists only in a patch: replace its guess.
@@ -816,7 +838,22 @@ impl<T: Clone + 'static> Field<T> {
         self.write_committed(cx, value, true);
     }
 
+    /// Stage a display-only guess. Outside an action this writes truth.
+    pub fn guess(&self, cx: &Cx<'_>, value: T) {
+        if !self.stage_guess_only(cx, &value) {
+            self.write_committed(cx, value, false);
+        }
+    }
+
     fn stage_guess(&self, cx: &Cx<'_>, value: &T) -> bool {
+        if !self.stage_guess_only(cx, value) {
+            return false;
+        }
+        self.defer_commit(cx, value.clone());
+        true
+    }
+
+    fn stage_guess_only(&self, cx: &Cx<'_>, value: &T) -> bool {
         if !cx.in_action() {
             return false;
         }
@@ -825,7 +862,6 @@ impl<T: Clone + 'static> Field<T> {
             return false;
         }
         self.inner.store.note_write();
-        self.defer_commit(cx, value.clone());
         true
     }
 

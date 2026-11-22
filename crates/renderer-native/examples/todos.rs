@@ -99,7 +99,7 @@ mod model {
             self.saved.borrow().clone()
         }
 
-        pub async fn toggle(&self, id: u64) -> Result<Vec<Todo>, String> {
+        pub async fn toggle(&self, id: u64) -> Result<(), String> {
             sleep(SAVE_DELAY_MS).await;
             if let Some(error) = self.take_failure() {
                 return Err(error);
@@ -112,16 +112,16 @@ mod model {
             {
                 todo.done = !todo.done;
             }
-            Ok(self.saved.borrow().clone())
+            Ok(())
         }
 
-        pub async fn add(&self, todo: Todo) -> Result<Vec<Todo>, String> {
+        pub async fn add(&self, todo: Todo) -> Result<(), String> {
             sleep(SAVE_DELAY_MS).await;
             if let Some(error) = self.take_failure() {
                 return Err(error);
             }
             self.saved.borrow_mut().push(todo);
-            Ok(self.saved.borrow().clone())
+            Ok(())
         }
     }
 }
@@ -129,7 +129,7 @@ mod model {
 mod store {
     use std::rc::Rc;
 
-    use reactive_core::{create_signal, Cx, ReadSignal, RuntimeHandle, WriteSignal};
+    use reactive_core::{create_signal, refresh, Cx, ReadSignal, RuntimeHandle, WriteSignal};
     use reactive_stores::OptimisticStore;
 
     use crate::model::{Api, Todo};
@@ -190,7 +190,7 @@ mod store {
     impl TodoActions {
         pub fn toggle(self: &Rc<Self>, id: u64) {
             let rows = self.todos.list(|row| row.id);
-            let source = self.todos.source().clone();
+            let todos = self.todos.clone();
             let api = self.api.clone();
             let set_error = self.set_error;
             let _ = self.runtime.action_with(
@@ -201,8 +201,10 @@ mod store {
                             row.pending = true;
                         }
                     });
-                    let saved = api.toggle(id).await?;
-                    source.set(&rt.cx(), saved.into_iter().map(todo_row).collect());
+                    api.toggle(id).await?;
+                    refresh(&rt.cx(), |cx| {
+                        let _ = todos.get(cx);
+                    });
                     Ok::<(), String>(())
                 },
                 move |cx, result| match result {
@@ -214,7 +216,7 @@ mod store {
 
         pub fn add(self: &Rc<Self>, text: String) {
             let rows = self.todos.list(|row| row.id);
-            let source = self.todos.source().clone();
+            let todos = self.todos.clone();
             let api = self.api.clone();
             let set_error = self.set_error;
             let id = self.api.next_id();
@@ -228,14 +230,15 @@ mod store {
                             pending: true,
                         });
                     });
-                    let saved = api
-                        .add(Todo {
-                            id,
-                            text,
-                            done: false,
-                        })
-                        .await?;
-                    source.set(&rt.cx(), saved.into_iter().map(todo_row).collect());
+                    api.add(Todo {
+                        id,
+                        text,
+                        done: false,
+                    })
+                    .await?;
+                    refresh(&rt.cx(), |cx| {
+                        let _ = todos.get(cx);
+                    });
                     Ok::<(), String>(())
                 },
                 move |cx, result| match result {

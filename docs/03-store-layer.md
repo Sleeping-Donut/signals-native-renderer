@@ -341,10 +341,13 @@ todos.source().set(&cx, saved_rows);
 - The source's first answer loads the store; `get` joins the source, so a
   first read is a loading state and a loading boundary can cover only that
   load. After it lands, the store is the display value.
-- The source side is truth-only: `todos.source().set(cx, rows)` is the
-  persist-commit step. The overlay's guesses drop at settle and the source
-  truth stays; there is no re-fetch. Use `refresh` only when the action does
-  not already know the new truth.
+- The overlay's writes are guesses; the source side is truth. An action that
+  knows the answer can persist directly with `todos.source().set(cx, rows)`.
+  An action that does not know it calls `refresh` instead. A `refresh` issued
+  inside an action joins that action's hold: the action's guesses, buffered
+  writes, settle callback, and result wait until the refreshed source lands,
+  and the refreshed truth replaces the guesses at that commit. There is no
+  early revert and no re-fetch window.
 - `<Loading>` catches the first read of the derived store, so the fallback
   covers the initial load. A `refresh` re-ask keeps the content visible and
   corrects it when the answer lands.

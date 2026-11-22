@@ -681,3 +681,56 @@ fn action_settle_callback_writes_outside_the_scope() {
         "the settle callback runs mainline after the action scope"
     );
 }
+
+#[test]
+fn refresh_inside_an_action_holds_the_guess_until_the_source_lands() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let (shown, _set_shown) = create_signal(&cx, 0_u32);
+    let polls = Rc::new(Cell::new(0_u32));
+    let polls_for_data = Rc::clone(&polls);
+    let data = create_async_memo(&cx, move |_cx, _: Option<&u32>| {
+        let polls = Rc::clone(&polls_for_data);
+        Box::pin(poll_fn(move |_| {
+            let count = polls.get();
+            polls.set(count + 1);
+            if count < 4 {
+                Poll::Pending
+            } else {
+                Poll::Ready(Ok(1_u32))
+            }
+        }))
+    });
+
+    let handle = runtime.action(move |rt| async move {
+        let cx = rt.cx();
+        guess(&cx, &shown, 7_u32);
+        refresh(&cx, |cx| {
+            let _ = data.get(cx);
+        });
+        Ok::<(), String>(())
+    });
+
+    runtime.pump();
+    cx.flush().unwrap();
+    assert_eq!(
+        shown.get(&cx),
+        7,
+        "the guess is held while the refresh flight is out"
+    );
+    assert!(
+        handle.result().get(&cx).is_none(),
+        "the action does not settle before the refresh lands"
+    );
+
+    for _ in 0..8 {
+        runtime.pump();
+        cx.flush().unwrap();
+    }
+    assert_eq!(
+        shown.get(&cx),
+        0,
+        "the guess drops when the refresh lands and the action settles"
+    );
+    assert_eq!(handle.result().get(&cx), Some(Ok(())));
+}

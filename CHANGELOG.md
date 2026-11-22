@@ -31,10 +31,12 @@
   needs `#[prop(raw)]`.
 - `OptimisticStore` derives from an async `SourceStore`
   (`OptimisticStore::new(cx, seed, || api.list())`); the source side is
-  truth-only and `todos.source().set` is the persist-commit step. A successful
-  action writes the saved answer there and the overlay's guesses drop at
-  settle, with no re-fetch. `refresh(cx, |cx| ...)` re-asks the async nodes a
-  probe read touches, matching `is_pending`'s shape.
+  truth-only and `todos.source().set` is the direct persist-commit step.
+  `refresh(cx, |cx| ...)` re-asks the async nodes a probe read touches. A
+  `refresh` issued inside an action joins the action's hold: the action's
+  guesses, buffered writes, settle callback, and result wait until the
+  refreshed source lands, so `set optimistic -> save -> refresh` never
+  reverts early.
 - `OptimisticList::update(cx, |draft| ...)` is the `setStore(draft => ...)`
   equivalent for keyed lists: one closure edits a display draft, and the keyed
   diff stages row guesses, append/remove patches, and pending-row edits.

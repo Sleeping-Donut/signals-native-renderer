@@ -750,8 +750,10 @@ or a measurement.
   `current_action`; the closure receives the runtime handle, so it does not
   clone the caller's (`runtime.action(|rt| async move { ... })`).
   `OptimisticSignal` writes guesses, `WriteSignal` writes are buffered until
-  settle, and guesses are stored per action. The optimistic todos demo needs no
-  explicit action argument.
+  settle, and guesses are stored per action. A `refresh` called in the action
+  joins its hold: the action does not settle, and its guesses do not drop,
+  until the refreshed source lands. The optimistic todos demo needs no explicit
+  action argument.
 - Per-key store guesses: a guess lives on the store path node the read already
   tracks (`Field::optimistic`), mirroring Solid's carrier rule that its readers
   are the leaves of the keys it changed. Keyed lists stage `push`/`remove` as a

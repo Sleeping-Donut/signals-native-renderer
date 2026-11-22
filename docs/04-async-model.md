@@ -1348,18 +1348,23 @@ rows.update(&cx, |draft| {
     todo.done = !todo.done;
     todo.pending = true;
 });
-let saved = api.save(...).await?;
-todos.source().set(&cx, saved_rows);
+api.save(...).await?;
+refresh(&cx, |cx| { let _ = todos.get(cx); });
 ```
 
 `rows.update` is the `setStore(draft => ...)` equivalent for the keyed list:
 the closure edits a display draft and the diff becomes per-key guesses and
-structural patches. The source side is separate: `todos.source().set` is the
-persist-commit step. The overlay's guesses drop at settle and the source truth
-stays, so the action does not need a re-fetch. `refresh(cx, |cx| ...)` remains
-for re-asking when the action does not know the new truth. `<Loading>` catches
-the source's first read; `error` stays a signal, and the fail-next switch is
-plain API state.
+structural patches. The source side is separate and is the truth. An action
+that knows the answer can persist with `todos.source().set(cx, rows)`; an
+action that does not know it calls `refresh`.
+
+A `refresh` issued inside an action **joins the action's hold**: the guesses,
+buffered writes, settle callback, and `ActionHandle::result` wait until the
+refreshed source lands. The refreshed truth replaces the guess at that commit.
+This is the `set optimistic -> await save -> refresh` shape: no early revert,
+no window where the optimistic value is gone before the source answers
+(`F-11`, `D-31`). `<Loading>` catches the source's first read; `error` stays a
+signal, and the fail-next switch is plain API state.
 
 This mirrors Solid's carrier rule: `readersOf` dirties the leaves of the keys a
 carrier changed and the container for a structural guess

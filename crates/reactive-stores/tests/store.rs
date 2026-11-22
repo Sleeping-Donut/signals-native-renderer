@@ -553,6 +553,57 @@ mod optimistic {
     }
 
     #[test]
+    fn a_held_refresh_corrects_the_guess() {
+        let runtime = Runtime::new().into_handle();
+        let cx = runtime.cx();
+        let calls = Rc::new(Cell::new(0_u32));
+        let calls_for_load = Rc::clone(&calls);
+        let store = reactive_stores::OptimisticStore::new(&cx, Vec::new(), move || {
+            let calls = Rc::clone(&calls_for_load);
+            async move {
+                calls.set(calls.get() + 1);
+                delayed(2).await;
+                Ok::<Vec<Todo>, reactive_core::AsyncError>(vec![Todo {
+                    id: 1,
+                    title: String::from("one"),
+                    done: false,
+                }])
+            }
+        });
+        let list = store.list(|todo| todo.id);
+        settle(&runtime, &cx);
+        assert!(!list.get(&cx)[0].done);
+
+        let store_for_action = store.clone();
+        let list_for_action = list.clone();
+        let handle = runtime.action(move |rt| async move {
+            list_for_action.update(&rt.cx(), |draft| draft[0].done = true);
+            refresh(&rt.cx(), |cx| {
+                let _ = store_for_action.get(cx);
+            });
+            Ok::<(), String>(())
+        });
+
+        runtime.pump();
+        cx.flush().unwrap();
+        assert!(
+            list.get(&cx)[0].done,
+            "the guess stays while the refresh is in flight"
+        );
+        assert!(
+            handle.result().get(&cx).is_none(),
+            "the action is held by the refresh"
+        );
+
+        settle(&runtime, &cx);
+        assert!(
+            !list.get(&cx)[0].done,
+            "the refreshed truth corrects the guess"
+        );
+        assert_eq!(handle.result().get(&cx), Some(Ok(())));
+    }
+
+    #[test]
     fn a_guess_shows_to_effects_and_reverts_on_failure() {
         let runtime = Runtime::new().into_handle();
         let cx = runtime.cx();
