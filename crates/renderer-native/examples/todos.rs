@@ -190,18 +190,25 @@ mod store {
 
     impl TodoActions {
         /// Run an action with the standard error clearing/reporting.
+        ///
+        /// The error clears when the action starts (like Solid's `run`) and is
+        /// written back only if the action fails. The settle callback writes
+        /// outside the action scope; a write inside a failed action would be
+        /// discarded with the rest of its buffered writes.
         fn run<F, Fut>(self: &Rc<Self>, action: F)
         where
             F: FnOnce(Rc<Self>, RuntimeHandle) -> Fut + 'static,
             Fut: std::future::Future<Output = Result<(), String>> + 'static,
         {
+            self.set_error.set(&self.runtime.cx(), String::new());
             let this = Rc::clone(self);
             let set_error = self.set_error;
             let _ = self.runtime.action_with(
                 move |rt| action(Rc::clone(&this), rt),
-                move |cx, result| match result {
-                    Ok(()) => set_error.set(cx, String::new()),
-                    Err(error) => set_error.set(cx, error.clone()),
+                move |cx, result| {
+                    if let Err(error) = result {
+                        set_error.set(cx, error.clone());
+                    }
                 },
             );
         }
