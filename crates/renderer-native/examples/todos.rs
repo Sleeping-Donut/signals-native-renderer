@@ -130,7 +130,7 @@ mod store {
     use std::rc::Rc;
 
     use reactive_core::{create_signal, refresh, Cx, ReadSignal, RuntimeHandle, WriteSignal};
-    use reactive_stores::OptimisticStore;
+    use reactive_stores::{OptimisticList, OptimisticStore};
 
     use crate::model::{Api, Todo};
 
@@ -155,7 +155,7 @@ mod store {
     /// The read side. It exposes the composed rows and the error text, never a
     /// field handle or a setter.
     pub struct Todos {
-        todos: OptimisticStore<Vec<TodoRow>>,
+        rows: OptimisticList<TodoRow, u64>,
         error: ReadSignal<String>,
     }
 
@@ -163,7 +163,7 @@ mod store {
         /// The composed display rows: truth, live patches, and row guesses.
         #[must_use]
         pub fn rows(&self, cx: &Cx<'_>) -> Vec<TodoRow> {
-            self.todos.list(|row| row.id).get(cx)
+            self.rows.get(cx)
         }
 
         /// One composed row by id.
@@ -183,30 +183,22 @@ mod store {
     pub struct TodoActions {
         runtime: RuntimeHandle,
         api: Rc<Api>,
+        rows: OptimisticList<TodoRow, u64>,
         todos: OptimisticStore<Vec<TodoRow>>,
         set_error: WriteSignal<String>,
     }
 
     impl TodoActions {
-        pub fn toggle(self: &Rc<Self>, id: u64) {
-            let rows = self.todos.list(|row| row.id);
-            let todos = self.todos.clone();
-            let api = self.api.clone();
+        /// Run an action with the standard error clearing/reporting.
+        fn run<F, Fut>(self: &Rc<Self>, action: F)
+        where
+            F: FnOnce(Rc<Self>, RuntimeHandle) -> Fut + 'static,
+            Fut: std::future::Future<Output = Result<(), String>> + 'static,
+        {
+            let this = Rc::clone(self);
             let set_error = self.set_error;
             let _ = self.runtime.action_with(
-                move |rt| async move {
-                    rows.update(&rt.cx(), |rows| {
-                        if let Some(row) = rows.iter_mut().find(|row| row.id == id) {
-                            row.done = !row.done;
-                            row.pending = true;
-                        }
-                    });
-                    api.toggle(id).await?;
-                    refresh(&rt.cx(), |cx| {
-                        let _ = todos.get(cx);
-                    });
-                    Ok::<(), String>(())
-                },
+                move |rt| action(Rc::clone(&this), rt),
                 move |cx, result| match result {
                     Ok(()) => set_error.set(cx, String::new()),
                     Err(error) => set_error.set(cx, error.clone()),
@@ -214,38 +206,44 @@ mod store {
             );
         }
 
+        pub fn toggle(self: &Rc<Self>, id: u64) {
+            self.run(move |this, rt| async move {
+                this.rows.update(&rt.cx(), |draft| {
+                    let todo = draft.iter_mut().find(|todo| todo.id == id).unwrap();
+                    todo.done = !todo.done;
+                    todo.pending = true;
+                });
+                this.api.toggle(id).await?;
+                refresh(&rt.cx(), |cx| {
+                    let _ = this.todos.get(cx);
+                });
+                Ok(())
+            });
+        }
+
         pub fn add(self: &Rc<Self>, text: String) {
-            let rows = self.todos.list(|row| row.id);
-            let todos = self.todos.clone();
-            let api = self.api.clone();
-            let set_error = self.set_error;
             let id = self.api.next_id();
-            let _ = self.runtime.action_with(
-                move |rt| async move {
-                    rows.update(&rt.cx(), |rows| {
-                        rows.push(TodoRow {
-                            id,
-                            text: text.clone(),
-                            done: false,
-                            pending: true,
-                        });
+            self.run(move |this, rt| async move {
+                this.rows.update(&rt.cx(), |draft| {
+                    draft.push(TodoRow {
+                        id,
+                        text: text.clone(),
+                        done: false,
+                        pending: true,
                     });
-                    api.add(Todo {
+                });
+                this.api
+                    .add(Todo {
                         id,
                         text,
                         done: false,
                     })
                     .await?;
-                    refresh(&rt.cx(), |cx| {
-                        let _ = todos.get(cx);
-                    });
-                    Ok::<(), String>(())
-                },
-                move |cx, result| match result {
-                    Ok(()) => set_error.set(cx, String::new()),
-                    Err(error) => set_error.set(cx, error.clone()),
-                },
-            );
+                refresh(&rt.cx(), |cx| {
+                    let _ = this.todos.get(cx);
+                });
+                Ok(())
+            });
         }
 
         pub fn fail_next(&self) {
@@ -270,14 +268,16 @@ mod store {
             }
         });
         let (error, set_error) = create_signal(cx, String::new());
+        let rows = todos.list(|row| row.id);
         (
             Rc::new(Todos {
-                todos: todos.clone(),
+                rows: rows.clone(),
                 error,
             }),
             Rc::new(TodoActions {
                 runtime,
                 api,
+                rows,
                 todos,
                 set_error,
             }),
