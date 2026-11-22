@@ -28,7 +28,8 @@ in-tree apps and examples.
   - `View`, builders, `Prop` (static/signal/memo), `#[props]` builders,
     `Callback`, `CallbackWith<T>`, `MaybeProp<T>`, `view!`, `StateStyle`
   - `view::control` (`Show`, `For`, `Loading`, `LoadingWhen`, `Repeat`,
-    `Switch`, `Match`)
+    `Switch`, `Match`); `For` uses `each`/`keyed`/`fallback`/`render`
+  - `ForItem<T>` and `ForIndex` row accessors
   - `TextInput`, `TextInputState`
   - focus/tab, input dispatch, scroll, drag/drop, text input
   - AccessKit snapshot/action methods

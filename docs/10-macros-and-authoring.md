@@ -283,7 +283,9 @@ view! {
     <Column padding=8.0>
         <Header title="Todos" />
         <Show when=move || !todos.is_empty() fallback=|| view! { <Empty /> }>
-            <For each=todos key=|t| t.id children=|t| view! { <Row todo=t /> } />
+            <For each={move |cx| todos.get(cx)}
+                 keyed={|t: &Todo| t.id}
+                 render={move |cx, t: ForItem<Todo>, _index| view! { <Row todo={t} /> }} />
         </Show>
         <Button on_click=move |cx, _| add_todo(cx)>"Add"</Button>
     </Column>
@@ -661,14 +663,21 @@ flow takes no `style` attribute. Wrap it in an element when placement matters.
 
 ```rust
 <For
-    each={rows.get(cx)}
-    key={|row: &Row| row.id}
-    children={move |cx, row| view! { <RowLine row={row.clone()} /> }}
+    each={move |cx| rows.get(cx)}
+    keyed={|row: &Row| row.id}
+    fallback={|cx| view! { <Empty /> }}
+    render={move |cx, row: ForItem<Row>, index: ForIndex| view! {
+        <RowLine row={row} index={index} />
+    }}
 />
 ```
 
 - `each` accepts a signal read expression or `Fn(&Cx<'_>) -> Vec<T>`.
-- `key` returns a stable key; `children` builds the row view.
+- `keyed` is optional; without it rows are positional. `key` is an alias.
+- `fallback` is optional and mounts when the list is empty.
+- `render` receives reactive `ForItem<T>` and `ForIndex` accessors, so an
+  existing keyed row sees item and reorder changes without being remounted.
+  Pass them straight to a row component; `#[props]` treats them as raw.
 - The keyed diff is in [07-retained-renderer.md](07-retained-renderer.md).
 - Rows are logical children of the parent; wrap the list in a `Column`/`Row`
   when the rows need a gap or a direction.
@@ -738,7 +747,9 @@ struct AppState {
 let state = Store::new(AppState::default());
 view! {
     <Text>{state.user().name()}</Text>
-    <For each=state.todos() key=|t| t.id children=|t| view! { <Row todo=t /> } />
+    <For each={move |cx| state.todos().get(cx)}
+         keyed={|t: &Todo| t.id}
+         render={move |cx, t: ForItem<Todo>, _index| view! { <Row todo={t} /> }} />
 }
 ```
 
@@ -974,9 +985,11 @@ fn App(cx: &mut Cx, state: Store<AppState>) -> impl View {
 
             <Show when=move |cx| !visible.get(cx).is_empty()
                   fallback=|| view! { <Text>"Nothing here"</Text> }>
-                <For each=visible key=|t| t.id children=|t| view! {
-                    <TodoRow todo=t />
-                } />
+                <For each={move |cx| visible.get(cx)}
+                     keyed={|t: &Todo| t.id}
+                     render={move |cx, t: ForItem<Todo>, _index| view! {
+                         <TodoRow todo={t} />
+                     }} />
             </Show>
         </Column>
     }

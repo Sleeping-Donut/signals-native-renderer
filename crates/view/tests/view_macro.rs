@@ -9,7 +9,7 @@ use reactive_core::{create_async_memo, memo, signal, Runtime};
 use renderer_api::ResolvedStyle;
 use renderer_null::{NullRenderer, SharedNullRenderer};
 use view::control::{For, Loading, LoadingWhen, Match, Repeat, Show, Switch};
-use view::{Callback, View, ViewTree};
+use view::{Callback, ForItem, View, ViewTree};
 
 #[test]
 fn view_macro_builds_a_counter() {
@@ -69,10 +69,9 @@ fn view_macro_attributes_and_for() {
                 <Text style={ResolvedStyle::default()}>{format!("n={}", items.get(cx).len())}</Text>
                 <For
                     each={move |cx| items.get(cx)}
-                    key={|item: &String| item.clone()}
-                    children={move |_cx, item| {
-                        let item = item.clone();
-                        view! { <Text style={ResolvedStyle::default()}>{item.clone()}</Text> }
+                    keyed={|item: &String| item.clone()}
+                    render={move |_cx, item: ForItem<String>, _index| view! {
+                        <Text style={ResolvedStyle::default()}>{item.get(cx)}</Text>
                     }}
                 />
             </Column>
@@ -497,6 +496,92 @@ fn view_macro_optional_props_use_maybeprop() {
     set_label.set(&cx, String::from("b"));
     tree.frame(&cx, 1);
     assert_eq!(text_of(2).as_deref(), Some("b"));
+
+    tree.unmount(&cx, root);
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct RowItem {
+    id: u32,
+    label: String,
+}
+
+#[test]
+fn for_render_accessors_track_item_and_index() {
+    let runtime = Runtime::new().into_handle();
+    let cx = runtime.cx();
+    let renderer = Rc::new(RefCell::new(NullRenderer::new()));
+    let tree = ViewTree::new(
+        Box::new(SharedNullRenderer::new(Rc::clone(&renderer))),
+        runtime.clone(),
+    );
+    let (items, set_items) = signal!(
+        &cx,
+        vec![
+            RowItem {
+                id: 1,
+                label: String::from("one"),
+            },
+            RowItem {
+                id: 2,
+                label: String::from("two"),
+            },
+        ]
+    );
+
+    let root = tree.mount(
+        &cx,
+        view! {
+            <For
+                each={move |cx| items.get(cx)}
+                keyed={|item: &RowItem| item.id}
+                fallback={|_cx| view! { <Text>"empty"</Text> }}
+                render={move |_cx, item: ForItem<RowItem>, index| view! {
+                    <Text>{format!("{}:{}", index.get(cx), item.get(cx).label)}</Text>}
+                }
+            />
+        },
+    );
+    tree.frame(&cx, 0);
+    let row_texts = || {
+        tree.children(root)
+            .iter()
+            .filter_map(|id| tree.renderer_id(*id))
+            .filter_map(|node| renderer.borrow().text_of(node).map(str::to_owned))
+            .collect::<Vec<String>>()
+    };
+    assert!(row_texts().contains(&String::from("0:one")));
+    assert!(row_texts().contains(&String::from("1:two")));
+
+    set_items.set(
+        &cx,
+        vec![
+            RowItem {
+                id: 2,
+                label: String::from("TWO"),
+            },
+            RowItem {
+                id: 1,
+                label: String::from("one"),
+            },
+        ],
+    );
+    cx.flush().unwrap();
+    tree.frame(&cx, 1);
+    let texts = row_texts();
+    assert!(
+        texts.contains(&String::from("0:TWO")),
+        "the keyed row was reused and saw its item and index change"
+    );
+    assert!(texts.contains(&String::from("1:one")));
+    assert!(!texts.contains(&String::from("0:one")));
+
+    set_items.set(&cx, Vec::new());
+    cx.flush().unwrap();
+    tree.frame(&cx, 2);
+    let texts = row_texts();
+    assert!(texts.contains(&String::from("empty")));
+    assert!(!texts.iter().any(|text| text.contains("one")));
 
     tree.unmount(&cx, root);
 }

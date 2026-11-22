@@ -166,12 +166,6 @@ mod store {
             self.rows.get(cx)
         }
 
-        /// One composed row by id.
-        #[must_use]
-        pub fn row(&self, cx: &Cx<'_>, id: u64) -> Option<TodoRow> {
-            self.rows(cx).into_iter().find(|row| row.id == id)
-        }
-
         /// The last action error, empty when the last action succeeded.
         #[must_use]
         pub fn error(&self, cx: &Cx<'_>) -> String {
@@ -484,7 +478,7 @@ mod uicomponents {
     use reactive_core::{Cx, RuntimeHandle};
     use renderer_api::CursorIcon;
     use view::control::{For, Loading};
-    use view::{button, text_fn, Callback, Prop, TextInputState, View};
+    use view::{button, text_fn, Callback, ForIndex, ForItem, Prop, TextInputState, View};
 
     use crate::basecomponents::{
         ActionButton, ActionButtonProps, ErrorLine, ErrorLineProps, TextLine, TextLineProps,
@@ -504,7 +498,8 @@ mod uicomponents {
 
     #[macros::props]
     pub struct TodoRowViewProps {
-        pub todo: TodoRow,
+        pub todo: ForItem<TodoRow>,
+        pub index: ForIndex,
         pub toggle: Callback,
     }
 
@@ -514,7 +509,8 @@ mod uicomponents {
             vec![text_fn(move |cx| {
                 let todo = props.todo.get(cx);
                 format!(
-                    "{}  {}{}",
+                    "{}. {}  {}{}",
+                    props.index.get(cx) + 1,
                     if todo.done { "☑" } else { "☐" },
                     todo.text,
                     if todo.pending { "  (saving…)" } else { "" }
@@ -585,37 +581,6 @@ mod uicomponents {
     }
 
     #[macros::props]
-    pub struct TodoRowsProps {
-        pub todos: Rc<Todos>,
-        pub actions: Rc<TodoActions>,
-    }
-
-    #[component]
-    pub fn TodoRows(_cx: &Cx<'_>, props: TodoRowsProps) -> View {
-        let rows = props.todos.clone();
-
-        For(
-            move |cx| rows.rows(cx),
-            |row: &TodoRow| row.id,
-            move |cx, row: &TodoRow| {
-                let id = row.id;
-                let fallback = row.clone();
-                let todos = props.todos.clone();
-                let todo = Prop::derived(cx, move |cx| {
-                    todos.row(cx, id).unwrap_or_else(|| fallback.clone())
-                });
-                let toggle = Callback::new({
-                    let actions = props.actions.clone();
-                    move |_cx: &Cx<'_>| actions.toggle(id)
-                });
-                view! {
-                    <TodoRowView todo={todo} toggle={toggle} />
-                }
-            },
-        )
-    }
-
-    #[macros::props]
     pub struct ContentProps {
         pub todos: Rc<Todos>,
         pub actions: Rc<TodoActions>,
@@ -623,12 +588,28 @@ mod uicomponents {
 
     #[component]
     pub fn Content(cx: &Cx<'_>, props: ContentProps) -> View {
+        let rows = props.todos.clone();
+        let actions_for_rows = props.actions.clone();
+
         view! {
             <Column style={styles::root()}>
                 <TodoForm actions={props.actions.clone()} />
-                <TodoRows
-                    todos={props.todos.clone()}
-                    actions={props.actions.clone()}
+                <For
+                    each={move |cx: &Cx<'_>| rows.rows(cx)}
+                    keyed={|todo: &TodoRow| todo.id}
+                    fallback={|cx: &Cx<'_>| view! {
+                        <TextLine value={String::from("No todos yet")} />
+                    }}
+                    render={move |cx: &Cx<'_>, todo: ForItem<TodoRow>, index: ForIndex| {
+                        let id = todo.get(cx).id;
+                        let toggle = Callback::new({
+                            let actions = actions_for_rows.clone();
+                            move |_cx: &Cx<'_>| actions.toggle(id)
+                        });
+                        view! {
+                            <TodoRowView todo={todo} index={index} toggle={toggle} />
+                        }
+                    }}
                 />
                 <FailButton actions={props.actions.clone()} />
                 <ErrorText todos={props.todos.clone()} />

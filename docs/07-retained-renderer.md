@@ -560,11 +560,11 @@ fn App(cx: &mut Cx, state: Store<AppState>) -> impl View {
 
             <Show when=move |cx| state.todos().len().get(cx) > 0
                   fallback=|| view! { <Empty /> }>
-                <For each=state.todos()
-                     key=|todo| todo.id
-                     children=|todo| view! {
-                         <Row todo=todo.clone() />
-                     } />
+                <For each={move |cx| state.todos().get(cx)}
+                     keyed={|todo: &Todo| todo.id}
+                     render={move |cx, todo: ForItem<Todo>, _index| view! {
+                         <Row todo={todo} />
+                     }} />
             </Show>
         </div>
     }

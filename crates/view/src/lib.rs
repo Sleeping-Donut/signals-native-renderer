@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use layout::{LayoutEngine, LayoutId, LayoutStats, Rect, TextContent};
 use reactive_core::{
-    create_memo_unchecked, loading_boundary, render_effect, EffectHandle, Memo,
-    NodeId as ViewNodeId, OwnerHandle, ReadSignal, RuntimeHandle,
+    create_memo_unchecked, create_signal, loading_boundary, render_effect, Cx, EffectHandle, Memo,
+    NodeId as ViewNodeId, OwnerHandle, ReadSignal, RuntimeHandle, WriteSignal,
 };
 use renderer_api::{
     A11yRole, Color, CursorIcon, Display, Edges, ElementTag, FlexDirection, FrameInfo, Key,
@@ -4149,6 +4149,194 @@ where
         .style(row)
         .disabled_when(move |cx| disabled(cx))
     })])
+}
+
+/// A reactive item accessor handed to a `For` row.
+///
+/// The row view mounts once; the accessor tracks the per-row item signal, so a
+/// keyed row sees item changes without being remounted.
+pub struct ForItem<T> {
+    read: ReadSignal<T>,
+}
+
+impl<T> Clone for ForItem<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Copy for ForItem<T> {}
+
+impl<T: Clone + 'static> ForItem<T> {
+    /// Read the current item, tracking the row's item signal.
+    #[must_use]
+    pub fn get(&self, cx: &Cx<'_>) -> T {
+        self.read.get(cx)
+    }
+}
+
+/// A reactive row position handed to a `For` row.
+///
+/// Positional rows keep the row mounted and update this signal as the list
+/// reorders.
+pub struct ForIndex {
+    read: ReadSignal<usize>,
+}
+
+impl Clone for ForIndex {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl Copy for ForIndex {}
+
+impl ForIndex {
+    /// Read the current zero-based row position.
+    #[must_use]
+    pub fn get(&self, cx: &Cx<'_>) -> usize {
+        self.read.get(cx)
+    }
+}
+
+pub(crate) type RowKey<T, K> = Box<dyn Fn(usize, &T) -> K>;
+pub(crate) type RowFallback = Option<Box<dyn Fn(&Cx<'_>) -> View>>;
+
+/// A keyed list whose rows get reactive item and index accessors.
+pub(crate) fn keyed_list_rows<T, K, E, R>(
+    each: E,
+    key: RowKey<T, K>,
+    fallback: RowFallback,
+    row: R,
+) -> View
+where
+    T: Clone + PartialEq + 'static,
+    K: Eq + Hash + Clone + 'static,
+    E: Fn(&Cx<'_>) -> Vec<T> + 'static,
+    R: for<'a> Fn(&Cx<'a>, ForItem<T>, ForIndex) -> View + 'static,
+{
+    view(move |cx, tree| {
+        let id = tree.create_fragment();
+        let fallback_node = fallback.map(|fallback| {
+            let node = fallback(cx).mount(cx, tree);
+            tree.insert_child(id, node, None);
+            node
+        });
+        let state: Rc<RefCell<HashMap<K, IndexedRowEntry<T>>>> =
+            Rc::new(RefCell::new(HashMap::new()));
+        let tree_for_effect = tree.clone();
+        let state_for_effect = Rc::clone(&state);
+        let key_for_effect = key;
+        let binding = render_effect(
+            cx,
+            move |cx| each(cx),
+            move |cx, items| {
+                reconcile_rows(
+                    cx,
+                    &tree_for_effect,
+                    id,
+                    &state_for_effect,
+                    &*key_for_effect,
+                    &row,
+                    items,
+                );
+                if let Some(node) = fallback_node {
+                    tree_for_effect.set_display(
+                        node,
+                        if items.is_empty() {
+                            Display::Flex
+                        } else {
+                            Display::None
+                        },
+                    );
+                }
+            },
+        );
+        tree.add_binding(id, binding);
+        id
+    })
+}
+
+struct IndexedRowEntry<T> {
+    view: ViewNodeId,
+    item: WriteSignal<T>,
+    item_value: T,
+    index: WriteSignal<usize>,
+    index_value: usize,
+}
+
+fn reconcile_rows<T, K, R>(
+    cx: &Cx<'_>,
+    tree: &ViewTree,
+    list: ViewNodeId,
+    state: &Rc<RefCell<HashMap<K, IndexedRowEntry<T>>>>,
+    key: &dyn Fn(usize, &T) -> K,
+    row: &R,
+    items: &[T],
+) where
+    T: Clone + PartialEq + 'static,
+    K: Eq + Hash + Clone,
+    R: for<'a> Fn(&Cx<'a>, ForItem<T>, ForIndex) -> View,
+{
+    let mut old = std::mem::take(&mut *state.borrow_mut());
+    let mut next = HashMap::with_capacity(items.len());
+
+    for (index, item) in items.iter().enumerate() {
+        let item_key = key(index, item);
+        if let Some(mut entry) = old.remove(&item_key) {
+            if entry.item_value != *item {
+                entry.item.set(cx, item.clone());
+                entry.item_value = item.clone();
+            }
+            if entry.index_value != index {
+                entry.index.set(cx, index);
+                entry.index_value = index;
+            }
+            next.insert(item_key, entry);
+            continue;
+        }
+
+        if next.contains_key(&item_key) {
+            continue;
+        }
+        let owner = cx.create_owner();
+        let (item_read, item_write) = cx.with_owner(owner, |cx| create_signal(cx, item.clone()));
+        let (index_read, index_write) = cx.with_owner(owner, |cx| create_signal(cx, index));
+        let view = cx.with_owner(owner, |cx| {
+            row(
+                cx,
+                ForItem { read: item_read },
+                ForIndex { read: index_read },
+            )
+            .mount(cx, tree)
+        });
+        tree.set_owner(view, owner);
+        tree.insert_child(list, view, None);
+        next.insert(
+            item_key,
+            IndexedRowEntry {
+                view,
+                item: item_write,
+                item_value: item.clone(),
+                index: index_write,
+                index_value: index,
+            },
+        );
+    }
+
+    let kept: HashSet<ViewNodeId> = next.values().map(|entry| entry.view).collect();
+    for (_, entry) in old {
+        if !kept.contains(&entry.view) {
+            tree.remove_view(cx, entry.view);
+        }
+    }
+
+    for (index, item) in items.iter().enumerate() {
+        let item_key = key(index, item);
+        if let Some(entry) = next.get(&item_key) {
+            tree.insert_child(list, entry.view, None);
+        }
+    }
+
+    *state.borrow_mut() = next;
 }
 
 /// A keyed list. Existing keys keep their mounted view and owner when reordered.

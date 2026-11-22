@@ -8,8 +8,8 @@
 //!     <Column style={stack}>
 //!         <Text>{format!("count {}", count.get(cx))}</Text>
 //!         <Button style={button} on_click={move |cx| { ... }}>"+"</Button>
-//!         <For each={move |cx| rows.get(cx)} key={|row: &String| row.clone()}
-//!              children={move |cx, row| view! { <Text>{row.clone()}</Text> }} />
+//!         <For each={move |cx| rows.get(cx)} keyed={|row: &String| row.clone()}
+//!              render={move |cx, row, _index| view! { <Text>{row.get(cx)}</Text> }} />
 //!     </Column>
 //! }
 //! ```
@@ -327,21 +327,34 @@ fn node_tokens(node: &Node) -> Result<TokenStream2> {
             apply_attrs(quote! { #expr }, node, &["expr"], &allowed)
         }
         "For" => {
-            ensure_attrs(node, &["each", "key", "children"])?;
+            ensure_attrs(node, &["each", "key", "keyed", "fallback", "render"])?;
             let each = attr(node, "each")
                 .ok_or_else(|| syn::Error::new_spanned(&node.tag, "For requires each=..."))?;
-            let key = attr(node, "key")
-                .ok_or_else(|| syn::Error::new_spanned(&node.tag, "For requires key=..."))?;
-            let children = attr(node, "children")
-                .ok_or_else(|| syn::Error::new_spanned(&node.tag, "For requires children=..."))?;
+            let render = attr(node, "render")
+                .ok_or_else(|| syn::Error::new_spanned(&node.tag, "For requires render=..."))?;
+            let keyed = attr(node, "keyed").or_else(|| attr(node, "key"));
+            if attr(node, "keyed").is_some() && attr(node, "key").is_some() {
+                return Err(syn::Error::new_spanned(
+                    &node.tag,
+                    "For takes keyed=... or key=..., not both",
+                ));
+            }
+            let fallback = attr(node, "fallback");
             if !node.children.is_empty() {
                 return Err(syn::Error::new_spanned(
                     &node.tag,
-                    "For is self-closing; put children=... on the tag",
+                    "For is self-closing; put render=... on the tag",
                 ));
             }
             let each = as_closure(each);
-            Ok(quote! { For(#each, #key, #children) })
+            let mut tokens = quote! { For(#each) };
+            if let Some(keyed) = keyed {
+                tokens = quote! { #tokens.keyed(#keyed) };
+            }
+            if let Some(fallback) = fallback {
+                tokens = quote! { #tokens.fallback(#fallback) };
+            }
+            Ok(quote! { #tokens.render(#render) })
         }
         "Repeat" => {
             ensure_attrs(node, &["count"])?;
@@ -803,6 +816,8 @@ fn is_raw_type(ty: &syn::Type) -> bool {
                     | "OptimisticStore"
                     | "OptimisticList"
                     | "DynamicStore"
+                    | "ForItem"
+                    | "ForIndex"
             ) {
                 return true;
             }

@@ -460,7 +460,7 @@ acceptance run.
 | `createMemo(asyncFn)` | `create_async_memo(cx, ...)` |
 | `isPending(x)` | `is_pending(cx, x)` (v0.1 subset) |
 | `<Loading>` | `<LoadingBoundary>`; first load catches, later loads forward |
-| `<For each=...>` | `<For each=... key=...>`; key is explicit |
+| `<For each=...>` | `<For each=... keyed=... fallback=... render=...>`; keyed is optional |
 | `disabled={expr}` | `disabled=...` reactive attribute |
 | `onClick` | `on_click` |
 | plain function read | per-read derived expression; no node unless memoized |

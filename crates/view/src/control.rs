@@ -21,11 +21,16 @@
 
 #![allow(non_snake_case)]
 
+use std::hash::Hash;
+use std::marker::PhantomData;
 use std::rc::Rc;
 
 use reactive_core::Cx;
 
-use crate::{fragment, keyed_list, loading_auto, loading_when, repeat, show, view_slot, View};
+use crate::{
+    fragment, keyed_list_rows, loading_auto, loading_when, repeat, show, view_slot, ForIndex,
+    ForItem, RowFallback, RowKey, View,
+};
 
 /// Mount `content` when `when` is true, otherwise `fallback`.
 pub fn Show<W, F, C>(when: W, fallback: F, content: C) -> View
@@ -37,16 +42,76 @@ where
     show(when, content, fallback)
 }
 
-/// Keyed list control flow.
-pub fn For<T, K, E, G, R>(each: E, key: G, row: R) -> View
+/// List control flow with reactive item and index accessors.
+///
+/// `For(each)` starts positional; `.keyed(key)` uses stable keys, `.fallback`
+/// mounts an empty-state view, and `.render` builds one row:
+///
+/// ```ignore
+/// For(move |cx| todos.get(cx))
+///     .keyed(|todo: &Todo| todo.id)
+///     .fallback(|cx| view! { <Empty /> })
+///     .render(move |cx, todo, index| view! {
+///         <TodoRow todo={todo} index={index} />
+///     })
+/// ```
+pub fn For<E, T>(each: E) -> ForBuilder<E, T, usize>
 where
-    T: 'static,
-    K: Eq + std::hash::Hash + Clone + 'static,
     E: Fn(&Cx<'_>) -> Vec<T> + 'static,
-    G: Fn(&T) -> K + 'static,
-    R: for<'a> Fn(&Cx<'a>, &T) -> View + 'static,
+    T: 'static,
 {
-    keyed_list(each, key, row)
+    ForBuilder {
+        each,
+        key: Box::new(|index, _| index),
+        fallback: None,
+        _t: PhantomData,
+    }
+}
+
+/// The builder for a [`For`] list.
+pub struct ForBuilder<E, T, K> {
+    each: E,
+    key: RowKey<T, K>,
+    fallback: RowFallback,
+    _t: PhantomData<fn() -> T>,
+}
+
+impl<E, T, K> ForBuilder<E, T, K> {
+    /// Key rows by a stable value. Without this, rows are positional.
+    #[must_use]
+    pub fn keyed<G, K2>(self, key: G) -> ForBuilder<E, T, K2>
+    where
+        G: Fn(&T) -> K2 + 'static,
+        K2: 'static,
+    {
+        ForBuilder {
+            each: self.each,
+            key: Box::new(move |_, item| key(item)),
+            fallback: self.fallback,
+            _t: PhantomData,
+        }
+    }
+
+    /// Mount this view when the list is empty.
+    #[must_use]
+    pub fn fallback<F>(mut self, fallback: F) -> Self
+    where
+        F: Fn(&Cx<'_>) -> View + 'static,
+    {
+        self.fallback = Some(Box::new(fallback));
+        self
+    }
+
+    /// Build one row. `item` and `index` are reactive accessors.
+    pub fn render<R>(self, row: R) -> View
+    where
+        E: Fn(&Cx<'_>) -> Vec<T> + 'static,
+        T: Clone + PartialEq + 'static,
+        K: Eq + Hash + Clone + 'static,
+        R: for<'a> Fn(&Cx<'a>, ForItem<T>, ForIndex) -> View + 'static,
+    {
+        keyed_list_rows(self.each, self.key, self.fallback, row)
+    }
 }
 
 /// Show `fallback` until every binding under `content` is ready.
