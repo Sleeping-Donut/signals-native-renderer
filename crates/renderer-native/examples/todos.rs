@@ -3,7 +3,8 @@
 //!
 //! Module layout:
 //! - `model`: todo data and a pretend server with latency and a failure switch
-//! - `store`: read view + actions-only writer over a store derived from `api.list()`
+//! - `store`: read view + actions-only writer over a store derived from `api.list()`;
+//!   a successful action commits the saved list instead of re-fetching
 //! - `styles`
 //! - `basecomponents`: `ActionButton`, `IconButton`, `TextLine`, `ErrorLine`
 //! - `uicomponents`: `App`, `Content`, `TodoRowView`, `LoadingView`
@@ -98,7 +99,7 @@ mod model {
             self.saved.borrow().clone()
         }
 
-        pub async fn toggle(&self, id: u64) -> Result<(), String> {
+        pub async fn toggle(&self, id: u64) -> Result<Vec<Todo>, String> {
             sleep(SAVE_DELAY_MS).await;
             if let Some(error) = self.take_failure() {
                 return Err(error);
@@ -111,16 +112,16 @@ mod model {
             {
                 todo.done = !todo.done;
             }
-            Ok(())
+            Ok(self.saved.borrow().clone())
         }
 
-        pub async fn add(&self, todo: Todo) -> Result<(), String> {
+        pub async fn add(&self, todo: Todo) -> Result<Vec<Todo>, String> {
             sleep(SAVE_DELAY_MS).await;
             if let Some(error) = self.take_failure() {
                 return Err(error);
             }
             self.saved.borrow_mut().push(todo);
-            Ok(())
+            Ok(self.saved.borrow().clone())
         }
     }
 }
@@ -128,7 +129,7 @@ mod model {
 mod store {
     use std::rc::Rc;
 
-    use reactive_core::{create_signal, refresh, Cx, ReadSignal, RuntimeHandle, WriteSignal};
+    use reactive_core::{create_signal, Cx, ReadSignal, RuntimeHandle, WriteSignal};
     use reactive_stores::OptimisticStore;
 
     use crate::model::{Api, Todo};
@@ -189,15 +190,7 @@ mod store {
     impl TodoActions {
         pub fn toggle(self: &Rc<Self>, id: u64) {
             let cx = self.runtime.cx();
-            let todos = self.todos.list(|row| row.id);
-            if !todos
-                .get(&cx)
-                .iter()
-                .any(|row| row.id == id && !row.pending)
-            {
-                return;
-            }
-            let Some(row) = todos.at_key(&cx, &id) else {
+            let Some(row) = self.todos.list(|row| row.id).at_key(&cx, &id) else {
                 return;
             };
             let api = self.api.clone();
@@ -209,10 +202,8 @@ mod store {
                         row.done = !row.done;
                         row.pending = true;
                     });
-                    api.toggle(id).await?;
-                    refresh(&rt.cx(), |cx| {
-                        let _ = store.get(cx);
-                    });
+                    let saved = api.toggle(id).await?;
+                    store.commit(&rt.cx(), saved.into_iter().map(todo_row).collect());
                     Ok::<(), String>(())
                 },
                 move |cx, result| match result {
@@ -239,15 +230,14 @@ mod store {
                             pending: true,
                         },
                     );
-                    api.add(Todo {
-                        id,
-                        text,
-                        done: false,
-                    })
-                    .await?;
-                    refresh(&rt.cx(), |cx| {
-                        let _ = store.get(cx);
-                    });
+                    let saved = api
+                        .add(Todo {
+                            id,
+                            text,
+                            done: false,
+                        })
+                        .await?;
+                    store.commit(&rt.cx(), saved.into_iter().map(todo_row).collect());
                     Ok::<(), String>(())
                 },
                 move |cx, result| match result {

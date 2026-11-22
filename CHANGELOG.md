@@ -30,10 +30,11 @@
   `DynamicStore`) as raw: passing a shared store or action struct no longer
   needs `#[prop(raw)]`.
 - `OptimisticStore` derives a store from an async source
-  (`OptimisticStore::new(cx, seed, || api.list())`). `refresh(cx, |cx| ...)`
-  re-asks the async nodes a probe read touches, matching `is_pending`'s shape.
-  The todos demo derives its rows from the API and uses `<Loading>` for the
-  first load instead of copying data in from a spawned task.
+  (`OptimisticStore::new(cx, seed, || api.list())`). `OptimisticStore::commit`
+  writes a known server answer, so an action can persist-commit without a
+  re-fetch; `refresh(cx, |cx| ...)` re-asks the async nodes a probe read
+  touches, matching `is_pending`'s shape. The todos demo derives its rows from
+  the API, uses `<Loading>` for the first load, and commits the saved list.
 - `LoadingBoundary::on(cx, closure)` re-arms a loaded boundary when a tracked
   dependency changes, showing the fallback for the new question.
 - Renderer `NodeId` contract frozen: opaque non-zero ids, `INVALID_NODE_ID`

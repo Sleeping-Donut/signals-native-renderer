@@ -302,6 +302,15 @@ impl<T: Clone + PartialEq + 'static> OptimisticStore<T> {
         }
     }
 
+    /// Write the persisted truth.
+    ///
+    /// This is the persist-commit step: an action that already knows the
+    /// server's answer writes it here instead of re-asking the source. The
+    /// action's guesses drop at settle, leaving this value on screen.
+    pub fn commit(&self, cx: &Cx<'_>, value: T) {
+        self.store.root().commit(cx, value);
+    }
+
     /// The root field handle.
     #[must_use]
     pub fn root(&self) -> Field<T> {

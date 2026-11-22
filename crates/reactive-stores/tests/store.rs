@@ -425,6 +425,47 @@ mod optimistic {
     }
 
     #[test]
+    fn a_derived_store_commits_without_re_asking_the_source() {
+        let runtime = Runtime::new().into_handle();
+        let cx = runtime.cx();
+        let calls = Rc::new(Cell::new(0_u32));
+        let calls_for_load = Rc::clone(&calls);
+        let store = reactive_stores::OptimisticStore::new(&cx, Vec::<u32>::new(), move || {
+            let calls = Rc::clone(&calls_for_load);
+            async move {
+                calls.set(calls.get() + 1);
+                delayed(1).await;
+                Ok::<Vec<u32>, reactive_core::AsyncError>(vec![1, 2])
+            }
+        });
+        let list = store.list(|row| *row);
+        settle(&runtime, &cx);
+        assert_eq!(list.get(&cx), vec![1, 2]);
+        assert_eq!(calls.get(), 1);
+
+        let store_for_action = store.clone();
+        let list_for_action = list.clone();
+        let _handle = runtime.action(move |rt| async move {
+            list_for_action.push(&rt.cx(), 3);
+            delayed(1).await;
+            store_for_action.commit(&rt.cx(), vec![1, 2, 3]);
+            Ok::<(), String>(())
+        });
+
+        runtime.pump();
+        cx.flush().unwrap();
+        assert_eq!(list.get(&cx), vec![1, 2, 3], "the patch shows at once");
+
+        settle(&runtime, &cx);
+        assert_eq!(list.get(&cx), vec![1, 2, 3]);
+        assert_eq!(
+            calls.get(),
+            1,
+            "commit writes the known truth instead of re-asking the source"
+        );
+    }
+
+    #[test]
     fn a_guess_shows_to_effects_and_reverts_on_failure() {
         let runtime = Runtime::new().into_handle();
         let cx = runtime.cx();
