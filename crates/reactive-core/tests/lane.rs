@@ -220,9 +220,7 @@ fn actions_guess_then_commit_after_await() {
     );
     cx.flush().unwrap();
     assert_eq!(seen.borrow().as_slice(), &[1]);
-    let runtime_for_action = runtime.clone();
-    let handle = runtime.action(move || {
-        let rt = runtime_for_action.clone();
+    let handle = runtime.action(move |rt| {
         async move {
             let cx = rt.cx();
             guess(&cx, &count, 5_u32);
@@ -282,25 +280,16 @@ fn overlapping_actions_keep_their_own_guesses() {
         move |_cx, value: &u32| seen_for_effect.borrow_mut().push(*value),
     );
     cx.flush().unwrap();
-
-    let runtime_a = runtime.clone();
-    let _a = runtime.action(move || {
-        let rt = runtime_a.clone();
-        async move {
-            guess(&rt.cx(), &count, 5_u32);
-            Ok::<(), String>(())
-        }
+    let _a = runtime.action(move |rt| async move {
+        guess(&rt.cx(), &count, 5_u32);
+        Ok::<(), String>(())
     });
-    let runtime_b = runtime.clone();
-    let _b = runtime.action(move || {
-        let rt = runtime_b.clone();
-        async move {
-            guess(&rt.cx(), &count, 6_u32);
-            if delayed(()).await.is_err() {
-                return Err(String::from("async error"));
-            }
-            Ok::<(), String>(())
+    let _b = runtime.action(move |rt| async move {
+        guess(&rt.cx(), &count, 6_u32);
+        if delayed(()).await.is_err() {
+            return Err(String::from("async error"));
         }
+        Ok::<(), String>(())
     });
 
     runtime.pump();
@@ -326,16 +315,12 @@ fn actions_report_errors_and_clear_guesses() {
     let runtime = Runtime::new().into_handle();
     let cx = runtime.cx();
     let (count, _set_count) = create_signal(&cx, 1_u32);
-    let runtime_for_action = runtime.clone();
-    let handle = runtime.action(move || {
-        let rt = runtime_for_action.clone();
-        async move {
-            guess(&rt.cx(), &count, 5_u32);
-            if delayed(()).await.is_err() {
-                return Err(String::from("async error"));
-            }
-            Err::<(), String>(String::from("nope"))
+    let handle = runtime.action(move |rt| async move {
+        guess(&rt.cx(), &count, 5_u32);
+        if delayed(()).await.is_err() {
+            return Err(String::from("async error"));
         }
+        Err::<(), String>(String::from("nope"))
     });
 
     runtime.pump();
@@ -602,18 +587,13 @@ fn optimistic_signal_guesses_inside_actions() {
         move |_cx, rows: &Vec<u32>| seen_for_effect.borrow_mut().push(rows.clone()),
     );
     cx.flush().unwrap();
-
-    let runtime_for_action = runtime.clone();
-    let handle = runtime.action(move || {
-        let rt = runtime_for_action.clone();
-        async move {
-            todos.update_with(&rt.cx(), |rows| rows.push(2));
-            if delayed(()).await.is_err() {
-                return Err(String::from("async error"));
-            }
-            todos.commit(&rt.cx(), vec![1, 2, 3]);
-            Ok::<(), String>(())
+    let handle = runtime.action(move |rt| async move {
+        todos.update_with(&rt.cx(), |rows| rows.push(2));
+        if delayed(()).await.is_err() {
+            return Err(String::from("async error"));
         }
+        todos.commit(&rt.cx(), vec![1, 2, 3]);
+        Ok::<(), String>(())
     });
 
     runtime.pump();
@@ -647,16 +627,12 @@ fn optimistic_signal_failure_reverts_the_guess() {
     let runtime = Runtime::new().into_handle();
     let cx = runtime.cx();
     let todos = OptimisticSignal::new(&cx, vec![1_u32]);
-    let runtime_for_action = runtime.clone();
-    let handle = runtime.action(move || {
-        let rt = runtime_for_action.clone();
-        async move {
-            todos.update_with(&rt.cx(), |rows| rows.push(2));
-            if delayed(()).await.is_err() {
-                return Err(String::from("async error"));
-            }
-            Err::<(), String>(String::from("rejected"))
+    let handle = runtime.action(move |rt| async move {
+        todos.update_with(&rt.cx(), |rows| rows.push(2));
+        if delayed(()).await.is_err() {
+            return Err(String::from("async error"));
         }
+        Err::<(), String>(String::from("rejected"))
     });
 
     runtime.pump();
@@ -680,16 +656,12 @@ fn action_settle_callback_writes_outside_the_scope() {
     let runtime = Runtime::new().into_handle();
     let cx = runtime.cx();
     let (error, set_error) = create_signal(&cx, String::new());
-    let runtime_for_action = runtime.clone();
     let _handle = runtime.action_with(
-        move || {
-            let _rt = runtime_for_action.clone();
-            async move {
-                if delayed(()).await.is_err() {
-                    return Err(String::from("async error"));
-                }
-                Err::<(), String>(String::from("rejected"))
+        move |_rt| async move {
+            if delayed(()).await.is_err() {
+                return Err(String::from("async error"));
             }
+            Err::<(), String>(String::from("rejected"))
         },
         move |cx, result| {
             if let Err(message) = result {

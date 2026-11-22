@@ -1259,28 +1259,25 @@ flush commit together, so readers see one merged update
 ## 8. Actions (v0.2, implemented)
 
 An action is an optimistic future whose scope follows the future's polls. The
-action is ambient while it runs, so setters do not take it as an argument:
+action is ambient while it runs, so setters do not take it as an argument; the
+closure receives the runtime handle instead of cloning the caller's:
 
 ```rust
 let todos = OptimisticSignal::new(&cx, rows);
-let runtime_for_action = runtime.clone();
 
 let handle = runtime.action_with(
-    move || {
-        let rt = runtime_for_action.clone();
-        async move {
-            todos.update_with(&rt.cx(), |rows| {        // guess
-                let row = rows.iter_mut().find(|row| row.id == id).unwrap();
-                row.done = !row.done;
-                row.pending = true;
-            });
+    move |rt| async move {
+        todos.update_with(&rt.cx(), |rows| {        // guess
+            let row = rows.iter_mut().find(|row| row.id == id).unwrap();
+            row.done = !row.done;
+            row.pending = true;
+        });
 
-            api.save_toggle(id).await?;                 // still scoped
+        api.save_toggle(id).await?;                 // still scoped
 
-            let truth = api.list().await;
-            todos.commit(&rt.cx(), truth.rows());       // buffered truth
-            Ok::<(), String>(())
-        }
+        let truth = api.list().await;
+        todos.commit(&rt.cx(), truth.rows());       // buffered truth
+        Ok::<(), String>(())
     },
     move |cx, result| {                                 // settle callback
         if let Err(error) = result {
@@ -1290,9 +1287,9 @@ let handle = runtime.action_with(
 );
 ```
 
-- `RuntimeHandle::action` and `action_with` spawn the future. The settle
-  callback runs outside the action scope, so its writes are mainline; use it for
-  error reporting.
+- `RuntimeHandle::action` and `action_with` spawn the future and pass the
+  runtime handle to the action closure. The settle callback runs outside the
+  action scope, so its writes are mainline; use it for error reporting.
 - A wrapper future sets `Runtime::current_action` around every `poll` and
   restores it afterwards. Unlike Solid's generator slices, writes after an
   `await` stay scoped automatically; no bare `yield` is required.
@@ -1315,15 +1312,11 @@ store-wide carrier and no display-only side channel:
 let name = state.user().name();
 let todos = state.todos().optimistic_list(|t| t.id);
 
-let runtime_for_action = runtime.clone();
-runtime.action(move || {
-    let rt = runtime_for_action.clone();
-    async move {
-        name.update(&rt.cx(), |name| name.push_str("!"));
-        todos.push(&rt.cx(), new_todo);
-        api.save().await?;
-        Ok::<(), String>(())
-    }
+runtime.action(move |rt| async move {
+    name.update(&rt.cx(), |name| name.push_str("!"));
+    todos.push(&rt.cx(), new_todo);
+    api.save().await?;
+    Ok::<(), String>(())
 });
 ```
 

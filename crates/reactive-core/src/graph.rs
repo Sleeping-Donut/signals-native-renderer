@@ -660,11 +660,22 @@ impl RuntimeHandle {
 impl RuntimeHandle {
     /// Run an optimistic action with no settle callback.
     ///
+    /// The closure receives the runtime handle, so it can read and write
+    /// without cloning the caller's handle:
+    ///
+    /// ```ignore
+    /// runtime.action(|rt| async move {
+    ///     name.update(&rt.cx(), |name| name.push('!'));
+    ///     api.save().await?;
+    ///     Ok(())
+    /// })
+    /// ```
+    ///
     /// Guesses show at once, committed writes are held until the future
     /// settles, and the action's guesses clear at settle.
     pub fn action<F, Fut, T, E>(&self, f: F) -> ActionHandle<T>
     where
-        F: FnOnce() -> Fut + 'static,
+        F: FnOnce(RuntimeHandle) -> Fut + 'static,
         Fut: std::future::Future<Output = Result<T, E>> + 'static,
         T: Clone + 'static,
         E: ToString + 'static,
@@ -674,12 +685,13 @@ impl RuntimeHandle {
 
     /// Run an optimistic action with a settle callback.
     ///
-    /// The callback runs outside the action scope after its buffered writes and
-    /// guesses are resolved, so its writes are mainline (visible at the next
-    /// flush). Use it for error reporting.
+    /// The action closure receives the runtime handle; the settle callback
+    /// runs outside the action scope after its buffered writes and guesses are
+    /// resolved, so its writes are mainline (visible at the next flush). Use
+    /// the settle callback for error reporting.
     pub fn action_with<F, Fut, T, E, S>(&self, f: F, settle: S) -> ActionHandle<T>
     where
-        F: FnOnce() -> Fut + 'static,
+        F: FnOnce(RuntimeHandle) -> Fut + 'static,
         Fut: std::future::Future<Output = Result<T, E>> + 'static,
         T: Clone + 'static,
         E: ToString + 'static,
@@ -697,7 +709,7 @@ impl RuntimeHandle {
         let runtime_for_task = self.clone();
         self.spawner().spawn_local(Box::pin(async move {
             let scoped = ScopedAction {
-                inner: Box::pin(f()),
+                inner: Box::pin(f(runtime_for_task.clone())),
                 runtime: runtime_for_task.clone(),
                 id,
             };

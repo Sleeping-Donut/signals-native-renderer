@@ -388,17 +388,13 @@ mod optimistic {
 
         let store_for_action = store.clone();
         let list_for_action = list.clone();
-        let runtime_for_action = runtime.clone();
-        let _handle = runtime.action(move || {
-            let rt = runtime_for_action.clone();
-            async move {
-                list_for_action.push(&rt.cx(), 3);
-                delayed(1).await;
-                refresh(&rt.cx(), |cx| {
-                    let _ = store_for_action.get(cx);
-                });
-                Ok::<(), String>(())
-            }
+        let _handle = runtime.action(move |rt| async move {
+            list_for_action.push(&rt.cx(), 3);
+            delayed(1).await;
+            refresh(&rt.cx(), |cx| {
+                let _ = store_for_action.get(cx);
+            });
+            Ok::<(), String>(())
         });
         runtime.pump();
         cx.flush().unwrap();
@@ -416,14 +412,10 @@ mod optimistic {
         );
 
         let list_for_failure = list.clone();
-        let runtime_for_failure = runtime.clone();
-        let _handle = runtime.action(move || {
-            let rt = runtime_for_failure.clone();
-            async move {
-                list_for_failure.push(&rt.cx(), 4);
-                delayed(1).await;
-                Err::<(), String>(String::from("rejected"))
-            }
+        let _handle = runtime.action(move |rt| async move {
+            list_for_failure.push(&rt.cx(), 4);
+            delayed(1).await;
+            Err::<(), String>(String::from("rejected"))
         });
         runtime.pump();
         cx.flush().unwrap();
@@ -444,16 +436,11 @@ mod optimistic {
         });
         cx.flush().unwrap();
         assert_eq!(*seen.borrow(), "Ada");
-
-        let runtime_for_action = runtime.clone();
         let name_for_action = name.clone();
-        let _handle = runtime.action(move || {
-            let rt = runtime_for_action.clone();
-            async move {
-                name_for_action.set(&rt.cx(), String::from("Grace"));
-                delayed(2).await;
-                Err::<(), String>(String::from("rejected"))
-            }
+        let _handle = runtime.action(move |rt| async move {
+            name_for_action.set(&rt.cx(), String::from("Grace"));
+            delayed(2).await;
+            Err::<(), String>(String::from("rejected"))
         });
 
         runtime.pump();
@@ -483,16 +470,11 @@ mod optimistic {
         let memo = create_memo(&cx, move |cx, _| name_for_memo.get(cx));
         cx.flush().unwrap();
         assert_eq!(memo.get(&cx), "Ada");
-
-        let runtime_for_action = runtime.clone();
         let name_for_action = name.clone();
-        let _handle = runtime.action(move || {
-            let rt = runtime_for_action.clone();
-            async move {
-                name_for_action.set(&rt.cx(), String::from("Grace"));
-                delayed(2).await;
-                Ok::<(), String>(())
-            }
+        let _handle = runtime.action(move |rt| async move {
+            name_for_action.set(&rt.cx(), String::from("Grace"));
+            delayed(2).await;
+            Ok::<(), String>(())
         });
 
         runtime.pump();
@@ -526,26 +508,17 @@ mod optimistic {
             effect_of(&cx, move |cx| (name_for_read.get(cx), age_for_read.get(cx)));
         cx.flush().unwrap();
         assert_eq!(*seen.borrow(), (String::from("Ada"), 30));
-
-        let runtime_a = runtime.clone();
         let name_for_a = name.clone();
-        let _a = runtime.action(move || {
-            let rt = runtime_a.clone();
-            async move {
-                name_for_a.set(&rt.cx(), String::from("Grace"));
-                delayed(2).await;
-                Err::<(), String>(String::from("a failed"))
-            }
+        let _a = runtime.action(move |rt| async move {
+            name_for_a.set(&rt.cx(), String::from("Grace"));
+            delayed(2).await;
+            Err::<(), String>(String::from("a failed"))
         });
-        let runtime_b = runtime.clone();
         let age_for_b = age.clone();
-        let _b = runtime.action(move || {
-            let rt = runtime_b.clone();
-            async move {
-                age_for_b.set(&rt.cx(), 99);
-                delayed(5).await;
-                Ok::<(), String>(())
-            }
+        let _b = runtime.action(move |rt| async move {
+            age_for_b.set(&rt.cx(), 99);
+            delayed(5).await;
+            Ok::<(), String>(())
         });
 
         runtime.pump();
@@ -581,16 +554,11 @@ mod optimistic {
         let (_, age_runs, _age_effect) = effect_of(&cx, move |cx| age_for_effect.get(cx));
         cx.flush().unwrap();
         let age_before = age_runs.get();
-
-        let runtime_for_action = runtime.clone();
         let name_for_action = name.clone();
-        let _handle = runtime.action(move || {
-            let rt = runtime_for_action.clone();
-            async move {
-                name_for_action.set(&rt.cx(), String::from("Grace"));
-                delayed(2).await;
-                Ok::<(), String>(())
-            }
+        let _handle = runtime.action(move |rt| async move {
+            name_for_action.set(&rt.cx(), String::from("Grace"));
+            delayed(2).await;
+            Ok::<(), String>(())
         });
 
         runtime.pump();
@@ -615,21 +583,16 @@ mod optimistic {
         let (seen, _runs, _effect) = effect_of(&cx, move |cx| todos_for_effect.get(cx).len());
         cx.flush().unwrap();
         assert_eq!(*seen.borrow(), 2);
-
-        let runtime_for_action = runtime.clone();
         let todos_for_action = todos.clone();
         let added = Todo {
             id: 3,
             title: String::from("three"),
             done: false,
         };
-        let _handle = runtime.action(move || {
-            let rt = runtime_for_action.clone();
-            async move {
-                todos_for_action.push(&rt.cx(), added);
-                delayed(2).await;
-                Ok::<(), String>(())
-            }
+        let _handle = runtime.action(move |rt| async move {
+            todos_for_action.push(&rt.cx(), added);
+            delayed(2).await;
+            Ok::<(), String>(())
         });
 
         runtime.pump();
@@ -648,16 +611,11 @@ mod optimistic {
                 .collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
-
-        let runtime_for_remove = runtime.clone();
         let todos_for_remove = todos.clone();
-        let _handle = runtime.action(move || {
-            let rt = runtime_for_remove.clone();
-            async move {
-                todos_for_remove.remove(&rt.cx(), &1);
-                delayed(2).await;
-                Ok::<(), String>(())
-            }
+        let _handle = runtime.action(move |rt| async move {
+            todos_for_remove.remove(&rt.cx(), &1);
+            delayed(2).await;
+            Ok::<(), String>(())
         });
         runtime.pump();
         cx.flush().unwrap();
@@ -687,22 +645,18 @@ mod optimistic {
         let cx = runtime.cx();
         let store = store!(&cx, app());
         let todos = store.todos().optimistic_list(|todo| todo.id);
-        let runtime_for_action = runtime.clone();
         let todos_for_action = todos.clone();
-        let _handle = runtime.action(move || {
-            let rt = runtime_for_action.clone();
-            async move {
-                todos_for_action.push(
-                    &rt.cx(),
-                    Todo {
-                        id: 9,
-                        title: String::from("nope"),
-                        done: false,
-                    },
-                );
-                delayed(2).await;
-                Err::<(), String>(String::from("rejected"))
-            }
+        let _handle = runtime.action(move |rt| async move {
+            todos_for_action.push(
+                &rt.cx(),
+                Todo {
+                    id: 9,
+                    title: String::from("nope"),
+                    done: false,
+                },
+            );
+            delayed(2).await;
+            Err::<(), String>(String::from("rejected"))
         });
         runtime.pump();
         cx.flush().unwrap();
@@ -719,26 +673,17 @@ mod optimistic {
         let store = store!(&cx, app());
         let todos = store.todos().optimistic_list(|todo| todo.id);
         let row = todos.at_key(&cx, &1).expect("row");
-
-        let runtime_for_toggle = runtime.clone();
         let row_for_toggle = row.clone();
-        let _toggle = runtime.action(move || {
-            let rt = runtime_for_toggle.clone();
-            async move {
-                row_for_toggle.update(&rt.cx(), |todo| todo.done = true);
-                delayed(5).await;
-                Ok::<(), String>(())
-            }
+        let _toggle = runtime.action(move |rt| async move {
+            row_for_toggle.update(&rt.cx(), |todo| todo.done = true);
+            delayed(5).await;
+            Ok::<(), String>(())
         });
-        let runtime_for_remove = runtime.clone();
         let todos_for_remove = todos.clone();
-        let _remove = runtime.action(move || {
-            let rt = runtime_for_remove.clone();
-            async move {
-                todos_for_remove.remove(&rt.cx(), &1);
-                delayed(2).await;
-                Ok::<(), String>(())
-            }
+        let _remove = runtime.action(move |rt| async move {
+            todos_for_remove.remove(&rt.cx(), &1);
+            delayed(2).await;
+            Ok::<(), String>(())
         });
 
         settle(&runtime, &cx);
@@ -756,16 +701,11 @@ mod optimistic {
         let todos_for_effect = todos.clone();
         let (seen, _runs, _effect) = effect_of(&cx, move |cx| todos_for_effect.get(cx));
         cx.flush().unwrap();
-
-        let runtime_for_action = runtime.clone();
         let row_for_action = row.clone();
-        let _handle = runtime.action(move || {
-            let rt = runtime_for_action.clone();
-            async move {
-                row_for_action.update(&rt.cx(), |todo| todo.done = true);
-                delayed(4).await;
-                Ok::<(), String>(())
-            }
+        let _handle = runtime.action(move |rt| async move {
+            row_for_action.update(&rt.cx(), |todo| todo.done = true);
+            delayed(4).await;
+            Ok::<(), String>(())
         });
         runtime.pump();
         cx.flush().unwrap();

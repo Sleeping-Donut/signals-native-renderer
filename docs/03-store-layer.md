@@ -278,14 +278,10 @@ did not, and notifications depended on how a reader was written.
 ```rust
 let name = state.user().name();
 
-let runtime_for_action = runtime.clone();
-runtime.action(move || {
-    let rt = runtime_for_action.clone();
-    async move {
-        name.update(&rt.cx(), |name| name.push_str("!"));
-        api.save().await?;
-        Ok::<(), String>(())
-    }
+runtime.action(move |rt| async move {
+    name.update(&rt.cx(), |name| name.push_str("!"));
+    api.save().await?;
+    Ok::<(), String>(())
 });
 ```
 

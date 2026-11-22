@@ -203,22 +203,17 @@ mod store {
             let api = self.api.clone();
             let store = self.todos.clone();
             let set_error = self.set_error;
-            let runtime_for_action = self.runtime.clone();
-
             let _ = self.runtime.action_with(
-                move || {
-                    let rt = runtime_for_action.clone();
-                    async move {
-                        row.update(&rt.cx(), |row| {
-                            row.done = !row.done;
-                            row.pending = true;
-                        });
-                        api.toggle(id).await?;
-                        refresh(&rt.cx(), |cx| {
-                            let _ = store.get(cx);
-                        });
-                        Ok::<(), String>(())
-                    }
+                move |rt| async move {
+                    row.update(&rt.cx(), |row| {
+                        row.done = !row.done;
+                        row.pending = true;
+                    });
+                    api.toggle(id).await?;
+                    refresh(&rt.cx(), |cx| {
+                        let _ = store.get(cx);
+                    });
+                    Ok::<(), String>(())
                 },
                 move |cx, result| match result {
                     Ok(()) => set_error.set(cx, String::new()),
@@ -233,32 +228,27 @@ mod store {
             let store = self.todos.clone();
             let set_error = self.set_error;
             let id = self.api.next_id();
-            let runtime_for_action = self.runtime.clone();
-
             let _ = self.runtime.action_with(
-                move || {
-                    let rt = runtime_for_action.clone();
-                    async move {
-                        todos.push(
-                            &rt.cx(),
-                            TodoRow {
-                                id,
-                                text: text.clone(),
-                                done: false,
-                                pending: true,
-                            },
-                        );
-                        api.add(Todo {
+                move |rt| async move {
+                    todos.push(
+                        &rt.cx(),
+                        TodoRow {
                             id,
-                            text,
+                            text: text.clone(),
                             done: false,
-                        })
-                        .await?;
-                        refresh(&rt.cx(), |cx| {
-                            let _ = store.get(cx);
-                        });
-                        Ok::<(), String>(())
-                    }
+                            pending: true,
+                        },
+                    );
+                    api.add(Todo {
+                        id,
+                        text,
+                        done: false,
+                    })
+                    .await?;
+                    refresh(&rt.cx(), |cx| {
+                        let _ = store.get(cx);
+                    });
+                    Ok::<(), String>(())
                 },
                 move |cx, result| match result {
                     Ok(()) => set_error.set(cx, String::new()),

@@ -14,11 +14,12 @@
 - `latest(memo)`, display-only `guess`/`clear_guess`, and quiet `refresh`.
   Async results ready at one flush commit together, and equal async answers no
   longer notify readers.
-- `RuntimeHandle::action`/`action_with` with a poll-scoped action: writes after
-  `await` stay in the action without an `ActionCx` argument. `OptimisticSignal`
-  guesses, plain writes are buffered until settle, and guesses are stored per
-  action. `ActionHandle::result` reports completion; the todos demo uses the
-  ambient form.
+- `RuntimeHandle::action`/`action_with` with a poll-scoped action: the closure
+  receives the runtime handle (`runtime.action(|rt| async move { ... })`), so
+  callers do not clone it, and writes after `await` stay in the action without
+  an `ActionCx` argument. `OptimisticSignal` guesses, plain writes are buffered
+  until settle, and guesses are stored per action. `ActionHandle::result`
+  reports completion; the todos demo uses the ambient form.
 - Per-key store optimism: `Field::optimistic` stages a guess on the field's own
   path node, and `Field::optimistic_list` stages keyed `push`/`remove` patches
   plus `list#hash(key)` row guesses. Reads compose truth, live patches, and row

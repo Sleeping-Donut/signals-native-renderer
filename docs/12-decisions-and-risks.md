@@ -747,9 +747,11 @@ or a measurement.
   an equal answer does not notify. Covered by `refresh_is_a_quiet_re_ask` and
   seeded fuzz `reask_fuzz_is_quiet` (32 seeds x 30 steps, zero violations).
 - Optimistic actions: `RuntimeHandle::action`/`action_with` with a poll-scoped
-  `current_action`. `OptimisticSignal` writes guesses, `WriteSignal` writes are
-  buffered until settle, and guesses are stored per action. The optimistic todos
-  demo needs no explicit action argument.
+  `current_action`; the closure receives the runtime handle, so it does not
+  clone the caller's (`runtime.action(|rt| async move { ... })`).
+  `OptimisticSignal` writes guesses, `WriteSignal` writes are buffered until
+  settle, and guesses are stored per action. The optimistic todos demo needs no
+  explicit action argument.
 - Per-key store guesses: a guess lives on the store path node the read already
   tracks (`Field::optimistic`), mirroring Solid's carrier rule that its readers
   are the leaves of the keys it changed. Keyed lists stage `push`/`remove` as a
